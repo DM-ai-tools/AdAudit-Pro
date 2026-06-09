@@ -1,0 +1,21 @@
+{
+  "name": "adaudit-pro",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "dev": "concurrently -n backend,frontend -c blue,green \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "npm run dev --prefix backend",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "install:all": "npm install --prefix backend && npm install --prefix frontend",
+    "build": "npm run build --prefix backend && npm run build --prefix frontend",
+    "start": "npm run start --prefix backend",
+    "docker:build": "docker build -t adaudit-pro .",
+    "docker:run": "docker run --rm -p 5000:5000 --env-file .env adaudit-pro"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

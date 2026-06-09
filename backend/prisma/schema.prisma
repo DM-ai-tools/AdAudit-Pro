@@ -1,0 +1,235 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AuditStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum ModuleStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum Severity {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum FindingCategory {
+  KEYWORDS
+  BIDDING
+  AUDIENCES
+  AD_COPY
+  BUDGET
+  GEO
+  QUALITY_SCORE
+  SEARCH_TERMS
+  CAMPAIGN
+  LANDING_PAGES
+  IMPRESSION_SHARE
+  PMAX
+}
+
+enum FindingStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+enum RoadmapPhase {
+  DAY_30
+  DAY_60
+  DAY_90
+}
+
+enum EffortLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum OwnerType {
+  CLIENT
+  AGENCY
+  SHARED
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String
+  avatarUrl     String?
+  googleId      String?   @unique
+  passwordHash  String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts      Account[]
+  auditRuns     AuditRun[]
+  sharedReports SharedReport[]
+
+  @@index([email])
+}
+
+model Account {
+  id              String    @id @default(cuid())
+  userId          String
+  googleAdsId     String?
+  name            String
+  monthlySpend    Float     @default(0)
+  campaignCount   Int       @default(0)
+  websiteUrl      String?
+  goal            String?
+  isConnected     Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  auditRuns       AuditRun[]
+
+  @@index([userId])
+}
+
+model AuditRun {
+  id                String       @id @default(cuid())
+  userId            String
+  accountId         String
+  status            AuditStatus  @default(PENDING)
+  progress          Int          @default(0)
+  modulesComplete   Int          @default(0)
+  totalModules      Int          @default(12)
+  dataWindowDays    Int          @default(365)
+  engineVersion     String       @default("2.4.1")
+  executiveSummary  String?      @db.Text
+  startedAt         DateTime?
+  completedAt       DateTime?
+  estimatedMinutes  Int?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account           Account      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  findings          Finding[]
+  healthScores      HealthScore[]
+  roadmapItems      RoadmapItem[]
+  auditLogs         AuditLog[]
+  sharedReports     SharedReport[]
+  modules           AuditModule[]
+
+  @@index([userId])
+  @@index([accountId])
+  @@index([status])
+}
+
+model AuditModule {
+  id          String       @id @default(cuid())
+  auditRunId  String
+  name        String
+  slug        String
+  status      ModuleStatus @default(PENDING)
+  progress    Int          @default(0)
+  findingsCount Int        @default(0)
+  order       Int          @default(0)
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  auditRun    AuditRun     @relation(fields: [auditRunId], references: [id], onDelete: Cascade)
+
+  @@index([auditRunId])
+}
+
+model Finding {
+  id              String          @id @default(cuid())
+  auditRunId      String
+  severity        Severity
+  title           String
+  description     String          @db.Text
+  recommendation  String?         @db.Text
+  confidence      Float           @default(0)
+  impactMonthly   Float           @default(0)
+  evidence        Json?
+  category        FindingCategory
+  dimension       String
+  status          FindingStatus   @default(OPEN)
+  createdAt       DateTime        @default(now())
+
+  auditRun        AuditRun        @relation(fields: [auditRunId], references: [id], onDelete: Cascade)
+
+  @@index([auditRunId])
+  @@index([severity])
+  @@index([category])
+}
+
+model HealthScore {
+  id          String   @id @default(cuid())
+  auditRunId  String
+  dimension   String
+  score       Int
+  label       String?
+  createdAt   DateTime @default(now())
+
+  auditRun    AuditRun @relation(fields: [auditRunId], references: [id], onDelete: Cascade)
+
+  @@index([auditRunId])
+}
+
+model RoadmapItem {
+  id            String       @id @default(cuid())
+  auditRunId    String
+  phase         RoadmapPhase
+  order         Int
+  title         String
+  description   String?      @db.Text
+  effort        EffortLevel  @default(MEDIUM)
+  owner         OwnerType    @default(CLIENT)
+  impactMonthly Float        @default(0)
+  createdAt     DateTime     @default(now())
+
+  auditRun      AuditRun     @relation(fields: [auditRunId], references: [id], onDelete: Cascade)
+
+  @@index([auditRunId])
+}
+
+model SharedReport {
+  id          String   @id @default(cuid())
+  auditRunId  String
+  userId      String
+  token       String   @unique @default(cuid())
+  isPublic    Boolean  @default(true)
+  expiresAt   DateTime?
+  viewCount   Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  auditRun    AuditRun @relation(fields: [auditRunId], references: [id], onDelete: Cascade)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([auditRunId])
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  auditRunId  String
+  message     String
+  level       String   @default("info")
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  auditRun    AuditRun @relation(fields: [auditRunId], references: [id], onDelete: Cascade)
+
+  @@index([auditRunId])
+  @@index([createdAt])
+}

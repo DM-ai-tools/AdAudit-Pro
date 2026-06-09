@@ -1,0 +1,38 @@
+# Dependencies
+**/node_modules
+**/npm-debug.log*
+
+# Build output (rebuilt inside image)
+backend/dist
+frontend/dist
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+
+# Git & IDE
+.git
+.gitignore
+.vscode
+.idea
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docs & local assets
+**/*.md
+!README.md
+.cursor
+agent-transcripts
+
+# Puppeteer cache
+.cache
+
+# Test / coverage
+coverage
+**/*.test.*
+**/*.spec.*

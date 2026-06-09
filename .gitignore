@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# Environment (never commit secrets)
+.env
+.env.local
+.env.*.local
+backend/.env
+backend/.env.*
+!.env.example
+
+# Build output
+dist/
+frontend/dist/
+backend/dist/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+
+# Puppeteer
+.cache/
+
+# Docker local overrides
+docker-compose.override.yml
