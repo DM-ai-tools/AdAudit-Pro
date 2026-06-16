@@ -77,7 +77,6 @@ export interface StartAuditPayload {
   goal?: string;
   campaignCount?: number;
   selectedCampaignIds?: string[];
-  websiteUrl?: string;
 }
 
 export interface AuditDepthOption {
