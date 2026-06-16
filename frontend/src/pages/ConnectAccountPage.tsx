@@ -114,7 +114,7 @@ export default function ConnectAccountPage() {
 
       // Always send user through Google OAuth so they pick the correct account.
       const url = authApi.googleUrl('/connect-account', true, {
-        consent: forceReconnect,
+        consent: true,
         reconnect: forceReconnect,
         selectAccount: !forceReconnect,
         apiBase: oauthApiBase,
@@ -202,7 +202,7 @@ export default function ConnectAccountPage() {
         access_denied:
           'Google blocked sign-in (403 access_denied). AdAudit Pro is in Testing mode — your Gmail must be added as a Test user in Google Cloud Console before you can sign in.',
         missing_ads_consent:
-          'Google Ads permission was not granted. Click Continue with Google again and approve access to your Google Ads data.',
+          'Google Ads permission was not granted or no refresh token was issued. Click Continue with Google again, choose your account, and approve all permissions (including Google Ads). If this persists, revoke AdAudit Pro at myaccount.google.com/permissions and try again.',
         oauth_token:
           'Google token exchange failed. Add the exact redirect URI below to Google Cloud Console → Credentials → your OAuth client → Authorized redirect URIs.',
         oauth:

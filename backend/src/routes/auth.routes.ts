@@ -91,8 +91,8 @@ function buildGoogleOAuthUrl(options: {
 }
 
 /**
- * Google OAuth — default: access_type=offline only, NO prompt (avoids repeated OTP/consent).
- * prompt=consent ONLY when ?consent=true (new-user retry) or ?reconnect=true.
+ * Google OAuth — Google Ads (ads=true) always requests consent up front so we receive
+ * a refresh_token in a single sign-in (avoids callback → second OAuth → repeated OTP).
  */
 router.get('/google', (req, res) => {
   if (!env.googleClientId || !env.googleClientSecret) {
@@ -110,7 +110,7 @@ router.get('/google', (req, res) => {
   const loginHint =
     typeof req.query.login_hint === 'string' ? req.query.login_hint.trim().toLowerCase() : undefined;
 
-  const forceConsent = forceReconnect || consentRequested;
+  const forceConsent = forceReconnect || consentRequested || includeAds;
   const selectAccount = req.query.select_account === 'true';
   const redirectUri = resolveOAuthRedirectUri(req);
 
@@ -215,25 +215,13 @@ router.get('/google/callback', async (req, res) => {
     });
 
     const updatedUser = await getMe(user.id);
+    const hasRefreshToken = !!updatedUser?.googleRefreshToken;
 
-    // New users only: retry once with consent to obtain refresh_token.
-    // Returning users with stored refresh token skip this (token preserved above).
-    if (requestedAdsScope && !updatedUser?.googleRefreshToken && !isReturningUser) {
-      if (!consentRequested) {
-        const retryParams = new URLSearchParams({
-          returnTo,
-          ads: 'true',
-          consent: 'true',
-          login_hint: normalizedEmail,
-        });
-        return res.redirect(`${resolveOAuthApiBase(req)}/api/auth/google?${retryParams}`);
-      }
-      console.error(`New user ${profile.email} missing Google Ads refresh token after consent`);
-      return res.redirect(`${appOrigin}${returnTo}?error=missing_ads_consent`);
-    }
-
-    if (requestedAdsScope && !updatedUser?.googleRefreshToken && isReturningUser) {
-      console.error(`Returning user ${profile.email} refresh token invalid — re-grant required`);
+    // Ads scope requires a refresh token — fail clearly instead of looping OAuth again.
+    if (requestedAdsScope && !hasRefreshToken) {
+      console.error(
+        `Google Ads refresh token missing for ${profile.email} (consent=${consentRequested}, returning=${isReturningUser})`
+      );
       return res.redirect(`${appOrigin}${returnTo}?error=missing_ads_consent`);
     }
 
@@ -385,6 +373,7 @@ router.get('/session', authMiddleware, async (req: AuthRequest, res: Response) =
 });
 
 router.get('/config', (req, res) => {
+  res.set('Cache-Control', 'no-store');
   const redirectUri = resolveOAuthRedirectUri(req);
   const oauthApiBase = resolveOAuthApiBase(req);
   res.json({
