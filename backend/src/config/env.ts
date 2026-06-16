@@ -14,6 +14,15 @@ function resolveRailwayPublicDomain(): string {
   const explicit = (process.env.RAILWAY_PUBLIC_DOMAIN || '').trim();
   if (explicit) return explicit;
 
+  const staticUrl = (process.env.RAILWAY_STATIC_URL || '').trim();
+  if (staticUrl) {
+    try {
+      return new URL(staticUrl).hostname;
+    } catch {
+      /* try next */
+    }
+  }
+
   for (const [key, value] of Object.entries(process.env)) {
     if (!key.startsWith('RAILWAY_SERVICE_') || !key.endsWith('_URL') || !value) continue;
     try {
@@ -28,17 +37,25 @@ function resolveRailwayPublicDomain(): string {
 const railwayPublicDomain = resolveRailwayPublicDomain();
 
 function resolvePublicUrl(): string {
-  if (process.env.CLIENT_URL) return process.env.CLIENT_URL.trim();
+  const explicit = (process.env.CLIENT_URL || '').trim();
+  if (explicit) return explicit.replace(/\/$/, '');
+
+  const staticUrl = (process.env.RAILWAY_STATIC_URL || '').trim();
+  if (staticUrl) return staticUrl.replace(/\/$/, '');
+
   if (railwayPublicDomain) return `https://${railwayPublicDomain}`;
+
+  if (!isProduction) return 'http://localhost:5173';
+
+  console.warn(
+    '⚠ CLIENT_URL not set in production — set it to your Railway public URL (e.g. https://your-app.up.railway.app)'
+  );
   return 'http://localhost:5173';
 }
 
 function resolveGoogleRedirectUri(): string {
   if (process.env.GOOGLE_REDIRECT_URI) return process.env.GOOGLE_REDIRECT_URI.trim();
-  if (railwayPublicDomain) {
-    return `https://${railwayPublicDomain}/api/auth/google/callback`;
-  }
-  return `http://localhost:${port}/api/auth/google/callback`;
+  return `${resolvePublicUrl()}/api/auth/google/callback`;
 }
 
 function parseRedisConfig(): { host: string; port: number; password?: string } | null {
@@ -97,6 +114,12 @@ const WEAK_JWT_SECRETS = new Set([
 
 if (isProduction && WEAK_JWT_SECRETS.has(jwtSecret)) {
   console.warn('⚠ JWT_SECRET is using a default value — set a strong secret in production.');
+}
+
+if (isProduction && clientUrl.includes('localhost')) {
+  console.warn(
+    '⚠ CLIENT_URL points to localhost in production — Google OAuth will fail. Set CLIENT_URL to your Railway URL.'
+  );
 }
 
 /** BullMQ / Redis — only when explicitly configured (never default to localhost in production). */

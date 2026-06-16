@@ -33,11 +33,7 @@ export default function LoginPage() {
   };
 
   const handleGoogleLogin = () => {
-    window.location.assign(
-      authApi.googleUrl('/login', false, {
-        apiBase: 'http://localhost:5000',
-      })
-    );
+    window.location.assign(authApi.googleUrl('/login', false));
   };
 
   if (!authReady) {

@@ -12,6 +12,7 @@ import aiRoutes from './routes/ai.routes.js';
 import { startWorkers } from './workers/audit.worker.js';
 
 const app = express();
+app.set('trust proxy', 1);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const frontendDist = join(__dirname, '../../frontend/dist');
 

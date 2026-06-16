@@ -10,6 +10,7 @@ AdAudit Pro ships as a **single Docker service**: Express API + built React fron
 4. Set environment variables (see below and `.env.example`).
 5. Add your Railway public URL to Google Cloud OAuth **Authorized redirect URIs**:
    `https://<your-domain>/api/auth/google/callback`
+   (Open `/api/auth/config` on your deployed app to see the exact URI.)
 6. Deploy — Railway sets `PORT` and `RAILWAY_PUBLIC_DOMAIN`.
 
 ### Required production variables
@@ -28,8 +29,8 @@ AdAudit Pro ships as a **single Docker service**: Express API + built React fron
 
 | Variable | Description |
 |----------|-------------|
-| `CLIENT_URL` | `https://<your-domain>.up.railway.app` (auto from `RAILWAY_PUBLIC_DOMAIN` if unset) |
-| `GOOGLE_REDIRECT_URI` | `https://<domain>/api/auth/google/callback` (auto if unset) |
+| `CLIENT_URL` | `https://<your-domain>.up.railway.app` — set to your exact Railway public URL |
+| `GOOGLE_REDIRECT_URI` | Leave unset (auto-detected from request). Only set manually for custom domains. |
 | `USE_MOCK_DATA` | `false` for production audits (default in production when unset) |
 
 ### Optional variables
@@ -46,6 +47,7 @@ AdAudit Pro ships as a **single Docker service**: Express API + built React fron
 |----------|-----|
 | `REDIS_HOST=127.0.0.1` | No Redis inside the container — causes connection errors |
 | `CLIENT_URL=http://localhost:5173` | Breaks OAuth redirects and CORS |
+| `GOOGLE_REDIRECT_URI=http://localhost:...` | Causes Error 400 redirect_uri_mismatch on Railway |
 
 ### Local production test
 

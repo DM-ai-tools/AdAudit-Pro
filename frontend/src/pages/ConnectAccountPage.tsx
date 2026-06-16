@@ -116,7 +116,8 @@ export default function ConnectAccountPage() {
       const url = authApi.googleUrl('/connect-account', true, {
         consent: forceReconnect,
         reconnect: forceReconnect,
-        apiBase: oauthApiBase || 'http://localhost:5000',
+        selectAccount: !forceReconnect,
+        apiBase: oauthApiBase,
         loginHint: forceReconnect ? localStorage.getItem(LAST_GOOGLE_EMAIL_KEY) ?? undefined : undefined,
       });
       window.location.assign(url);
@@ -205,7 +206,9 @@ export default function ConnectAccountPage() {
         oauth_token:
           'Google token exchange failed. Add the exact redirect URI below to Google Cloud Console → Credentials → your OAuth client → Authorized redirect URIs.',
         oauth:
-          'Google sign-in failed. Verify OAuth redirect URI settings in Google Cloud Console.',
+          'Google sign-in failed. Add the exact redirect URI below to Google Cloud Console → Credentials → OAuth client → Authorized redirect URIs.',
+        redirect_uri_mismatch:
+          'Google redirect URI mismatch. Copy the redirect URI below into Google Cloud Console → Credentials → your OAuth client → Authorized redirect URIs, then try again.',
       };
       let message = messages[error] ?? messages.oauth;
       if (detail) message += ` (${detail})`;

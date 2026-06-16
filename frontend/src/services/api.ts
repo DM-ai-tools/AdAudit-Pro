@@ -73,16 +73,18 @@ export const authApi = {
     options: {
       consent?: boolean;
       reconnect?: boolean;
+      selectAccount?: boolean;
       apiBase?: string;
       sessionToken?: string | null;
       loginHint?: string | null;
     } = {}
   ) => {
-    const { consent = false, reconnect = false, apiBase = '', sessionToken, loginHint } = options;
+    const { consent = false, reconnect = false, selectAccount = false, apiBase = '', sessionToken, loginHint } = options;
     const params = new URLSearchParams({ returnTo });
     if (ads) params.set('ads', 'true');
     if (consent) params.set('consent', 'true');
     if (reconnect) params.set('reconnect', 'true');
+    if (selectAccount) params.set('select_account', 'true');
     if (sessionToken) params.set('session', sessionToken);
     if (loginHint) params.set('login_hint', loginHint);
     const path = `/api/auth/google?${params.toString()}`;

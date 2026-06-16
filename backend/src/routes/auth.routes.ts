@@ -1,5 +1,6 @@
 import { Router, Response } from 'express';
 import { env } from '../config/env.js';
+import { resolveOAuthApiBase, resolveOAuthRedirectUri } from '../config/oauth-url.js';
 import { signToken, verifyToken, JwtPayload } from '../utils/jwt.js';
 import { authMiddleware, optionalAuth, AuthRequest } from '../middleware/auth.js';
 import { findOrCreateUser, getMe, getUserByEmail } from '../services/audit.service.js';
@@ -56,33 +57,29 @@ function resolveAuthUser(req: AuthRequest): JwtPayload | undefined {
   return undefined;
 }
 
-function apiBaseUrl(): string {
-  if (env.isProduction) {
-    if (env.railwayPublicDomain) return `https://${env.railwayPublicDomain}`;
-    return env.clientUrl.replace(/\/$/, '');
-  }
-  return `http://localhost:${env.port}`;
-}
-
 function buildGoogleOAuthUrl(options: {
   returnTo: string;
   includeAds: boolean;
   forceConsent: boolean;
   loginHint?: string;
+  redirectUri: string;
+  selectAccount?: boolean;
 }): string {
   const state = encodeState(options.returnTo, options.includeAds, options.forceConsent);
   const params = new URLSearchParams({
     client_id: env.googleClientId,
-    redirect_uri: env.googleRedirectUri,
+    redirect_uri: options.redirectUri,
     response_type: 'code',
     scope: buildGoogleScopes(options.includeAds),
     access_type: 'offline',
     state,
   });
 
-  // ONLY force consent when explicitly reconnecting or new-user retry from callback.
-  // Never set prompt=select_account — it re-triggers Google login/OTP unnecessarily.
-  if (options.forceConsent) {
+  if (options.selectAccount && options.forceConsent) {
+    params.set('prompt', 'select_account consent');
+  } else if (options.selectAccount) {
+    params.set('prompt', 'select_account');
+  } else if (options.forceConsent) {
     params.set('prompt', 'consent');
   }
 
@@ -114,32 +111,43 @@ router.get('/google', (req, res) => {
     typeof req.query.login_hint === 'string' ? req.query.login_hint.trim().toLowerCase() : undefined;
 
   const forceConsent = forceReconnect || consentRequested;
+  const selectAccount = req.query.select_account === 'true';
+  const redirectUri = resolveOAuthRedirectUri(req);
 
   const url = buildGoogleOAuthUrl({
     returnTo,
     includeAds,
     forceConsent,
     loginHint,
+    redirectUri,
+    selectAccount,
   });
 
   res.redirect(url);
 });
+
+function clientReturnUrl(req: import('express').Request): string {
+  return resolveOAuthApiBase(req);
+}
 
 router.get('/google/callback', async (req, res) => {
   const oauthState = req.query.state
     ? decodeState(String(req.query.state))
     : { returnTo: '/login', ads: false, consent: false };
   const { returnTo, ads: requestedAdsScope, consent: consentRequested } = oauthState;
+  const appOrigin = clientReturnUrl(req);
 
   try {
     const { code, error } = req.query;
     if (error) {
       const errCode = String(error);
-      return res.redirect(`${env.clientUrl}${returnTo}?error=${encodeURIComponent(errCode)}`);
+      return res.redirect(`${appOrigin}${returnTo}?error=${encodeURIComponent(errCode)}`);
     }
     if (!code || !env.googleClientId || !env.googleClientSecret) {
-      return res.redirect(`${env.clientUrl}${returnTo}?error=oauth`);
+      return res.redirect(`${appOrigin}${returnTo}?error=oauth`);
     }
+
+    const redirectUri = resolveOAuthRedirectUri(req);
 
     const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
@@ -148,7 +156,7 @@ router.get('/google/callback', async (req, res) => {
         code: String(code),
         client_id: env.googleClientId,
         client_secret: env.googleClientSecret,
-        redirect_uri: env.googleRedirectUri,
+        redirect_uri: redirectUri,
         grant_type: 'authorization_code',
       }),
     });
@@ -170,7 +178,7 @@ router.get('/google/callback', async (req, res) => {
         google_error: googleError,
       });
       if (googleDetail) params.set('detail', googleDetail);
-      return res.redirect(`${env.clientUrl}${returnTo}?${params.toString()}`);
+      return res.redirect(`${appOrigin}${returnTo}?${params.toString()}`);
     }
 
     const profileRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
@@ -184,7 +192,7 @@ router.get('/google/callback', async (req, res) => {
     };
 
     if (!profile.email) {
-      return res.redirect(`${env.clientUrl}${returnTo}?error=oauth_profile`);
+      return res.redirect(`${appOrigin}${returnTo}?error=oauth_profile`);
     }
 
     const normalizedEmail = profile.email.trim().toLowerCase();
@@ -218,15 +226,15 @@ router.get('/google/callback', async (req, res) => {
           consent: 'true',
           login_hint: normalizedEmail,
         });
-        return res.redirect(`${apiBaseUrl()}/api/auth/google?${retryParams}`);
+        return res.redirect(`${resolveOAuthApiBase(req)}/api/auth/google?${retryParams}`);
       }
       console.error(`New user ${profile.email} missing Google Ads refresh token after consent`);
-      return res.redirect(`${env.clientUrl}${returnTo}?error=missing_ads_consent`);
+      return res.redirect(`${appOrigin}${returnTo}?error=missing_ads_consent`);
     }
 
     if (requestedAdsScope && !updatedUser?.googleRefreshToken && isReturningUser) {
       console.error(`Returning user ${profile.email} refresh token invalid — re-grant required`);
-      return res.redirect(`${env.clientUrl}${returnTo}?error=missing_ads_consent`);
+      return res.redirect(`${appOrigin}${returnTo}?error=missing_ads_consent`);
     }
 
     if (isReturningUser) {
@@ -238,10 +246,10 @@ router.get('/google/callback', async (req, res) => {
     const token = signToken({ userId: user.id, email: user.email });
     const redirectParams = new URLSearchParams({ token });
     if (isReturningUser) redirectParams.set('returning', '1');
-    res.redirect(`${env.clientUrl}${returnTo}?${redirectParams.toString()}`);
+    res.redirect(`${appOrigin}${returnTo}?${redirectParams.toString()}`);
   } catch (err) {
     console.error('Google OAuth callback error:', err);
-    res.redirect(`${env.clientUrl}${returnTo}?error=oauth`);
+    res.redirect(`${clientReturnUrl(req)}${returnTo}?error=oauth`);
   }
 });
 
@@ -376,7 +384,9 @@ router.get('/session', authMiddleware, async (req: AuthRequest, res: Response) =
   });
 });
 
-router.get('/config', (_req, res) => {
+router.get('/config', (req, res) => {
+  const redirectUri = resolveOAuthRedirectUri(req);
+  const oauthApiBase = resolveOAuthApiBase(req);
   res.json({
     googleOAuth: !!(env.googleClientId && env.googleClientSecret),
     googleAds: !!(env.googleAdsDeveloperToken && env.googleClientId && env.googleClientSecret),
@@ -384,16 +394,18 @@ router.get('/config', (_req, res) => {
     anthropicParallelKeys: env.anthropicParallelKeys.length,
     mockData: env.useMockData,
     database: !!env.databaseUrl,
-    redirectUri: env.googleRedirectUri,
-    oauthApiBase: apiBaseUrl(),
-    authorizedOrigins: [env.clientUrl, `http://localhost:${env.port}`],
+    redirectUri,
+    oauthApiBase,
+    authorizedOrigins: [env.clientUrl, oauthApiBase, `http://localhost:${env.port}`],
   });
 });
 
-router.get('/oauth-setup', (_req, res) => {
+router.get('/oauth-setup', (req, res) => {
+  const redirectUri = resolveOAuthRedirectUri(req);
+  const oauthApiBase = resolveOAuthApiBase(req);
   res.json({
     clientId: env.googleClientId ? `${env.googleClientId.slice(0, 12)}...` : null,
-    redirectUri: env.googleRedirectUri,
+    redirectUri,
     googleAdsConfigured: !!env.googleAdsDeveloperToken,
     consentScreenUrl: 'https://console.cloud.google.com/apis/credentials/consent',
     instructions: {
@@ -427,11 +439,13 @@ router.get('/oauth-setup', (_req, res) => {
         ],
       },
       redirectUris: [
-        env.googleRedirectUri,
+        redirectUri,
+        `${oauthApiBase}/api/auth/google/callback`,
         `${env.clientUrl}/api/auth/google/callback`,
+        env.googleRedirectUri,
         'http://127.0.0.1:5000/api/auth/google/callback',
         'http://127.0.0.1:5173/api/auth/google/callback',
-      ],
+      ].filter((uri, i, arr) => uri && arr.indexOf(uri) === i),
     },
   });
 });
