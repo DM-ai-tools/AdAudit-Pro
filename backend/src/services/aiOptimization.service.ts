@@ -191,12 +191,12 @@ function intelligenceToCurrentAd(
   };
 }
 
-function resolveFinding(
+async function resolveFinding(
   auditId: string,
   findingId: string,
   findingSnapshot?: Finding
-): Finding {
-  const stored = getAuditReport(auditId);
+): Promise<Finding> {
+  const stored = await getAuditReport(auditId);
   const fromStore = stored?.findings.find((f) => f.id === findingId);
   if (fromStore) return fromStore;
   if (findingSnapshot) return { ...findingSnapshot, id: findingId };
@@ -204,12 +204,12 @@ function resolveFinding(
 }
 
 export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAdResult> {
-  const stored = getAuditReport(request.auditId);
+  const stored = await getAuditReport(request.auditId);
   if (!stored && !request.accountContext?.accountName) {
     throw new Error('Audit not found — refresh the page or run a new audit.');
   }
 
-  const finding = resolveFinding(request.auditId, request.findingId, request.findingSnapshot);
+  const finding = await resolveFinding(request.auditId, request.findingId, request.findingSnapshot);
 
   const intelligence = await gatherAuditIntelligence({
     auditId: request.auditId,

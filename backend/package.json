@@ -9,7 +9,8 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "prisma generate && tsc",
-    "start": "node dist/index.js",
+    "start": "node scripts/start-production.mjs",
+    "start:server": "node dist/index.js",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:check": "node scripts/check-db-connection.mjs",
@@ -19,6 +20,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
     "@prisma/client": "^6.5.0",
+    "prisma": "^6.5.0",
     "axios": "^1.8.4",
     "bcrypt": "^5.1.1",
     "bullmq": "^5.44.0",
@@ -41,7 +43,6 @@
     "@types/node": "^22.13.10",
     "@types/passport": "^1.0.17",
     "@types/passport-google-oauth20": "^2.0.16",
-    "prisma": "^6.5.0",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2"
   }

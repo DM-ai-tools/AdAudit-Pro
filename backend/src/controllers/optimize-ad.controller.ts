@@ -53,7 +53,7 @@ export async function handleOptimizeAd(req: AuthRequest, res: Response): Promise
       return;
     }
 
-    const audit = getAuditReport(auditId);
+    const audit = await getAuditReport(auditId);
     const userId = req.authUser?.userId ?? audit?.userId ?? accountContext?.userId;
 
     if (!userId) {

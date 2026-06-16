@@ -1,11 +1,12 @@
-import { mockStore, generateId } from './mock-store.js';
+import { generateId } from './mock-store.js';
+import { auditStore } from './audit-store.service.js';
 import {
   findOrCreateUser,
   getMe,
   getUserByEmail,
   updateUser,
 } from './user.service.js';
-import type { AuditRun, User, Account } from '../types/index.js';
+import type { AuditRun, Account } from '../types/index.js';
 import { DEFAULT_ACCOUNT } from '../audit-engine/mock-data.js';
 import { createModulesFromSelection, getAuditMetrics } from '../audit-engine/index.js';
 import { estimateMinutes } from '../audit-engine/module-queries.js';
@@ -65,7 +66,7 @@ export async function startAudit(
     goal: formatGoal(data.goal),
     isConnected: true,
   };
-  mockStore.saveAccount(account);
+  await auditStore.saveAccount(account, data.googleAdsCustomerId);
 
   const auditId = generateId('aud_');
   const estimatedMinutes = estimateMinutes(totalModules, depth, getParallelStreamCount());
@@ -128,26 +129,26 @@ export async function startAudit(
     ],
   };
 
-  mockStore.saveAudit(audit);
+  await auditStore.saveAudit(audit);
   runLiveAudit(auditId, userId, liveConfig);
   return audit;
 }
 
-export function getAuditStatus(id: string): AuditRun | null {
-  return mockStore.getAudit(id) || null;
+export async function getAuditStatus(id: string): Promise<AuditRun | null> {
+  return auditStore.getAudit(id);
 }
 
-export function getAuditReport(id: string): AuditRun | null {
-  return mockStore.getAudit(id) || null;
+export async function getAuditReport(id: string): Promise<AuditRun | null> {
+  return auditStore.getAudit(id);
 }
 
-export function getAuditLogs(id: string) {
-  const audit = mockStore.getAudit(id);
+export async function getAuditLogs(id: string) {
+  const audit = await auditStore.getAudit(id);
   return audit?.logs || [];
 }
 
-export function getAuditHealth(id: string) {
-  const audit = mockStore.getAudit(id);
+export async function getAuditHealth(id: string) {
+  const audit = await auditStore.getAudit(id);
   if (!audit) return null;
   const metrics = getAuditMetrics(audit.findings, audit.healthScores);
   return {
@@ -157,7 +158,7 @@ export function getAuditHealth(id: string) {
   };
 }
 
-export function createSharedReport(auditRunId: string, userId: string) {
+export async function createSharedReport(auditRunId: string, userId: string) {
   const token = generateId('shr_');
   const report = {
     id: generateId('sr_'),
@@ -165,14 +166,14 @@ export function createSharedReport(auditRunId: string, userId: string) {
     auditRunId,
     createdAt: new Date().toISOString(),
   };
-  mockStore.saveSharedReport(report);
+  await auditStore.saveSharedReport({ ...report, userId });
   return report;
 }
 
-export function getSharedReport(token: string) {
-  const report = mockStore.getSharedReport(token);
+export async function getSharedReport(token: string) {
+  const report = await auditStore.getSharedReport(token);
   if (!report) return null;
-  const audit = mockStore.getAudit(report.auditRunId);
+  const audit = await auditStore.getAudit(report.auditRunId);
   if (!audit) return null;
   return { report, audit };
 }

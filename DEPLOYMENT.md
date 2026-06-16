@@ -71,7 +71,9 @@ docker compose up --build
 
 ### First deploy database
 
-After linking PostgreSQL, run once locally or via Railway shell:
+Schema is applied automatically on container start (`prisma db push` in `scripts/start-production.mjs`).
+
+To sync manually (Railway shell or local against prod `DATABASE_URL`):
 
 ```bash
 cd backend && npx prisma db push

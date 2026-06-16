@@ -133,6 +133,8 @@ model AuditRun {
   dataWindowDays    Int          @default(365)
   engineVersion     String       @default("2.4.1")
   executiveSummary  String?      @db.Text
+  email             String?
+  googleAdsCustomerId String?
   startedAt         DateTime?
   completedAt       DateTime?
   estimatedMinutes  Int?

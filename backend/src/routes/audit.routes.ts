@@ -9,6 +9,7 @@ import {
   createSharedReport,
   getSharedReport,
 } from '../services/audit.service.js';
+import type { AuditRun } from '../types/index.js';
 import { handleOptimizeAd } from '../controllers/optimize-ad.controller.js';
 
 const router = Router();
@@ -37,30 +38,30 @@ router.post('/start-demo', async (req, res) => {
 });
 
 router.get('/status/:id', async (req, res) => {
-  const audit = getAuditStatus(req.params.id);
+  const audit = await getAuditStatus(req.params.id);
   if (!audit) return res.status(404).json({ error: 'Audit not found' });
   res.json({ audit: sanitizeAudit(audit) });
 });
 
 router.get('/findings/:id', async (req, res) => {
-  const audit = getAuditStatus(req.params.id);
+  const audit = await getAuditStatus(req.params.id);
   if (!audit) return res.status(404).json({ error: 'Audit not found' });
   res.json({ findings: audit.findings });
 });
 
 router.get('/report/:id', async (req, res) => {
-  const audit = getAuditReport(req.params.id);
+  const audit = await getAuditReport(req.params.id);
   if (!audit) return res.status(404).json({ error: 'Audit not found' });
   res.json({ audit: sanitizeAudit(audit) });
 });
 
 router.get('/logs/:id', async (req, res) => {
-  const logs = getAuditLogs(req.params.id);
+  const logs = await getAuditLogs(req.params.id);
   res.json({ logs });
 });
 
 router.get('/health/:id', async (req, res) => {
-  const health = getAuditHealth(req.params.id);
+  const health = await getAuditHealth(req.params.id);
   if (!health) return res.status(404).json({ error: 'Audit not found' });
   res.json(health);
 });
@@ -68,21 +69,21 @@ router.get('/health/:id', async (req, res) => {
 router.post('/share-demo', async (req, res) => {
   const { auditRunId } = req.body;
   if (!auditRunId) return res.status(400).json({ error: 'auditRunId required' });
-  const audit = getAuditStatus(auditRunId);
+  const audit = await getAuditStatus(auditRunId);
   if (!audit) return res.status(404).json({ error: 'Audit not found' });
-  const report = createSharedReport(auditRunId, audit.userId);
+  const report = await createSharedReport(auditRunId, audit.userId);
   res.json({ report, url: `/shared/${report.token}` });
 });
 
 router.post('/share', authMiddleware, async (req: AuthRequest, res: Response) => {
   const { auditRunId } = req.body;
   if (!auditRunId) return res.status(400).json({ error: 'auditRunId required' });
-  const report = createSharedReport(auditRunId, req.authUser!.userId);
+  const report = await createSharedReport(auditRunId, req.authUser!.userId);
   res.json({ report, url: `/shared/${report.token}` });
 });
 
 router.get('/shared/:token', async (req, res) => {
-  const data = getSharedReport(req.params.token);
+  const data = await getSharedReport(req.params.token);
   if (!data) return res.status(404).json({ error: 'Report not found' });
   res.json({
     report: data.report,
@@ -92,7 +93,7 @@ router.get('/shared/:token', async (req, res) => {
 
 router.get('/pdf/:id', async (req, res) => {
   try {
-    const audit = getAuditReport(req.params.id);
+    const audit = await getAuditReport(req.params.id);
     if (!audit) return res.status(404).json({ error: 'Audit not found' });
     const { generatePdf } = await import('../services/pdf.service.js');
     const pdf = await generatePdf(audit);
@@ -109,7 +110,7 @@ router.post('/optimize-ad', optionalAuth, (req: AuthRequest, res: Response) => {
   void handleOptimizeAd(req, res);
 });
 
-function sanitizeAudit(audit: ReturnType<typeof getAuditStatus>, shared = false) {
+function sanitizeAudit(audit: AuditRun | null, shared = false) {
   if (!audit) return null;
   const validFindings = audit.findings.filter((f) => !/analysis incomplete|configure anthropic/i.test(f.title));
   const metrics = validFindings.reduce(

@@ -1,4 +1,5 @@
-import { mockStore, generateId } from '../services/mock-store.js';
+import { generateId } from '../services/mock-store.js';
+import { auditStore } from '../services/audit-store.service.js';
 import { getMe } from '../services/user.service.js';
 import { fetchModuleGoogleAdsData, isGoogleAdsConfigured } from '../services/google-ads.service.js';
 import { generateExecutiveSummary } from '../ai/claude.service.js';
@@ -57,8 +58,8 @@ function createRoadmapFromFindings(findings: Finding[]): RoadmapItem[] {
   }));
 }
 
-function refreshAuditProgress(auditId: string, totalModules: number, depth: string) {
-  const audit = mockStore.getAudit(auditId);
+async function refreshAuditProgress(auditId: string, totalModules: number, depth: string) {
+  const audit = await auditStore.getAudit(auditId);
   if (!audit) return;
   const complete = audit.modules.filter((m) => m.status === 'COMPLETED').length;
   const avgProgress = audit.modules.reduce((s, m) => s + m.progress, 0) / audit.modules.length;
@@ -67,7 +68,7 @@ function refreshAuditProgress(auditId: string, totalModules: number, depth: stri
   const remaining = complete >= totalModules
     ? 0
     : Math.max(1, Math.ceil(baseEstimate * (1 - complete / totalModules)));
-  mockStore.updateAudit(auditId, {
+  await auditStore.updateAudit(auditId, {
     modulesComplete: complete,
     progress: Math.round(avgProgress),
     estimatedMinutes: remaining,
@@ -87,8 +88,8 @@ async function processSingleModule(
 ): Promise<void> {
   const slug = mod.slug;
 
-  mockStore.updateModule(auditId, slug, { status: 'RUNNING', progress: 15 });
-  mockStore.addLog(auditId, {
+  await auditStore.updateModule(auditId, slug, { status: 'RUNNING', progress: 15 });
+  await auditStore.addLog(auditId, {
     id: generateId('log_'),
     message: `▶ Starting ${mod.name}...`,
     level: 'info',
@@ -97,14 +98,14 @@ async function processSingleModule(
 
   let googleAdsData = '';
   if (refreshToken && customerId && isGoogleAdsConfigured()) {
-    mockStore.addLog(auditId, {
+    await auditStore.addLog(auditId, {
       id: generateId('log_'),
       message: `Fetching Google Ads data for ${mod.name}...`,
       level: 'info',
       createdAt: new Date().toISOString(),
     });
     googleAdsData = await fetchModuleGoogleAdsData(refreshToken, customerId, slug, dateRange, userId);
-    mockStore.updateModule(auditId, slug, { progress: 40 });
+    await auditStore.updateModule(auditId, slug, { progress: 40 });
   }
 
   if (!googleAdsData) {
@@ -119,8 +120,8 @@ async function processSingleModule(
     });
   }
 
-  mockStore.updateModule(auditId, slug, { progress: 55 });
-  mockStore.addLog(auditId, {
+  await auditStore.updateModule(auditId, slug, { progress: 55 });
+  await auditStore.addLog(auditId, {
     id: generateId('log_'),
     message: `Claude AI analyzing ${mod.name}...`,
     level: 'info',
@@ -140,12 +141,12 @@ async function processSingleModule(
     apiKey,
   });
 
-  mockStore.updateModule(auditId, slug, { progress: 90 });
+  await auditStore.updateModule(auditId, slug, { progress: 90 });
 
   for (const f of rawFindings) {
     const finding = { ...f, id: generateId('find_') };
-    mockStore.addFinding(auditId, finding);
-    mockStore.addLog(auditId, {
+    await auditStore.addFinding(auditId, finding);
+    await auditStore.addLog(auditId, {
       id: generateId('log_'),
       message: `⚡ Finding: ${finding.title.slice(0, 70)}${finding.title.length > 70 ? '...' : ''}`,
       level: 'finding',
@@ -153,18 +154,21 @@ async function processSingleModule(
     });
   }
 
-  mockStore.updateModule(auditId, slug, {
+  await auditStore.updateModule(auditId, slug, {
     status: 'COMPLETED',
     progress: 100,
     findingsCount: rawFindings.length,
   });
-  mockStore.addLog(auditId, {
+  await auditStore.addLog(auditId, {
     id: generateId('log_'),
     message: `✓ ${mod.name} complete — ${rawFindings.length} finding${rawFindings.length === 1 ? '' : 's'}`,
     level: 'success',
     createdAt: new Date().toISOString(),
   });
-  refreshAuditProgress(auditId, mockStore.getAudit(auditId)!.totalModules, config.auditDepth || 'standard');
+  const current = await auditStore.getAudit(auditId);
+  if (current) {
+    await refreshAuditProgress(auditId, current.totalModules, config.auditDepth || 'standard');
+  }
 }
 
 async function processModuleChunk(
@@ -179,7 +183,7 @@ async function processModuleChunk(
   windowDays: number,
   userId: string
 ): Promise<void> {
-  mockStore.addLog(auditId, {
+  await auditStore.addLog(auditId, {
     id: generateId('log_'),
     message: `Parallel stream ${streamIndex + 1} started (${modules.length} module${modules.length === 1 ? '' : 's'})...`,
     level: 'info',
@@ -204,21 +208,21 @@ export function runLiveAudit(auditId: string, userId: string, config: LiveAuditC
       const customerId = config.googleAdsCustomerId?.replace(/-/g, '');
       const windowDays = config.auditWindow || 365;
       const dateRange = dateRangeForWindow(windowDays);
-      const audit = mockStore.getAudit(auditId);
+      const audit = await auditStore.getAudit(auditId);
       if (!audit) return;
 
       const parallelKeys = getParallelApiKeys();
       const streamCount = parallelKeys.length;
 
       if (refreshToken && customerId && isGoogleAdsConfigured()) {
-        mockStore.addLog(auditId, {
+        await auditStore.addLog(auditId, {
           id: generateId('log_'),
           message: 'Google Ads API connected — fetching live account data...',
           level: 'success',
           createdAt: new Date().toISOString(),
         });
       } else {
-        mockStore.addLog(auditId, {
+        await auditStore.addLog(auditId, {
           id: generateId('log_'),
           message: 'Using account profile data — connect Google Ads for deeper API metrics.',
           level: 'info',
@@ -226,7 +230,7 @@ export function runLiveAudit(auditId: string, userId: string, config: LiveAuditC
         });
       }
 
-      mockStore.addLog(auditId, {
+      await auditStore.addLog(auditId, {
         id: generateId('log_'),
         message: streamCount >= 3
           ? `Claude AI engine initialized — ${streamCount} parallel streams (${Math.ceil(audit.modules.length / streamCount)} modules each)...`
@@ -271,7 +275,9 @@ export function runLiveAudit(auditId: string, userId: string, config: LiveAuditC
         }
       }
 
-      const finalAudit = mockStore.getAudit(auditId)!;
+      const finalAudit = await auditStore.getAudit(auditId);
+      if (!finalAudit) return;
+
       const summaryKey = getPrimaryApiKey() || parallelKeys[0];
       const healthScores = await generateHealthScoresFromFindings(
         finalAudit.findings,
@@ -290,10 +296,10 @@ export function runLiveAudit(auditId: string, userId: string, config: LiveAuditC
         ? Math.round(healthScores.reduce((s, h) => s + h.score, 0) / healthScores.length)
         : 50;
 
-      mockStore.setHealthScores(auditId, healthScores);
-      mockStore.setRoadmap(auditId, roadmap);
+      await auditStore.setHealthScores(auditId, healthScores);
+      await auditStore.setRoadmap(auditId, roadmap);
 
-      mockStore.addLog(auditId, {
+      await auditStore.addLog(auditId, {
         id: generateId('log_'),
         message: 'Generating executive summary with Claude...',
         level: 'info',
@@ -306,7 +312,7 @@ export function runLiveAudit(auditId: string, userId: string, config: LiveAuditC
         healthScore
       );
 
-      mockStore.updateAudit(auditId, {
+      await auditStore.updateAudit(auditId, {
         status: 'COMPLETED',
         progress: 100,
         modulesComplete: finalAudit.totalModules,
@@ -315,7 +321,7 @@ export function runLiveAudit(auditId: string, userId: string, config: LiveAuditC
         estimatedMinutes: 0,
       });
 
-      mockStore.addLog(auditId, {
+      await auditStore.addLog(auditId, {
         id: generateId('log_'),
         message: '✓ Audit complete — report ready.',
         level: 'success',
@@ -323,8 +329,8 @@ export function runLiveAudit(auditId: string, userId: string, config: LiveAuditC
       });
     } catch (err) {
       console.error('Live audit failed:', err);
-      mockStore.updateAudit(auditId, { status: 'FAILED' });
-      mockStore.addLog(auditId, {
+      await auditStore.updateAudit(auditId, { status: 'FAILED' });
+      await auditStore.addLog(auditId, {
         id: generateId('log_'),
         message: `Audit failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
         level: 'error',

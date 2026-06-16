@@ -148,7 +148,7 @@ export async function gatherAuditIntelligence(options: {
   };
   auditFindingsSnapshot?: Finding[];
 }): Promise<AuditIntelligence> {
-  const stored = getAuditReport(options.auditId);
+  const stored = await getAuditReport(options.auditId);
   const findings = buildFindingsFromAudit(
     stored?.findings ?? options.auditFindingsSnapshot ?? []
   );

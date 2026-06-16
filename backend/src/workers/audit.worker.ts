@@ -26,7 +26,7 @@ export function startWorkers() {
       async (job) => {
         const { auditId } = job.data;
         await job.updateProgress(10);
-        const audit = getAuditStatus(auditId);
+        const audit = await getAuditStatus(auditId);
         if (!audit) throw new Error('Audit not found');
         await job.updateProgress(100);
         return { auditId, status: audit.status };
