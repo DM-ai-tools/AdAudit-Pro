@@ -3,7 +3,7 @@ import { getMe } from './user.service.js';
 import { fetchModuleGoogleAdsData, isGoogleAdsConfigured } from './google-ads.service.js';
 import type { Finding } from '../types/index.js';
 
-export type OptimizationScenario = 'CREATE_NEW' | 'REPLACE_EXISTING';
+export type OptimizationScenario = 'REPLACE_EXISTING' | 'CREATE_ADS' | 'CREATE_STRATEGY';
 
 export interface LiveAdRow {
   campaignId?: string;
@@ -139,12 +139,14 @@ export async function gatherAuditIntelligence(options: {
   auditId: string;
   userId: string;
   dataWindowDays?: number;
+  campaignId?: string;
   accountContext?: {
     accountName?: string;
     goal?: string;
     monthlySpend?: number;
     googleAdsCustomerId?: string;
     websiteUrl?: string;
+    industry?: string;
   };
   auditFindingsSnapshot?: Finding[];
 }): Promise<AuditIntelligence> {
@@ -218,8 +220,26 @@ export async function gatherAuditIntelligence(options: {
     }
   }
 
-  const scenario: OptimizationScenario = ads.length > 0 ? 'REPLACE_EXISTING' : 'CREATE_NEW';
-  const primaryAd = ads.length > 0 ? ads[0] : null;
+  if (options.campaignId && campaigns.length) {
+    campaigns = campaigns.filter((row) => {
+      const r = row as { campaign?: { id?: string } };
+      return r.campaign?.id === options.campaignId;
+    });
+    ads = ads.filter((a) => a.campaignId === options.campaignId);
+    keywords = keywords.filter((row) => {
+      const r = row as { campaign?: { id?: string } };
+      return r.campaign?.id === options.campaignId;
+    });
+  }
+
+  let scenario: OptimizationScenario = 'CREATE_STRATEGY';
+  if (ads.length > 0) scenario = 'REPLACE_EXISTING';
+  else if (campaigns.length > 0) scenario = 'CREATE_ADS';
+
+  const primaryAd =
+    ads.length > 0
+      ? [...ads].sort((a, b) => (b.impressions ?? 0) - (a.impressions ?? 0))[0]
+      : null;
 
   return {
     business,

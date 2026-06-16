@@ -15,6 +15,26 @@ export interface GoogleAdsAccount {
   timezone: string;
   accountType: string;
   monthlySpend: number;
+  websiteUrl?: string;
+  industry?: string;
+  selectable?: boolean;
+  parentManagerId?: string;
+  managerName?: string;
+}
+
+export interface GoogleAdsCampaign {
+  id: string;
+  resourceName: string;
+  name: string;
+  type: string;
+  status: string;
+  budgetDaily: number;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+  ctr: number;
+  cost: number;
+  adCount: number;
 }
 
 export interface AuditModuleOption {
@@ -56,6 +76,8 @@ export interface StartAuditPayload {
   name?: string;
   goal?: string;
   campaignCount?: number;
+  selectedCampaignIds?: string[];
+  websiteUrl?: string;
 }
 
 export interface AuditDepthOption {

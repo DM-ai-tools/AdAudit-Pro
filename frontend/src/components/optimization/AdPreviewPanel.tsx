@@ -1,32 +1,53 @@
+import { useState } from 'react';
 import clsx from 'clsx';
+import { ChevronLeft, ChevronRight, Link2, Phone, MapPin } from 'lucide-react';
 import type { PreviewDevice } from '../../types/optimization';
 
 interface AdPreviewPanelProps {
   headlines: string[];
   descriptions: string[];
   displayUrl?: string;
+  displayPaths?: { path1?: string; path2?: string };
+  sitelinks?: string[];
+  callouts?: string[];
+  structuredSnippets?: string[];
   device: PreviewDevice;
   onDeviceChange: (d: PreviewDevice) => void;
   variant?: 'current' | 'optimized';
+  finalUrl?: string;
 }
 
 export function AdPreviewPanel({
   headlines,
   descriptions,
   displayUrl = 'www.example.com',
+  displayPaths,
+  sitelinks = [],
+  callouts = [],
+  structuredSnippets = [],
   device,
   onDeviceChange,
   variant = 'optimized',
+  finalUrl,
 }: AdPreviewPanelProps) {
-  const headline = headlines[0] ?? 'Your Headline Here';
-  const headline2 = headlines[1] ?? '';
-  const description = descriptions[0] ?? 'Your ad description will appear here.';
+  const [headlineIdx, setHeadlineIdx] = useState(0);
+  const [descIdx, setDescIdx] = useState(0);
+
+  const cleanUrl = displayUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
+  const path1 = displayPaths?.path1;
+  const path2 = displayPaths?.path2;
+  const urlLine = path1
+    ? `${cleanUrl}${path2 ? ` › ${path1} › ${path2}` : ` › ${path1}`}`
+    : cleanUrl;
+
+  const headline = headlines[headlineIdx] ?? headlines[0] ?? 'Your Headline Here';
+  const description = descriptions[descIdx] ?? descriptions[0] ?? 'Your ad description will appear here.';
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
         <span className="text-muted text-xs uppercase tracking-wider">
-          {variant === 'optimized' ? 'AI Preview' : 'Current Ad'}
+          {variant === 'optimized' ? 'AI Optimized Preview' : 'Current Ad Preview'}
         </span>
         <div className="flex gap-1 bg-navy rounded-lg p-0.5 border border-border">
           {(['mobile', 'desktop'] as PreviewDevice[]).map((d) => (
@@ -45,41 +66,160 @@ export function AdPreviewPanel({
         </div>
       </div>
 
+      {/* Google SERP mock */}
       <div
         className={clsx(
-          'rounded-xl border transition-all duration-300',
+          'rounded-xl border transition-all duration-300 overflow-hidden',
           variant === 'optimized'
             ? 'border-teal/40 bg-gradient-to-br from-teal/5 to-navy glow-teal'
             : 'border-border bg-navy/50',
-          device === 'mobile' ? 'max-w-[280px] mx-auto p-3' : 'p-4'
+          device === 'mobile' ? 'max-w-[320px] mx-auto' : 'w-full'
         )}
       >
-        <div className="flex items-center gap-1 mb-1">
-          <span className="text-[10px] font-bold text-teal bg-teal/10 px-1 rounded">Ad</span>
-          <span className="text-muted text-[10px] truncate">{displayUrl}</span>
+        <div className={clsx('bg-white/5', device === 'mobile' ? 'p-3' : 'p-5')}>
+          <div className="flex items-center gap-1.5 mb-1">
+            <span className="text-[9px] font-bold text-teal bg-teal/15 px-1.5 py-0.5 rounded">Sponsored</span>
+          </div>
+          <div className="flex items-center gap-1 mb-1">
+            <span className="text-[10px] text-muted truncate">{urlLine}</span>
+          </div>
+          <h3
+            className={clsx(
+              'text-blue-400 font-medium leading-snug mb-1.5 hover:underline cursor-default',
+              device === 'mobile' ? 'text-[15px]' : 'text-lg'
+            )}
+          >
+            {headline}
+          </h3>
+          <p className={clsx('text-gray-300 leading-relaxed', device === 'mobile' ? 'text-xs' : 'text-sm')}>
+            {description}
+          </p>
+          {finalUrl && (
+            <p className="text-[10px] text-teal/80 mt-2 flex items-center gap-1 truncate">
+              <Link2 size={10} /> {finalUrl}
+            </p>
+          )}
         </div>
-        <div className={clsx('text-blue-400 font-medium leading-snug mb-1', device === 'mobile' ? 'text-sm' : 'text-base')}>
-          {headline}
-          {headline2 && ` · ${headline2}`}
-        </div>
-        <p className={clsx('text-muted leading-relaxed', device === 'mobile' ? 'text-[11px]' : 'text-xs')}>
-          {description}
-        </p>
-        {device === 'desktop' && descriptions[1] && (
-          <p className="text-muted text-xs mt-1 leading-relaxed">{descriptions[1]}</p>
+
+        {/* Ad extensions preview */}
+        {(sitelinks.length > 0 || callouts.length > 0) && (
+          <div className="border-t border-border/60 px-3 py-2.5 space-y-2 bg-panel/30">
+            {sitelinks.length > 0 && (
+              <div className="flex flex-wrap gap-x-3 gap-y-1">
+                {sitelinks.slice(0, 4).map((link, i) => (
+                  <span key={i} className="text-[11px] text-blue-400/90">{link}</span>
+                ))}
+              </div>
+            )}
+            {callouts.length > 0 && (
+              <p className="text-[10px] text-muted leading-relaxed">
+                {callouts.slice(0, 4).join(' · ')}
+              </p>
+            )}
+            {structuredSnippets.length > 0 && (
+              <p className="text-[10px] text-muted">
+                {structuredSnippets.slice(0, 5).join(', ')}
+              </p>
+            )}
+          </div>
         )}
       </div>
 
-      {variant === 'optimized' && headlines.length > 1 && (
-        <div className="flex flex-wrap gap-1">
-          {headlines.slice(0, 4).map((h, i) => (
-            <span key={i} className="text-[10px] bg-panel border border-border rounded px-2 py-0.5 text-muted truncate max-w-[120px]">
-              H{i + 1}: {h}
+      {/* RSA headline / description rotator */}
+      {headlines.length > 1 && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-muted uppercase tracking-wide">
+              Headline {headlineIdx + 1} of {headlines.length}
             </span>
-          ))}
-          {headlines.length > 4 && (
-            <span className="text-[10px] text-orange">+{headlines.length - 4} more</span>
-          )}
+            <div className="flex gap-1">
+              <button
+                type="button"
+                className="p-1 rounded border border-border text-muted hover:text-white disabled:opacity-30"
+                disabled={headlineIdx === 0}
+                onClick={() => setHeadlineIdx((i) => Math.max(0, i - 1))}
+              >
+                <ChevronLeft size={14} />
+              </button>
+              <button
+                type="button"
+                className="p-1 rounded border border-border text-muted hover:text-white disabled:opacity-30"
+                disabled={headlineIdx >= headlines.length - 1}
+                onClick={() => setHeadlineIdx((i) => Math.min(headlines.length - 1, i + 1))}
+              >
+                <ChevronRight size={14} />
+              </button>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
+            {headlines.map((h, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => setHeadlineIdx(i)}
+                className={clsx(
+                  'text-[10px] rounded px-2 py-1 border truncate max-w-full text-left',
+                  i === headlineIdx
+                    ? 'border-orange/50 bg-orange/10 text-white'
+                    : 'border-border text-muted hover:border-orange/30'
+                )}
+              >
+                H{i + 1}: {h} <span className="opacity-50">({h.length})</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {descriptions.length > 1 && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-muted uppercase tracking-wide">
+              Description {descIdx + 1} of {descriptions.length}
+            </span>
+            <div className="flex gap-1">
+              <button
+                type="button"
+                className="p-1 rounded border border-border text-muted hover:text-white disabled:opacity-30"
+                disabled={descIdx === 0}
+                onClick={() => setDescIdx((i) => Math.max(0, i - 1))}
+              >
+                <ChevronLeft size={14} />
+              </button>
+              <button
+                type="button"
+                className="p-1 rounded border border-border text-muted hover:text-white disabled:opacity-30"
+                disabled={descIdx >= descriptions.length - 1}
+                onClick={() => setDescIdx((i) => Math.min(descriptions.length - 1, i + 1))}
+              >
+                <ChevronRight size={14} />
+              </button>
+            </div>
+          </div>
+          <div className="space-y-1">
+            {descriptions.map((d, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => setDescIdx(i)}
+                className={clsx(
+                  'w-full text-left text-[10px] rounded px-2 py-1.5 border',
+                  i === descIdx
+                    ? 'border-teal/50 bg-teal/10 text-white'
+                    : 'border-border text-muted hover:border-teal/30'
+                )}
+              >
+                D{i + 1}: {d} <span className="opacity-50">({d.length})</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {variant === 'optimized' && (
+        <div className="flex flex-wrap gap-3 text-[10px] text-muted pt-1">
+          <span className="flex items-center gap-1"><Phone size={10} /> Call extension ready</span>
+          <span className="flex items-center gap-1"><MapPin size={10} /> Location targeting from account</span>
         </div>
       )}
     </div>

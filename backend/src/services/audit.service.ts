@@ -25,6 +25,7 @@ export interface StartAuditConfig {
   auditDepth?: string;
   auditWindow?: number;
   selectedModules?: string[];
+  selectedCampaignIds?: string[];
   competitors?: string[];
 }
 

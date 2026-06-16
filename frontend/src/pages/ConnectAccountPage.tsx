@@ -9,6 +9,7 @@ import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
 import { StepWizard } from '../components/connect/StepWizard';
 import { AccountCard } from '../components/connect/AccountCard';
+import { CampaignCard } from '../components/connect/CampaignCard';
 import { AuditModuleCard } from '../components/connect/AuditModuleCard';
 import { ConfigSelector } from '../components/connect/ConfigSelector';
 import { ToggleSwitch } from '../components/connect/ToggleSwitch';
@@ -24,7 +25,8 @@ import type { ConnectFormData } from '../types/connect';
 const WIZARD_STEPS = [
   { id: 1, label: 'Google Login' },
   { id: 2, label: 'Select Account' },
-  { id: 3, label: 'Configure Audit' },
+  { id: 3, label: 'Select Campaigns' },
+  { id: 4, label: 'Configure Audit' },
 ];
 
 const slideVariants = {
@@ -52,16 +54,23 @@ export default function ConnectAccountPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { setAuth, hasGoogleAdsAccess, authReady, user: authUser } = useAuthStore();
   const {
-    landingData, googleProfile, selectedAccount, auditDepth, auditWindow,
+    landingData, googleProfile, selectedAccount, selectedCampaigns, auditDepth, auditWindow,
     modules, depthOptions, competitors, reportOptions, consent, wizardStep,
     whatWeAnalyze, accountStats, configSource, configLoading,
-    setLandingData, setGoogleProfile, setSelectedAccount, setAuditDepth,
+    setLandingData, setGoogleProfile, setSelectedAccount, setSelectedCampaigns, toggleCampaign, setAuditDepth,
     setAuditWindow, toggleModule, addCompetitor, updateCompetitor,
     removeCompetitor, setReportOption, setConsent, setWizardStep,
     applyAuditConfig, setConfigLoading, resetToGoogleLogin,
   } = useConnectStore();
 
   const [accounts, setAccounts] = useState<import('../types/connect').GoogleAdsAccount[]>([]);
+  const [campaigns, setCampaigns] = useState<import('../types/connect').GoogleAdsCampaign[]>([]);
+  const [campaignsLoading, setCampaignsLoading] = useState(false);
+  const [campaignsMeta, setCampaignsMeta] = useState<{
+    hasCampaigns: boolean;
+    hasAds: boolean;
+    source: string;
+  } | null>(null);
   const [accountsSource, setAccountsSource] = useState<'google_ads_api' | 'mock'>('mock');
   const [accountsReason, setAccountsReason] = useState<string | null>(null);
   const [accountsErrorDetail, setAccountsErrorDetail] = useState<string | null>(null);
@@ -80,6 +89,27 @@ export default function ConnectAccountPage() {
   const [sessionChecked, setSessionChecked] = useState(false);
   const sessionInitialized = useRef(false);
   const processedOAuthToken = useRef<string | null>(null);
+
+  const fetchCampaigns = async (customerId: string) => {
+    setCampaignsLoading(true);
+    try {
+      const { data } = await googleAdsApi.campaigns(customerId);
+      setCampaigns(data.campaigns);
+      setCampaignsMeta({
+        hasCampaigns: data.hasCampaigns,
+        hasAds: data.hasAds,
+        source: data.source,
+      });
+      if (data.account.websiteUrl && selectedAccount) {
+        setSelectedAccount({ ...selectedAccount, websiteUrl: data.account.websiteUrl, industry: data.account.industry });
+      }
+    } catch {
+      setCampaigns([]);
+      setCampaignsMeta({ hasCampaigns: false, hasAds: false, source: 'error' });
+    } finally {
+      setCampaignsLoading(false);
+    }
+  };
 
   const fetchAccounts = async () => {
     setAccountsLoading(true);
@@ -286,9 +316,9 @@ export default function ConnectAccountPage() {
 
   useEffect(() => {
     if (effectiveStep === 2 && !selectedAccount && accounts.length && !accountsLoading) {
-      const preferred =
-        accounts.find((a) => a.accountType !== 'Manager') ?? accounts[0];
-      setSelectedAccount(preferred);
+      const selectable = accounts.filter((a) => a.selectable !== false && a.accountType !== 'Manager');
+      const preferred = selectable[0] ?? accounts.find((a) => a.selectable !== false);
+      if (preferred) setSelectedAccount(preferred);
     }
   }, [effectiveStep, selectedAccount, setSelectedAccount, accounts, accountsLoading]);
 
@@ -316,9 +346,16 @@ export default function ConnectAccountPage() {
     }
   };
 
+  const goToCampaignStep = async () => {
+    if (!selectedAccount || selectedAccount.selectable === false) return;
+    setWizardStep(3);
+    setSelectedCampaigns([]);
+    await fetchCampaigns(selectedAccount.customerId);
+  };
+
   const goToConfigureStep = async () => {
     if (!selectedAccount) return;
-    setWizardStep(3);
+    setWizardStep(4);
     await loadAuditConfig(selectedAccount.customerId);
   };
 
@@ -327,6 +364,7 @@ export default function ConnectAccountPage() {
     setStartLoading(true);
     const payload = {
       googleAdsCustomerId: selectedAccount.customerId,
+      selectedCampaignIds: selectedCampaigns.map((c) => c.id),
       auditDepth,
       auditWindow,
       selectedModules: enabledModules.map((m) => m.id),
@@ -334,8 +372,8 @@ export default function ConnectAccountPage() {
       reportOptions,
       accountName: selectedAccount.name,
       monthlySpend: selectedAccount.monthlySpend,
-      campaignCount: accountStats?.activeCampaigns,
-      websiteUrl: landingData?.website || '',
+      campaignCount: selectedCampaigns.length || accountStats?.activeCampaigns,
+      websiteUrl: selectedAccount.websiteUrl || landingData?.website || '',
       email: landingData?.email || googleProfile?.email,
       name: landingData?.name || googleProfile?.name,
       goal: landingData?.goal,
@@ -359,7 +397,8 @@ export default function ConnectAccountPage() {
     }
   };
 
-  const canProceedStep2 = !!selectedAccount;
+  const canProceedStep2 = !!selectedAccount && selectedAccount.selectable !== false;
+  const canProceedStep3 = true;
 
   const accountsEmptyMessage = (() => {
     switch (accountsReason) {
@@ -408,7 +447,7 @@ export default function ConnectAccountPage() {
       <div className="max-w-7xl mx-auto px-6 py-8 lg:py-12">
         {/* Page title */}
         <div className="mb-8">
-          <Badge variant="orange" className="mb-3">Step {effectiveStep} of 3</Badge>
+          <Badge variant="orange" className="mb-3">Step {effectiveStep} of 4</Badge>
           <h1 className="text-2xl lg:text-3xl font-bold text-white mb-2">
             Connect Your Google Ads Account
           </h1>
@@ -515,24 +554,19 @@ export default function ConnectAccountPage() {
                     </Badge>
                   </div>
 
-                  {verifiedReturning && googleProfile && (
+                  {verifiedReturning && selectedAccount && (
                     <div className="mb-6 bg-teal/10 border border-teal/30 rounded-xl p-4">
-                      <p className="text-teal font-semibold text-sm">
-                        Welcome back, {googleProfile.name}!
-                      </p>
+                      <p className="text-teal font-semibold text-sm">Welcome back!</p>
                       <p className="text-muted text-xs mt-1">
-                        Signed in as <span className="text-white">{googleProfile.email}</span>.
-                        Select the Google Ads account you want to audit below.
+                        Select the Google Ads business account you want to audit below.
                       </p>
                     </div>
                   )}
 
-                  {googleProfile && !verifiedReturning && (
+                  {!verifiedReturning && (
                     <p className="text-muted text-xs mb-4">
-                      Connected as <span className="text-white">{googleProfile.email}</span>.
-                      {' '}
                       <button type="button" className="text-orange hover:underline" onClick={() => handleGoogleLogin(true)}>
-                        Use a different Google account
+                        Switch Google account
                       </button>
                     </p>
                   )}
@@ -567,7 +601,8 @@ export default function ConnectAccountPage() {
                         key={account.id}
                         account={account}
                         selected={selectedAccount?.id === account.id}
-                        onSelect={() => setSelectedAccount(account)}
+                        onSelect={() => account.selectable !== false && account.accountType !== 'Manager' && setSelectedAccount(account)}
+                        onboardingWebsite={landingData?.website ? `https://${landingData.website.replace(/^https?:\/\//, '')}` : undefined}
                       />
                     ))}
                   </div>
@@ -578,20 +613,83 @@ export default function ConnectAccountPage() {
                       <ArrowLeft size={16} /> Back to Google login
                     </Button>
                     <Button
-                      onClick={goToConfigureStep}
-                      disabled={!canProceedStep2 || configLoading}
-                      loading={configLoading}
+                      onClick={goToCampaignStep}
+                      disabled={!canProceedStep2}
                     >
+                      Select Campaigns <ArrowRight size={16} />
+                    </Button>
+                  </div>
+                </motion.div>
+              )}
+
+              {/* STEP 3 — Select Campaigns */}
+              {effectiveStep === 3 && (
+                <motion.div
+                  key="step3-campaigns"
+                  variants={slideVariants}
+                  initial="enter"
+                  animate="center"
+                  exit="exit"
+                  transition={{ duration: 0.3 }}
+                >
+                  <div className="mb-6">
+                    <h2 className="text-white font-bold text-lg mb-1">Select Campaigns To Optimize</h2>
+                    <p className="text-muted text-sm">
+                      {selectedAccount?.name}
+                      {selectedAccount?.websiteUrl && (
+                        <span className="text-teal"> — {selectedAccount.websiteUrl.replace(/^https?:\/\//, '')}</span>
+                      )}
+                    </p>
+                    <p className="text-muted text-xs mt-1 font-mono">
+                      Google Ads ID: {selectedAccount?.customerId}
+                    </p>
+                  </div>
+
+                  {campaignsLoading ? (
+                    <div className="flex items-center justify-center py-12 text-muted">
+                      <Loader2 className="animate-spin mr-2" size={20} /> Loading campaigns from Google Ads...
+                    </div>
+                  ) : campaigns.length === 0 ? (
+                    <div className="bg-orange/5 border border-orange/20 rounded-xl p-6 text-center">
+                      <p className="text-white font-semibold text-sm mb-2">No campaigns found</p>
+                      <p className="text-muted text-xs">
+                        Claude will analyze your business website and audit findings to recommend a full
+                        campaign strategy, ad groups, keywords, and Responsive Search Ads.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <p className="text-muted text-xs">
+                        Select one or more campaigns to include in the audit and AI optimization scope.
+                        {campaignsMeta && !campaignsMeta.hasAds && ' Some campaigns have no ads — AI will generate new RSAs.'}
+                      </p>
+                      {campaigns.map((campaign) => (
+                        <CampaignCard
+                          key={campaign.id}
+                          campaign={campaign}
+                          selected={selectedCampaigns.some((c) => c.id === campaign.id)}
+                          onToggle={() => toggleCampaign(campaign)}
+                          currency={selectedAccount?.currency}
+                        />
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="flex justify-between mt-8 pt-6 border-t border-border">
+                    <Button variant="ghost" onClick={() => setWizardStep(2)}>
+                      <ArrowLeft size={16} /> Back
+                    </Button>
+                    <Button onClick={goToConfigureStep} disabled={!canProceedStep3}>
                       Configure Audit <ArrowRight size={16} />
                     </Button>
                   </div>
                 </motion.div>
               )}
 
-              {/* STEP 3 — Configure Audit */}
-              {effectiveStep === 3 && (
+              {/* STEP 4 — Configure Audit */}
+              {effectiveStep === 4 && (
                 <motion.div
-                  key="step3"
+                  key="step4"
                   variants={slideVariants}
                   initial="enter"
                   animate="center"
@@ -751,7 +849,7 @@ export default function ConnectAccountPage() {
                   </label>
 
                   <div className="flex justify-between pt-6 border-t border-border">
-                    <Button variant="ghost" onClick={() => setWizardStep(2)}>
+                    <Button variant="ghost" onClick={() => setWizardStep(3)}>
                       <ArrowLeft size={16} /> Back
                     </Button>
                     <Button

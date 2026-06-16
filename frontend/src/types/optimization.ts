@@ -12,7 +12,7 @@ export type OptimizationVariation =
   | 'more-variations'
   | 'aggressive-cta';
 
-export type OptimizationScenario = 'CREATE_NEW' | 'REPLACE_EXISTING';
+export type OptimizationScenario = 'REPLACE_EXISTING' | 'CREATE_ADS' | 'CREATE_STRATEGY';
 
 export interface CurrentAdData {
   headlines: string[];
@@ -47,6 +47,14 @@ export interface OptimizedAdContent {
     sitelinks?: string[];
     callouts?: string[];
     structuredSnippets?: string[];
+  };
+  campaignStrategy?: {
+    campaignName?: string;
+    campaignType?: string;
+    dailyBudget?: number;
+    adGroups?: Array<{ name: string; keywords: string[] }>;
+    negativeKeywords?: string[];
+    competitorInsights?: string[];
   };
   improvementReasoning: string;
   predictedImpact: {

@@ -51,6 +51,6 @@ export function buildAdPreview(
     description2: device === 'desktop' ? descriptions[1] : undefined,
     callouts: optimized.adExtensions?.callouts ?? [],
     sitelinks: optimized.adExtensions?.sitelinks ?? [],
-    scenario: options.scenario ?? 'CREATE_NEW',
+    scenario: options.scenario ?? 'CREATE_ADS',
   };
 }

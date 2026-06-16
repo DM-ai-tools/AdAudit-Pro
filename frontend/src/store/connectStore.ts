@@ -4,6 +4,7 @@ import type {
   ConnectFormData,
   GoogleProfile,
   GoogleAdsAccount,
+  GoogleAdsCampaign,
   AuditDepth,
   AuditWindow,
   ReportOptions,
@@ -26,6 +27,7 @@ interface ConnectState {
   landingData: ConnectFormData | null;
   googleProfile: GoogleProfile | null;
   selectedAccount: GoogleAdsAccount | null;
+  selectedCampaigns: GoogleAdsCampaign[];
   auditDepth: AuditDepth;
   auditWindow: AuditWindow;
   modules: AuditModuleOption[];
@@ -42,6 +44,8 @@ interface ConnectState {
   setLandingData: (data: ConnectFormData) => void;
   setGoogleProfile: (profile: GoogleProfile | null) => void;
   setSelectedAccount: (account: GoogleAdsAccount | null) => void;
+  setSelectedCampaigns: (campaigns: GoogleAdsCampaign[]) => void;
+  toggleCampaign: (campaign: GoogleAdsCampaign) => void;
   setAuditDepth: (depth: AuditDepth) => void;
   setAuditWindow: (window: AuditWindow) => void;
   setModules: (modules: AuditModuleOption[]) => void;
@@ -91,6 +95,7 @@ export const useConnectStore = create<ConnectState>()(
   landingData: null,
   googleProfile: null,
   selectedAccount: null,
+  selectedCampaigns: [],
   auditDepth: 'standard',
   auditWindow: 365,
   modules: initialModules.map((m) => ({ ...m })),
@@ -106,7 +111,17 @@ export const useConnectStore = create<ConnectState>()(
 
   setLandingData: (data) => set({ landingData: data }),
   setGoogleProfile: (profile) => set({ googleProfile: profile }),
-  setSelectedAccount: (account) => set({ selectedAccount: account }),
+  setSelectedAccount: (account) => set({ selectedAccount: account, selectedCampaigns: [] }),
+  setSelectedCampaigns: (campaigns) => set({ selectedCampaigns: campaigns }),
+  toggleCampaign: (campaign) => {
+    const current = get().selectedCampaigns;
+    const exists = current.some((c) => c.id === campaign.id);
+    set({
+      selectedCampaigns: exists
+        ? current.filter((c) => c.id !== campaign.id)
+        : [...current, campaign],
+    });
+  },
   setAuditDepth: (depth) =>
     set({
       auditDepth: depth,
@@ -163,6 +178,7 @@ export const useConnectStore = create<ConnectState>()(
     set({
       googleProfile: null,
       selectedAccount: null,
+      selectedCampaigns: [],
       wizardStep: 1,
       configSource: null,
       accountStats: null,
@@ -174,6 +190,7 @@ export const useConnectStore = create<ConnectState>()(
       landingData: null,
       googleProfile: null,
       selectedAccount: null,
+      selectedCampaigns: [],
       auditDepth: 'standard',
       auditWindow: 365,
       modules: initialModules.map((m) => ({ ...m })),

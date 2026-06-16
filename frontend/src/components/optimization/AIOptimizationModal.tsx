@@ -52,7 +52,14 @@ export function AIOptimizationModal({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [optimizationId, setOptimizationId] = useState<string | null>(null);
-  const [scenario, setScenario] = useState<OptimizationScenario>('CREATE_NEW');
+  const [scenario, setScenario] = useState<OptimizationScenario>('CREATE_ADS');
+
+  const scenarioLabel =
+    scenario === 'REPLACE_EXISTING'
+      ? 'Optimize Existing Ads'
+      : scenario === 'CREATE_ADS'
+        ? 'Create Ads In Campaign'
+        : 'New Campaign Strategy';
   const [dataSource, setDataSource] = useState<'live' | 'audit_only'>('audit_only');
   const [intelligenceSummary, setIntelligenceSummary] = useState<IntelligenceSummary | null>(null);
   const [originalAd, setOriginalAd] = useState<CurrentAdData | null>(null);
@@ -210,11 +217,13 @@ export function AIOptimizationModal({
               {scenario && !loading && (
                 <span className={clsx(
                   'ml-4 px-3 py-1 rounded-full text-xs font-semibold border',
-                  scenario === 'CREATE_NEW'
-                    ? 'border-teal/40 text-teal bg-teal/10'
-                    : 'border-orange/40 text-orange bg-orange/10'
+                  scenario === 'REPLACE_EXISTING'
+                    ? 'border-orange/40 text-orange bg-orange/10'
+                    : scenario === 'CREATE_ADS'
+                      ? 'border-teal/40 text-teal bg-teal/10'
+                      : 'border-purple-400/40 text-purple-300 bg-purple-500/10'
                 )}>
-                  {scenario === 'CREATE_NEW' ? 'Create New Ad' : 'Replace & Optimize'}
+                  {scenarioLabel}
                 </span>
               )}
             </div>
@@ -299,9 +308,18 @@ export function AIOptimizationModal({
                 <div className="bg-panel border border-red-500/20 rounded-2xl p-5 space-y-4">
                   <h3 className="text-white font-semibold flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full bg-red-400" />
-                    {scenario === 'CREATE_NEW' ? 'Placeholder / Weak Ad' : 'Current Ad'}
+                    {scenario === 'CREATE_STRATEGY' ? 'No Campaign Yet' : scenario === 'CREATE_ADS' ? 'Campaign — No Ads' : 'Current Ad'}
                   </h3>
-                  <AdPreviewPanel headlines={originalAd.headlines} descriptions={originalAd.descriptions} displayUrl={displayUrl} device={previewDevice} onDeviceChange={setPreviewDevice} variant="current" />
+                  <AdPreviewPanel
+                    headlines={originalAd.headlines}
+                    descriptions={originalAd.descriptions}
+                    displayUrl={displayUrl}
+                    displayPaths={{ path1: originalAd.displayPath1, path2: originalAd.displayPath2 }}
+                    device={previewDevice}
+                    onDeviceChange={setPreviewDevice}
+                    variant="current"
+                    finalUrl={originalAd.finalUrls?.[0] ?? websiteUrl}
+                  />
                   <div className="grid grid-cols-3 gap-2 text-center text-xs">
                     {[
                       { l: 'CTR', v: originalAd.ctr != null ? `${originalAd.ctr}%` : '—' },
@@ -324,24 +342,33 @@ export function AIOptimizationModal({
                   <AdPreviewPanel
                     headlines={editedHeadlines}
                     descriptions={editedDescriptions}
-                    displayUrl={optimized.displayPaths?.path1 ? `${displayUrl}/${optimized.displayPaths.path1}` : displayUrl}
+                    displayUrl={displayUrl}
+                    displayPaths={optimized.displayPaths}
+                    sitelinks={optimized.adExtensions?.sitelinks}
+                    callouts={optimized.adExtensions?.callouts}
+                    structuredSnippets={optimized.adExtensions?.structuredSnippets}
                     device={previewDevice}
                     onDeviceChange={setPreviewDevice}
                     variant="optimized"
+                    finalUrl={originalAd?.finalUrls?.[0] ?? websiteUrl}
                   />
                   <p className="text-muted text-xs leading-relaxed bg-teal/5 border border-teal/20 rounded-lg p-3">
                     {optimized.improvementReasoning}
                   </p>
-                  {(optimized.adExtensions?.callouts?.length || optimized.adExtensions?.sitelinks?.length) ? (
-                    <div className="space-y-2">
-                      <p className="text-muted text-[10px] uppercase tracking-wider">Extensions</p>
-                      <div className="flex flex-wrap gap-1">
-                        {[...(optimized.adExtensions.callouts ?? []), ...(optimized.adExtensions.sitelinks ?? [])].map((ext, i) => (
-                          <span key={i} className="text-[10px] bg-navy border border-teal/20 text-teal rounded px-2 py-0.5">{ext}</span>
-                        ))}
-                      </div>
+                  {optimized.campaignStrategy && (
+                    <div className="bg-purple-500/5 border border-purple-400/20 rounded-lg p-3 space-y-2">
+                      <p className="text-purple-300 text-xs font-semibold uppercase tracking-wide">Recommended Campaign Strategy</p>
+                      {optimized.campaignStrategy.campaignName && (
+                        <p className="text-white text-sm font-medium">{optimized.campaignStrategy.campaignName}</p>
+                      )}
+                      {optimized.campaignStrategy.adGroups?.map((ag, i) => (
+                        <div key={i} className="text-xs text-muted">
+                          <span className="text-white">{ag.name}</span>
+                          {ag.keywords?.length ? `: ${ag.keywords.slice(0, 6).join(', ')}` : ''}
+                        </div>
+                      ))}
                     </div>
-                  ) : null}
+                  )}
                 </div>
               </div>
 

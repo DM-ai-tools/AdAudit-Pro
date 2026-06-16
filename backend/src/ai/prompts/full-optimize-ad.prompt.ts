@@ -47,7 +47,13 @@ export function buildFullOptimizeAdPrompt(ctx: FullOptimizeAdContext): string {
 
   return `You are a Senior Google Ads Strategist at a top performance agency. Your goal: maximize CTR, conversions, quality score, and ad relevance while reducing wasted spend.
 
-SCENARIO: ${scenario === 'CREATE_NEW' ? 'NO EXISTING ADS — generate brand-new Responsive Search Ads from scratch using audit intelligence.' : 'ADS EXIST — analyze weaknesses and generate optimized REPLACEMENT copy (do NOT suggest overwriting in-place; user will approve before publish).'}
+SCENARIO: ${
+    scenario === 'REPLACE_EXISTING'
+      ? 'CASE 1 — EXISTING CAMPAIGNS + EXISTING ADS: Analyze live ads, keywords, search terms, quality scores, and audit findings. Generate improved headlines, descriptions, CTAs, and extensions to boost performance.'
+      : scenario === 'CREATE_ADS'
+        ? 'CASE 2 — CAMPAIGN EXISTS BUT NO ADS: Generate complete Responsive Search Ads (15 headlines, 4 descriptions, display paths, extensions) based on campaign objective, keywords, landing page, and business context.'
+        : 'CASE 3 — NO CAMPAIGNS: Research the business website, services, location, and industry. Propose campaign strategy, ad groups, keyword clusters, negative keywords, competitor angles, and full RSA copy.'
+  }
 
 BUSINESS
 - Name: ${biz.name}
@@ -91,7 +97,7 @@ ${scenario === 'REPLACE_EXISTING' ? `EXISTING AD TO IMPROVE
 - Quality Score: ${currentAd.qualityScore ?? 'Unknown'}
 - Conversions: ${currentAd.conversions ?? 'Unknown'}
 - Ad strength: ${currentAd.adStrength ?? 'Unknown'}
-` : `NO LIVE ADS — generate starter RSA aligned to business + keywords.`}
+` : scenario === 'CREATE_ADS' ? `CAMPAIGNS EXIST BUT NO RSA ADS — create full Responsive Search Ads for the best-matching campaign using keyword and landing page data.` : `NO CAMPAIGNS — include a "campaignStrategy" object in JSON with recommended campaign name, type, daily budget, ad groups, keyword themes, and negative keywords.`}
 
 TONE: ${toneInstruction}
 ${variationHint ? `VARIATION: ${variationHint}` : ''}

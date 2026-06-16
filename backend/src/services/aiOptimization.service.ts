@@ -52,6 +52,14 @@ export interface OptimizedAdContent {
     callouts?: string[];
     structuredSnippets?: string[];
   };
+  campaignStrategy?: {
+    campaignName?: string;
+    campaignType?: string;
+    dailyBudget?: number;
+    adGroups?: Array<{ name: string; keywords: string[] }>;
+    negativeKeywords?: string[];
+    competitorInsights?: string[];
+  };
   improvementReasoning: string;
   predictedImpact: {
     ctrIncrease: string;
@@ -74,7 +82,9 @@ export interface OptimizeAdRequest {
     monthlySpend?: number;
     googleAdsCustomerId?: string;
     websiteUrl?: string;
+    industry?: string;
     userId?: string;
+    campaignId?: string;
   };
 }
 
@@ -135,6 +145,7 @@ function parseClaudeJson(text: string): OptimizedAdContent {
       callouts: (parsed.callouts as string[]) ?? [],
       structuredSnippets: (parsed.structuredSnippets as string[]) ?? [],
     },
+    campaignStrategy: parsed.campaignStrategy as OptimizedAdContent['campaignStrategy'],
     improvementReasoning:
       (parsed.reasoning as string) ??
       (parsed.improvementReasoning as string) ??
@@ -215,6 +226,7 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
     auditId: request.auditId,
     userId: request.userId,
     dataWindowDays: stored?.dataWindowDays,
+    campaignId: request.accountContext?.campaignId,
     accountContext: request.accountContext,
     auditFindingsSnapshot: request.auditFindingsSnapshot ?? stored?.findings,
   });

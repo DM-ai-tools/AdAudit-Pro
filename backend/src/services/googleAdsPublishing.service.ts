@@ -179,7 +179,7 @@ export async function publishOptimizedAd(request: PublishAdRequest): Promise<Pub
     adGroupResourceName?: string;
     finalUrls?: string[];
   };
-  const scenario = optimization.scenario ?? 'CREATE_NEW';
+  const scenario = optimization.scenario ?? 'CREATE_ADS';
   const previousAdResourceName =
     request.adGroupAdResourceName ?? originalAd.adGroupAdResourceName;
 

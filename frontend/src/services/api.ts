@@ -119,12 +119,28 @@ export const googleAdsApi = {
   accounts: () =>
     api.get<{
       accounts: import('../types/connect').GoogleAdsAccount[];
+      selectableAccounts?: import('../types/connect').GoogleAdsAccount[];
+      managerAccounts?: import('../types/connect').GoogleAdsAccount[];
       source: 'google_ads_api' | 'mock';
       reason: string;
       errorMessage?: string;
       googleAdsConfigured: boolean;
       hasRefreshToken: boolean;
     }>('/google-ads/accounts'),
+  campaigns: (customerId: string) =>
+    api.get<{
+      account: {
+        customerId: string;
+        name: string;
+        websiteUrl?: string;
+        industry?: string;
+        currency: string;
+      };
+      campaigns: import('../types/connect').GoogleAdsCampaign[];
+      source: 'google_ads_api' | 'mock';
+      hasCampaigns: boolean;
+      hasAds: boolean;
+    }>(`/google-ads/accounts/${encodeURIComponent(customerId)}/campaigns`),
   status: () =>
     api.get<{ googleAdsConfigured: boolean; hasRefreshToken: boolean; managerAccountId: string | null }>(
       '/google-ads/status'
