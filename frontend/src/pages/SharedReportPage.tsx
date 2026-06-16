@@ -46,9 +46,12 @@ export default function SharedReportPage() {
     );
   }
 
-  const healthScore = audit.healthScore || 38;
-  const totalImpact = audit.totalImpact || audit.findings.reduce((s, f) => s + f.impactMonthly, 0);
-  const healthLabel = getHealthLabel(healthScore);
+  const healthScore = audit.healthScore
+    ?? (audit.healthScores.length
+      ? Math.round(audit.healthScores.reduce((s, h) => s + h.score, 0) / audit.healthScores.length)
+      : null);
+  const totalImpact = audit.totalImpact ?? audit.findings.reduce((s, f) => s + f.impactMonthly, 0);
+  const healthLabel = getHealthLabel(healthScore ?? 50);
   const visibleFindings = audit.findings.slice(0, 4);
   const hiddenCount = audit.hiddenFindings || Math.max(0, (audit.totalFindings || audit.findings.length) - 4);
 
@@ -72,7 +75,7 @@ export default function SharedReportPage() {
             <Button size="sm" variant="secondary" className="!bg-teal/20 !text-teal !border-teal/30">
               <Link2 size={14} /> Shared link
             </Button>
-            <Button size="sm" variant="secondary">
+            <Button size="sm" variant="secondary" onClick={() => audit.id && window.open(auditApi.pdfUrl(audit.id), '_blank')}>
               <Download size={14} /> Download PDF
             </Button>
             <Link to="/"><Button size="sm">Run your own audit</Button></Link>
@@ -85,17 +88,17 @@ export default function SharedReportPage() {
         <section>
           <div className="flex gap-2 mb-3">
             <Badge variant="orange">Google Ads Audit</Badge>
-            <Badge variant="teal">12 Modules Complete</Badge>
+            <Badge variant="teal">{audit.modulesComplete}/{audit.totalModules} Modules Complete</Badge>
           </div>
           <p className="text-muted text-sm mb-2">
-            Generated {audit.completedAt ? new Date(audit.completedAt).toLocaleDateString() : '—'} • {audit.dataWindowDays}-day data window • Shared by Joe Smith
+            Generated {audit.completedAt ? new Date(audit.completedAt).toLocaleDateString() : '—'} • {audit.dataWindowDays}-day data window • Shared report
           </p>
           <h1 className="text-3xl font-bold text-white mb-4">
             Audit Report — <span className="text-orange">{audit.accountName}</span>
           </h1>
           <p className="text-body text-sm leading-relaxed">
-            This audit identified <span className="text-white font-semibold">{audit.totalFindings || audit.findings.length} findings</span> across
-            12 dimensions, representing an estimated <span className="text-teal font-semibold">{formatImpact(totalImpact)}</span> in
+            This audit identified <span className="text-white font-semibold">{audit.totalFindings ?? audit.findings.length} findings</span> across
+            {audit.totalModules} modules, representing an estimated <span className="text-teal font-semibold">{formatImpact(totalImpact)}</span> in
             recoverable wasted spend and optimization opportunity.
           </p>
         </section>
@@ -104,7 +107,7 @@ export default function SharedReportPage() {
         <section className="grid sm:grid-cols-2 lg:grid-cols-5 gap-4">
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="sm:col-span-2 bg-panel border border-border rounded-xl p-5">
             <div className="text-muted text-xs uppercase tracking-wider mb-2">Account Health Score</div>
-            <div className="text-5xl font-bold text-orange">{healthScore}<span className="text-muted text-2xl">/100</span></div>
+            <div className="text-5xl font-bold text-orange">{healthScore ?? '—'}<span className="text-muted text-2xl">/100</span></div>
             <Badge variant="red" className="mt-2">{healthLabel.label.split('—')[0].trim()}</Badge>
           </motion.div>
           {[
@@ -138,17 +141,17 @@ export default function SharedReportPage() {
         <section>
           <h2 className="text-white font-bold text-lg mb-4">Account Health Breakdown</h2>
           <div className="space-y-3">
-            {(audit.healthScores.length ? audit.healthScores : [
-              { dimension: 'Waste Rate', score: 22 }, { dimension: 'Quality Score Avg', score: 61 },
-              { dimension: 'Bidding Health', score: 32 }, { dimension: 'Audience Coverage', score: 48 },
-              { dimension: 'Budget Efficiency', score: 52 },
-            ]).map((h) => (
+            {audit.healthScores.length === 0 ? (
+              <p className="text-muted text-sm">No health breakdown available for this report.</p>
+            ) : (
+              audit.healthScores.map((h) => (
               <div key={h.dimension} className="flex items-center gap-4">
                 <span className="text-muted text-sm w-40 shrink-0">{h.dimension}</span>
                 <div className="flex-1"><HealthProgressBar score={h.score} /></div>
                 <span className="text-white font-bold text-sm w-8 text-right">{h.score}</span>
               </div>
-            ))}
+            ))
+            )}
           </div>
         </section>
 
@@ -196,7 +199,7 @@ export default function SharedReportPage() {
                 <p className="text-muted text-sm mb-4 text-center max-w-md">
                   The full authenticated report includes all {audit.totalFindings || audit.findings.length} findings with evidence data, recommendations, and the complete roadmap.
                 </p>
-                <Button>Request full access</Button>
+                <Link to="/login"><Button>Request full access</Button></Link>
               </div>
             </div>
           </section>
@@ -208,10 +211,12 @@ export default function SharedReportPage() {
           <p className="text-muted text-sm mb-4">Actions prioritized by financial impact and implementation effort.</p>
           <div className="grid md:grid-cols-3 gap-4">
             {[
-              { phase: '30-Day Sprint', color: 'text-red-400', border: 'border-red-500/30', items: audit.roadmapItems.filter((r) => r.phase === 'DAY_30').slice(0, 4), impact: 2148 },
-              { phase: '60-Day Scale', color: 'text-orange', border: 'border-orange/30', items: audit.roadmapItems.filter((r) => r.phase === 'DAY_60').slice(0, 3), impact: 1130 },
-              { phase: '90-Day Scale', color: 'text-teal', border: 'border-teal/30', items: audit.roadmapItems.filter((r) => r.phase === 'DAY_90').slice(0, 3), impact: 380 },
-            ].map((col) => (
+              { phase: '30-Day Sprint', color: 'text-red-400', border: 'border-red-500/30', items: audit.roadmapItems.filter((r) => r.phase === 'DAY_30').slice(0, 4) },
+              { phase: '60-Day Scale', color: 'text-orange', border: 'border-orange/30', items: audit.roadmapItems.filter((r) => r.phase === 'DAY_60').slice(0, 3) },
+              { phase: '90-Day Scale', color: 'text-teal', border: 'border-teal/30', items: audit.roadmapItems.filter((r) => r.phase === 'DAY_90').slice(0, 3) },
+            ].map((col) => {
+              const phaseImpact = col.items.reduce((s, item) => s + (item.impactMonthly || 0), 0);
+              return (
               <div key={col.phase} className={`bg-panel border ${col.border} rounded-xl p-4`}>
                 <h3 className={`font-bold text-sm mb-3 ${col.color}`}>{col.phase}</h3>
                 <ul className="space-y-2 mb-4">
@@ -223,10 +228,10 @@ export default function SharedReportPage() {
                   ))}
                 </ul>
                 <div className="text-muted text-[10px] uppercase tracking-wider">
-                  {col.phase.split('-')[0]}-DAY IMPACT: <span className="text-teal font-bold">{formatImpact(col.impact)}</span>
+                  {col.phase.split('-')[0]}-DAY IMPACT: <span className="text-teal font-bold">{formatImpact(phaseImpact)}</span>
                 </div>
               </div>
-            ))}
+            );})}
           </div>
         </section>
 

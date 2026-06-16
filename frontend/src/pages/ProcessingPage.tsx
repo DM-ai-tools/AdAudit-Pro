@@ -33,8 +33,8 @@ export default function ProcessingPage() {
     );
   }
 
-  const totalImpact = audit?.findings.reduce((s, f) => s + f.impactMonthly, 0) || 0;
-  const criticalCount = audit?.findings.filter((f) => f.severity === 'CRITICAL').length || 0;
+  const totalImpact = audit?.totalImpact ?? audit?.findings.reduce((s, f) => s + f.impactMonthly, 0) ?? 0;
+  const criticalCount = audit?.criticalCount ?? audit?.findings.filter((f) => f.severity === 'CRITICAL').length ?? 0;
   const runningModules = audit?.modules.filter((m) => m.status === 'RUNNING') || [];
 
   return (
@@ -60,8 +60,9 @@ export default function ProcessingPage() {
           <div>
             <h1 className="text-2xl font-bold text-white mb-2">Auditing your Google Ads account</h1>
             <p className="text-muted text-sm leading-relaxed">
-              Our AI engine is running {audit?.totalModules || 0} audit modules, analyzing live Google Ads
-              data with Claude. Findings appear in real-time as each module completes.
+              Claude is analyzing {audit?.totalModules || 0} modules in parallel
+              {audit?.totalModules === 12 ? ' (3 API streams × 4 modules each)' : ''}.
+              Findings and logs update live as each module completes.
             </p>
           </div>
 
@@ -210,7 +211,7 @@ export default function ProcessingPage() {
                     className="bg-navy border border-border rounded-lg p-3"
                   >
                     <div className="flex items-center justify-between mb-1">
-                      <span className="text-white text-xs font-semibold truncate flex-1">{finding.title.slice(0, 40)}...</span>
+                      <span className="text-white text-xs font-semibold truncate flex-1">{finding.title}</span>
                       <span className="text-teal text-xs font-bold ml-2">{formatImpact(finding.impactMonthly)}</span>
                     </div>
                     <p className="text-muted text-[11px] line-clamp-2 mb-2">{finding.description}</p>
@@ -226,9 +227,9 @@ export default function ProcessingPage() {
                 <p className="text-muted text-xs text-center py-8">Waiting for first findings...</p>
               )}
             </div>
-            {(audit?.modulesComplete || 0) < (audit?.totalModules || 0) && (
+            {audit?.status === 'RUNNING' && (audit?.modulesComplete || 0) < (audit?.totalModules || 0) && (
               <div className="px-4 py-2 border-t border-border text-muted text-[10px] text-center">
-                Finding live updates paused — {(audit?.totalModules || 0) - (audit?.modulesComplete || 0)} more pending modules...
+                More findings incoming — {runningModules.length} module{runningModules.length === 1 ? '' : 's'} running in parallel...
               </div>
             )}
           </div>

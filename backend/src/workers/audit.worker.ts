@@ -1,11 +1,16 @@
 import { Worker } from 'bullmq';
 import { env } from '../config/env.js';
-import { getConnection } from '../queues/index.js';
+import { getConnection, isRedisConfigured } from '../queues/index.js';
 import { getAuditStatus } from '../services/audit.service.js';
 
 export function startWorkers() {
   if (env.useMockData) {
     console.log('⚠ Mock mode — skipping BullMQ workers');
+    return;
+  }
+
+  if (!isRedisConfigured()) {
+    console.log('⚠ Redis not configured — using in-memory audit simulation');
     return;
   }
 

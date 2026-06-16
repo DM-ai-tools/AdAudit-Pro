@@ -61,66 +61,30 @@ function buildModulesFromInsights(insights: {
 }): AuditModuleConfig[] {
   const types = insights.channelTypes;
   const hasSearch = types.has('SEARCH');
-  const hasDisplay = types.has('DISPLAY');
-  const hasShopping = types.has('SHOPPING');
-  const hasPmax = types.has('PERFORMANCE_MAX');
-  const hasVideo = types.has('VIDEO') || types.has('DEMAND_GEN');
   const hasCampaigns = insights.activeCampaigns > 0;
 
-  const rules: Record<string, { available: boolean; reason?: string; desc?: string }> = {
-    campaign: {
-      available: hasCampaigns,
-      reason: hasCampaigns ? undefined : 'No active campaigns in this account',
-      desc: hasCampaigns ? `${insights.activeCampaigns} active campaign(s) detected` : undefined,
-    },
-    keyword: {
-      available: hasSearch || hasShopping,
-      reason: 'Requires Search or Shopping campaigns',
-      desc: hasSearch ? 'Search campaigns active' : undefined,
-    },
-    'search-terms': {
-      available: hasSearch,
-      reason: 'Requires Search campaigns',
-    },
-    budget: { available: hasCampaigns, reason: 'No campaign spend data' },
-    geo: { available: hasCampaigns },
-    audience: {
-      available: hasDisplay || hasPmax || hasVideo,
-      reason: 'Requires Display, Video, or Performance Max campaigns',
-    },
-    'ad-copy': {
-      available: hasSearch || hasDisplay || hasPmax,
-      reason: 'Requires Search, Display, or Performance Max campaigns',
-    },
-    'landing-pages': {
-      available: insights.landingPageCount > 0,
-      reason: 'No landing page URLs found in active ads',
-      desc: insights.landingPageCount > 0 ? `${insights.landingPageCount} landing page(s) found` : undefined,
-    },
-    bidding: { available: hasCampaigns },
-    conversion: {
-      available: true,
-      desc: insights.conversionActions > 0
-        ? `${insights.conversionActions} conversion action(s) configured`
-        : 'No conversion actions detected — audit will flag setup gaps',
-    },
-    'quality-score': {
-      available: hasSearch,
-      reason: 'Requires Search campaigns',
-    },
-    device: { available: hasCampaigns },
+  const hints: Record<string, string | undefined> = {
+    campaign: hasCampaigns ? `${insights.activeCampaigns} active campaign(s) detected` : 'No active campaigns — Claude will flag setup gaps',
+    keyword: hasSearch ? 'Search campaigns active' : 'Limited Search data — analysis based on account profile',
+    'search-terms': hasSearch ? undefined : 'No Search campaigns — will review negative keyword strategy gaps',
+    conversion: insights.conversionActions > 0
+      ? `${insights.conversionActions} conversion action(s) configured`
+      : 'No conversion actions detected — audit will flag setup gaps',
+    'landing-pages': insights.landingPageCount > 0
+      ? `${insights.landingPageCount} landing page(s) found`
+      : 'No landing page URLs found in active ads',
   };
 
   return AUDIT_MODULE_CATALOG.map((item) => {
-    const rule = rules[item.id] ?? { available: true };
+    const hint = hints[item.id];
     return {
       id: item.id,
       name: item.name,
-      description: rule.desc ?? item.description,
+      description: hint ?? item.description,
       icon: item.icon,
-      available: rule.available,
-      enabled: rule.available,
-      reason: rule.available ? undefined : rule.reason,
+      available: true,
+      enabled: true,
+      reason: undefined,
     };
   });
 }
@@ -133,8 +97,9 @@ function recommendWindow(spend30: number, spend90: number, spend365: number): Au
 
 function recommendDepth(activeCampaigns: number, spend30: number): AuditDepth {
   if (activeCampaigns > 25 || spend30 > 50000) return 'deep';
+  if (activeCampaigns === 0 && spend30 === 0) return 'standard';
   if (activeCampaigns > 8 || spend30 > 10000) return 'standard';
-  return 'quick';
+  return 'standard';
 }
 
 function mockConfig(account: GoogleAdsAccountDto): AccountAuditConfig {
@@ -171,7 +136,8 @@ function mockConfig(account: GoogleAdsAccountDto): AccountAuditConfig {
 export async function getAccountAuditConfig(
   customerId: string,
   refreshToken: string | undefined,
-  fallbackAccount?: GoogleAdsAccountDto
+  fallbackAccount?: GoogleAdsAccountDto,
+  userId?: string
 ): Promise<AccountAuditConfig | null> {
   if (!fallbackAccount) return null;
 
@@ -180,7 +146,7 @@ export async function getAccountAuditConfig(
     return null;
   }
 
-  const insights = await fetchAccountInsights(refreshToken, bareId(customerId));
+  const insights = await fetchAccountInsights(refreshToken, bareId(customerId), userId);
   if (!insights) {
     if (env.useMockData) return mockConfig(fallbackAccount);
     return null;
@@ -221,8 +187,8 @@ export async function getAccountAuditConfig(
     depthOptions: AUDIT_DEPTH_OPTIONS.map((d) => ({
       ...d,
       modules: d.id === 'quick'
-        ? QUICK_MODULE_IDS.filter((id) => modules.find((m) => m.id === id)?.available).length
-        : modules.filter((m) => m.available).length,
+        ? QUICK_MODULE_IDS.length
+        : AUDIT_MODULE_CATALOG.length,
     })),
     windowOptions: AUDIT_WINDOW_OPTIONS,
   };

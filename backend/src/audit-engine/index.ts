@@ -37,6 +37,8 @@ const MODULE_DISPLAY_NAMES: Record<string, string> = {
   'landing-pages': 'Landing Page Alignment',
   conversion: 'Conversion Tracking Audit',
   device: 'Device Performance Audit',
+  'impression-share': 'Impression Share',
+  pmax: 'PMax Placements',
 };
 
 export function createModulesFromSelection(selectedIds?: string[]): import('../types/index.js').AuditModule[] {
@@ -81,9 +83,17 @@ export function calculateHealthScore(scores: { score: number }[]): number {
 export function getAuditMetrics(findings: Finding[], healthScores?: { score: number }[]) {
   const totalImpact = findings.reduce((s, f) => s + f.impactMonthly, 0);
   const criticalCount = findings.filter((f) => f.severity === 'CRITICAL').length;
-  const healthScore = healthScores?.length
-    ? calculateHealthScore(healthScores)
-    : calculateHealthScore(MOCK_HEALTH_SCORES);
+  let healthScore: number;
+  if (healthScores?.length) {
+    healthScore = calculateHealthScore(healthScores);
+  } else if (findings.length) {
+    const penalty = criticalCount * 10
+      + findings.filter((f) => f.severity === 'HIGH').length * 5
+      + findings.filter((f) => f.severity === 'MEDIUM').length * 2;
+    healthScore = Math.max(15, 90 - penalty);
+  } else {
+    healthScore = 50;
+  }
   return { totalImpact, criticalCount, healthScore, annualOpportunity: totalImpact * 12 };
 }
 

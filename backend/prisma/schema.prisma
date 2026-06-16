@@ -67,19 +67,37 @@ enum OwnerType {
   SHARED
 }
 
-model User {
-  id            String    @id @default(cuid())
-  email         String    @unique
-  name          String
-  avatarUrl     String?
-  googleId      String?   @unique
-  passwordHash  String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+enum PublishStatus {
+  PENDING
+  PUBLISHED
+  FAILED
+  SIMULATED
+}
 
-  accounts      Account[]
-  auditRuns     AuditRun[]
-  sharedReports SharedReport[]
+enum OptimizationStatus {
+  DRAFT
+  APPROVED
+  REJECTED
+}
+
+model User {
+  id                  String    @id
+  email               String    @unique
+  name                String
+  avatarUrl           String?
+  googleId            String?   @unique
+  passwordHash        String?
+  googleRefreshToken  String?   @db.Text
+  googleAccessToken   String?   @db.Text
+  googleTokenExpiry   DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  accounts           Account[]
+  auditRuns          AuditRun[]
+  sharedReports      SharedReport[]
+  aiOptimizations    AIOptimization[]
+  publishedAdVersions PublishedAdVersion[]
 
   @@index([email])
 }
@@ -232,4 +250,60 @@ model AuditLog {
 
   @@index([auditRunId])
   @@index([createdAt])
+}
+
+model AIOptimization {
+  id                   String             @id @default(cuid())
+  userId               String
+  auditRunId           String
+  findingId            String
+  campaignId           String?
+  adGroupId            String?
+  campaignResourceName String?
+  adGroupResourceName  String?
+  scenario             String?
+  auditContext         Json?
+  originalAd           Json
+  optimizedContent     Json
+  improvementReasoning String?            @db.Text
+  predictedImpact      Json?
+  tone                 String?
+  status               OptimizationStatus @default(DRAFT)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  user                 User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  publishedVersions    PublishedAdVersion[]
+
+  @@index([userId])
+  @@index([auditRunId])
+  @@index([findingId])
+}
+
+model PublishedAdVersion {
+  id                     String        @id @default(cuid())
+  userId                 String
+  aiOptimizationId       String
+  googleAdsCustomerId    String
+  campaignId             String?
+  adGroupId              String?
+  adGroupAdResourceName  String?
+  previousAdResourceName String?
+  newAdResourceName      String?
+  originalAdSnapshot     Json?
+  optimizedAdSnapshot    Json?
+  publishedContent       Json
+  status                 PublishStatus @default(PENDING)
+  rollbackAvailable      Boolean       @default(false)
+  errorMessage           String?       @db.Text
+  performanceMetrics     Json?
+  publishedAt            DateTime?
+  rolledBackAt           DateTime?
+  createdAt              DateTime      @default(now())
+
+  user                   User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  aiOptimization         AIOptimization @relation(fields: [aiOptimizationId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([aiOptimizationId])
 }

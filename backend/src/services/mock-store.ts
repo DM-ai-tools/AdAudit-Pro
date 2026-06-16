@@ -10,37 +10,14 @@ import type {
   AuditLog,
 } from '../types/index.js';
 
-const users = new Map<string, User>();
 const accounts = new Map<string, Account>();
 const auditRuns = new Map<string, AuditRun>();
 const sharedReports = new Map<string, SharedReport>();
 
 export const mockStore = {
-  users,
   accounts,
   auditRuns,
   sharedReports,
-
-  getUser(id: string) {
-    return users.get(id);
-  },
-
-  getUserByEmail(email: string) {
-    return [...users.values()].find((u) => u.email === email);
-  },
-
-  saveUser(user: User) {
-    users.set(user.id, user);
-    return user;
-  },
-
-  updateUser(id: string, partial: Partial<User>) {
-    const user = users.get(id);
-    if (!user) return null;
-    const updated = { ...user, ...partial };
-    users.set(id, updated);
-    return updated;
-  },
 
   saveAccount(account: Account) {
     accounts.set(account.id, account);

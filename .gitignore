@@ -30,5 +30,5 @@ Thumbs.db
 # Puppeteer
 .cache/
 
-# Docker local overrides
+backend/.data/
 docker-compose.override.yml

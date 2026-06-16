@@ -27,8 +27,13 @@ export const MODULE_GAQL: Record<string, (dateRange: string) => string> = {
      FROM ad_group WHERE segments.date DURING ${d}
      ORDER BY metrics.cost_micros DESC LIMIT 20`,
   'ad-copy': (d) =>
-    `SELECT ad_group_ad.ad.responsive_search_ad.headlines, ad_group_ad.ad_strength,
-            metrics.impressions, metrics.clicks, metrics.conversions
+    `SELECT campaign.id, campaign.name, campaign.resource_name,
+            ad_group.id, ad_group.name, ad_group.resource_name,
+            ad_group_ad.resource_name, ad_group_ad.ad_strength,
+            ad_group_ad.ad.responsive_search_ad.headlines,
+            ad_group_ad.ad.responsive_search_ad.descriptions,
+            ad_group_ad.ad.final_urls,
+            metrics.impressions, metrics.clicks, metrics.conversions, metrics.cost_micros
      FROM ad_group_ad WHERE segments.date DURING ${d} AND ad_group_ad.status = 'ENABLED'
      LIMIT 20`,
   'landing-pages': (d) =>
@@ -50,6 +55,13 @@ export const MODULE_GAQL: Record<string, (dateRange: string) => string> = {
   device: (d) =>
     `SELECT segments.device, metrics.cost_micros, metrics.conversions, metrics.clicks
      FROM campaign WHERE segments.date DURING ${d} LIMIT 20`,
+  'impression-share': (d) =>
+    `SELECT campaign.name, metrics.search_impression_share, metrics.cost_micros, metrics.conversions
+     FROM campaign WHERE segments.date DURING ${d} LIMIT 20`,
+  pmax: (d) =>
+    `SELECT campaign.name, campaign.advertising_channel_type, metrics.cost_micros, metrics.conversions
+     FROM campaign WHERE campaign.advertising_channel_type = 'PERFORMANCE_MAX'
+     AND segments.date DURING ${d} LIMIT 20`,
 };
 
 export function dateRangeForWindow(days: number): string {
@@ -62,7 +74,8 @@ export function getModuleName(slug: string): string {
   return AUDIT_MODULE_CATALOG.find((m) => m.id === slug)?.name ?? slug;
 }
 
-export function estimateMinutes(moduleCount: number, depth: string): number {
+export function estimateMinutes(moduleCount: number, depth: string, parallelStreams = 1): number {
   const base = depth === 'quick' ? 8 : depth === 'deep' ? 32 : 18;
-  return Math.max(5, Math.round(base * (moduleCount / 12)));
+  const sequential = Math.max(5, Math.round(base * (moduleCount / 12)));
+  return Math.max(2, Math.ceil(sequential / Math.max(1, parallelStreams)));
 }

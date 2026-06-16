@@ -1,14 +1,14 @@
 # AdAudit Pro — production image (API + static frontend)
 FROM node:20-bookworm-slim AS frontend-build
 WORKDIR /app/frontend
-COPY frontend/package.json frontend/package-lock.json* ./
+COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
 FROM node:20-bookworm-slim AS backend-build
 WORKDIR /app/backend
-COPY backend/package.json backend/package-lock.json* ./
+COPY backend/package.json backend/package-lock.json ./
 RUN npm ci
 COPY backend/ ./
 RUN npm run build
@@ -42,15 +42,18 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 WORKDIR /app/backend
 
-COPY backend/package.json backend/package-lock.json* ./
+COPY backend/package.json backend/package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=backend-build /app/backend/dist ./dist
+COPY --from=backend-build /app/backend/node_modules/.prisma ./node_modules/.prisma
+COPY --from=backend-build /app/backend/node_modules/@prisma/client ./node_modules/@prisma/client
+COPY backend/prisma ./prisma
 COPY --from=frontend-build /app/frontend/dist /app/frontend/dist
 
 EXPOSE 5000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || 5000) + '/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
 
 CMD ["node", "dist/index.js"]

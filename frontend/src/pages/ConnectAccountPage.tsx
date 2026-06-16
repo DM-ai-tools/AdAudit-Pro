@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useLocation, useSearchParams, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  ArrowLeft, ArrowRight, CheckCircle, Loader2, Plus, Trash2, User,
+  ArrowLeft, ArrowRight, Loader2, Plus, Trash2,
 } from 'lucide-react';
 import { Logo } from '../components/layout/Logo';
 import { Button } from '../components/ui/Button';
@@ -16,7 +16,7 @@ import { SecurityCard } from '../components/connect/SecurityCard';
 import { WhatWeAnalyze } from '../components/connect/WhatWeAnalyze';
 import { SummaryCard, ProgressPreview } from '../components/connect/SummaryCard';
 import { useConnectStore } from '../store/connectStore';
-import { auditApi, authApi, googleAdsApi } from '../services/api';
+import { auditApi, authApi, googleAdsApi, LAST_GOOGLE_EMAIL_KEY } from '../services/api';
 import { useAuthStore } from '../store';
 import { AUDIT_WINDOW_OPTIONS } from '../data/auditModules';
 import type { ConnectFormData } from '../types/connect';
@@ -44,11 +44,13 @@ function GoogleIcon() {
   );
 }
 
+const CONNECT_OAUTH_DONE_KEY = 'adaudit_connect_oauth_done';
+
 export default function ConnectAccountPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { setAuth } = useAuthStore();
+  const { setAuth, hasGoogleAdsAccess, authReady, user: authUser } = useAuthStore();
   const {
     landingData, googleProfile, selectedAccount, auditDepth, auditWindow,
     modules, depthOptions, competitors, reportOptions, consent, wizardStep,
@@ -56,7 +58,7 @@ export default function ConnectAccountPage() {
     setLandingData, setGoogleProfile, setSelectedAccount, setAuditDepth,
     setAuditWindow, toggleModule, addCompetitor, updateCompetitor,
     removeCompetitor, setReportOption, setConsent, setWizardStep,
-    applyAuditConfig, setConfigLoading,
+    applyAuditConfig, setConfigLoading, resetToGoogleLogin,
   } = useConnectStore();
 
   const [accounts, setAccounts] = useState<import('../types/connect').GoogleAdsAccount[]>([]);
@@ -70,7 +72,14 @@ export default function ConnectAccountPage() {
   const [mockDataMode, setMockDataMode] = useState(false);
   const [backendOnline, setBackendOnline] = useState(true);
   const [oauthError, setOauthError] = useState<string | null>(null);
+  const [oauthErrorCode, setOauthErrorCode] = useState<string | null>(null);
   const [redirectUri, setRedirectUri] = useState<string | null>(null);
+  const [oauthApiBase, setOauthApiBase] = useState('');
+  /** True only after Google OAuth callback confirms returning user (?returning=1). */
+  const [verifiedReturning, setVerifiedReturning] = useState(false);
+  const [sessionChecked, setSessionChecked] = useState(false);
+  const sessionInitialized = useRef(false);
+  const processedOAuthToken = useRef<string | null>(null);
 
   const fetchAccounts = async () => {
     setAccountsLoading(true);
@@ -91,6 +100,51 @@ export default function ConnectAccountPage() {
     }
   };
 
+  const handleGoogleLogin = (forceReconnect = false) => {
+    if (!backendOnline) {
+      setOauthError(
+        'Backend API is not running. Run `npm run dev` from the project root and wait for the server to start on port 5000.'
+      );
+      return;
+    }
+    if (oauthConfigured) {
+      setOauthError(null);
+      setOauthErrorCode(null);
+      sessionStorage.removeItem(CONNECT_OAUTH_DONE_KEY);
+
+      // Always send user through Google OAuth so they pick the correct account.
+      const url = authApi.googleUrl('/connect-account', true, {
+        consent: forceReconnect,
+        reconnect: forceReconnect,
+        apiBase: oauthApiBase || 'http://localhost:5000',
+        loginHint: forceReconnect ? localStorage.getItem(LAST_GOOGLE_EMAIL_KEY) ?? undefined : undefined,
+      });
+      window.location.assign(url);
+      return;
+    }
+    if (!mockDataMode) {
+      setOauthError('Google OAuth is not configured on the server.');
+      return;
+    }
+    setGoogleLoading(true);
+    setOauthError(null);
+    setTimeout(() => {
+      setGoogleProfile({
+        name: landingData?.name || 'Jane Smith',
+        email: landingData?.email || 'jane@acmeplumbing.com.au',
+      });
+      setGoogleLoading(false);
+      setWizardStep(2);
+      fetchAccounts();
+    }, 400);
+  };
+
+  const tokenFromUrl = searchParams.get('token');
+  const oauthProcessing = !!tokenFromUrl || googleLoading;
+  /** Wizard step drives the UI — never skip Step 1 based on cached JWT alone. */
+  const effectiveStep = wizardStep;
+  const onAccountSelectStep = wizardStep >= 2;
+
   useEffect(() => {
     authApi.config()
       .then(({ data }) => {
@@ -98,6 +152,7 @@ export default function ConnectAccountPage() {
         setOauthConfigured(data.googleOAuth);
         setMockDataMode(data.mockData);
         if (data.redirectUri) setRedirectUri(data.redirectUri);
+        if (data.oauthApiBase) setOauthApiBase(data.oauthApiBase);
       })
       .catch(() => {
         setBackendOnline(false);
@@ -107,6 +162,32 @@ export default function ConnectAccountPage() {
       });
   }, []);
 
+  // Remember Gmail for instant login on next visit (DB check before OAuth).
+  useEffect(() => {
+    if (authUser?.email) {
+      localStorage.setItem(LAST_GOOGLE_EMAIL_KEY, authUser.email);
+    }
+  }, [authUser?.email]);
+
+  // Initialize wizard once — always Step 1 unless handling OAuth callback params.
+  useEffect(() => {
+    if (!authReady || sessionInitialized.current) return;
+    sessionInitialized.current = true;
+
+    const tokenParam = searchParams.get('token');
+    const errorParam = searchParams.get('error');
+    if (tokenParam || errorParam) {
+      setSessionChecked(true);
+      return;
+    }
+
+    sessionStorage.removeItem(CONNECT_OAUTH_DONE_KEY);
+    resetToGoogleLogin();
+    setVerifiedReturning(false);
+    setWizardStep(1);
+    setSessionChecked(true);
+  }, [authReady, searchParams, resetToGoogleLogin, setWizardStep]);
+
   // Handle Google OAuth callback
   useEffect(() => {
     const token = searchParams.get('token');
@@ -115,9 +196,10 @@ export default function ConnectAccountPage() {
     if (error) {
       const detail = searchParams.get('detail');
       const googleError = searchParams.get('google_error');
+      setOauthErrorCode(error);
       const messages: Record<string, string> = {
         access_denied:
-          'Sign-in was denied. Publish your OAuth app to Production in Google Cloud Console so users can grant access.',
+          'Google blocked sign-in (403 access_denied). AdAudit Pro is in Testing mode — your Gmail must be added as a Test user in Google Cloud Console before you can sign in.',
         missing_ads_consent:
           'Google Ads permission was not granted. Click Continue with Google again and approve access to your Google Ads data.',
         oauth_token:
@@ -128,37 +210,55 @@ export default function ConnectAccountPage() {
       let message = messages[error] ?? messages.oauth;
       if (detail) message += ` (${detail})`;
       if (googleError === 'invalid_client') {
+        setOauthErrorCode('invalid_client');
         message = 'Invalid Google OAuth client secret. Copy a fresh Client Secret from Google Cloud Console into backend/.env and restart the server.';
       }
       setOauthError(message);
+      resetToGoogleLogin();
+      setWizardStep(1);
       setSearchParams({}, { replace: true });
       return;
     }
 
-    if (!token) return;
+    setOauthErrorCode(null);
 
+    if (!token) return;
+    if (processedOAuthToken.current === token) return;
+    processedOAuthToken.current = token;
+
+    const returningVerified = searchParams.get('returning') === '1';
     setGoogleLoading(true);
     localStorage.setItem('token', token);
     authApi.me()
       .then(({ data }) => {
         if (!data.hasGoogleAdsAccess) {
           setOauthError('Google Ads permission was not granted. Please connect again and approve Google Ads access.');
+          resetToGoogleLogin();
+          setWizardStep(1);
+          setVerifiedReturning(false);
+          processedOAuthToken.current = null;
           setSearchParams({}, { replace: true });
           return;
         }
-        setAuth(token, data.user);
+        setAuth(token, data.user, data.hasGoogleAdsAccess, data.isReturningUser);
         setGoogleProfile({
           name: data.user.name,
           email: data.user.email,
           avatarUrl: data.user.avatarUrl,
         });
+        localStorage.setItem(LAST_GOOGLE_EMAIL_KEY, data.user.email);
+        setVerifiedReturning(returningVerified);
         setWizardStep(2);
-        setSearchParams({}, { replace: true });
+        sessionStorage.setItem(CONNECT_OAUTH_DONE_KEY, '1');
         fetchAccounts();
+        setSearchParams({}, { replace: true });
       })
-      .catch(() => setOauthError('Could not verify Google account.'))
+      .catch(() => {
+        setOauthError('Could not verify Google account.');
+        processedOAuthToken.current = null;
+      })
       .finally(() => setGoogleLoading(false));
-  }, [searchParams, setAuth, setGoogleProfile, setSearchParams, setWizardStep]);
+  }, [searchParams, setAuth, setGoogleProfile, setSearchParams, setWizardStep, resetToGoogleLogin]);
 
   useEffect(() => {
     const state = location.state as { formData?: ConnectFormData } | null;
@@ -176,18 +276,18 @@ export default function ConnectAccountPage() {
   }, [location.state, landingData, setLandingData]);
 
   useEffect(() => {
-    const token = localStorage.getItem('token');
-    if (token && googleProfile && wizardStep >= 2) {
-      fetchAccounts();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- refetch accounts when resuming wizard
-  }, [googleProfile, wizardStep]);
+    if (wizardStep !== 2) return;
+    fetchAccounts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- load accounts when entering Step 2
+  }, [wizardStep]);
 
   useEffect(() => {
-    if (wizardStep === 2 && !selectedAccount && accounts[0] && !accountsLoading) {
-      setSelectedAccount(accounts[0]);
+    if (effectiveStep === 2 && !selectedAccount && accounts.length && !accountsLoading) {
+      const preferred =
+        accounts.find((a) => a.accountType !== 'Manager') ?? accounts[0];
+      setSelectedAccount(preferred);
     }
-  }, [wizardStep, selectedAccount, setSelectedAccount, accounts, accountsLoading]);
+  }, [effectiveStep, selectedAccount, setSelectedAccount, accounts, accountsLoading]);
 
   const enabledModules = modules.filter((m) => m.enabled);
   const availableModules = modules.filter((m) => m.available !== false);
@@ -217,35 +317,6 @@ export default function ConnectAccountPage() {
     if (!selectedAccount) return;
     setWizardStep(3);
     await loadAuditConfig(selectedAccount.customerId);
-  };
-
-  const handleGoogleLogin = () => {
-    if (!backendOnline) {
-      setOauthError(
-        'Backend API is not running. Run `npm run dev` from the project root and wait for the server to start on port 5000.'
-      );
-      return;
-    }
-    if (oauthConfigured) {
-      setOauthError(null);
-      window.location.href = authApi.googleUrl('/connect-account', true);
-      return;
-    }
-    if (!mockDataMode) {
-      setOauthError('Google OAuth is not configured on the server.');
-      return;
-    }
-    setGoogleLoading(true);
-    setOauthError(null);
-    setTimeout(() => {
-      setGoogleProfile({
-        name: landingData?.name || 'Jane Smith',
-        email: landingData?.email || 'jane@acmeplumbing.com.au',
-      });
-      setGoogleLoading(false);
-      setWizardStep(2);
-      fetchAccounts();
-    }, 400);
   };
 
   const handleStartAudit = async () => {
@@ -303,7 +374,18 @@ export default function ConnectAccountPage() {
         return accounts.length ? null : 'No accounts available yet.';
     }
   })();
-  const canStart = consent && selectedAccount && googleProfile;
+  const canStart = onAccountSelectStep && consent && selectedAccount && googleProfile && hasGoogleAdsAccess;
+
+  if (!authReady || !sessionChecked || oauthProcessing) {
+    return (
+      <div className="min-h-screen bg-bg flex items-center justify-center flex-col gap-3">
+        <Loader2 className="animate-spin text-orange" size={28} />
+        {oauthProcessing && (
+          <p className="text-muted text-sm">Completing Google sign-in…</p>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-bg">
@@ -323,7 +405,7 @@ export default function ConnectAccountPage() {
       <div className="max-w-7xl mx-auto px-6 py-8 lg:py-12">
         {/* Page title */}
         <div className="mb-8">
-          <Badge variant="orange" className="mb-3">Step 2 of 3</Badge>
+          <Badge variant="orange" className="mb-3">Step {effectiveStep} of 3</Badge>
           <h1 className="text-2xl lg:text-3xl font-bold text-white mb-2">
             Connect Your Google Ads Account
           </h1>
@@ -331,7 +413,7 @@ export default function ConnectAccountPage() {
             Securely connect your Google Ads account so our AI engine can begin the forensic audit.
           </p>
           <div className="mt-6 max-w-xl">
-            <StepWizard steps={WIZARD_STEPS} currentStep={wizardStep} />
+            <StepWizard steps={WIZARD_STEPS} currentStep={effectiveStep} />
           </div>
         </div>
 
@@ -340,7 +422,7 @@ export default function ConnectAccountPage() {
           <div className="glass rounded-2xl p-6 lg:p-8 glow-orange min-h-[480px]">
             <AnimatePresence mode="wait">
               {/* STEP 1 — Google Login */}
-              {wizardStep === 1 && (
+              {effectiveStep === 1 && (
                 <motion.div
                   key="step1"
                   variants={slideVariants}
@@ -351,74 +433,65 @@ export default function ConnectAccountPage() {
                 >
                   <h2 className="text-white font-bold text-lg mb-1">Authenticate with Google</h2>
                   <p className="text-muted text-sm mb-4">
-                    Sign in with Google and grant Google Ads access. We only read accounts you
-                    authorize — never anyone else&apos;s data.
+                    Sign in with Google to connect your Google Ads account. You&apos;ll choose which
+                    Google account to use — we never skip this step for new audits.
                   </p>
-
-                  {!googleProfile ? (
-                    <div className="max-w-md">
-                      {oauthError && (
-                        <div className="text-red-400 text-sm mb-3 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 space-y-2">
-                          <p>{oauthError}</p>
-                          {redirectUri && (
-                            <p className="text-xs text-body font-mono break-all">
-                              Required redirect URI: <span className="text-white">{redirectUri}</span>
+                  <div className="max-w-md">
+                    {oauthError && (
+                      <div className="text-red-400 text-sm mb-3 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 space-y-3">
+                        <p>{oauthError}</p>
+                        {oauthErrorCode === 'access_denied' && (
+                          <div className="text-xs text-body space-y-2 border-t border-red-500/20 pt-2">
+                            <p className="text-white font-semibold">How to fix (Testing mode)</p>
+                            <ol className="list-decimal list-inside space-y-1 text-muted">
+                              <li>
+                                Open{' '}
+                                <a
+                                  href="https://console.cloud.google.com/apis/credentials/consent"
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-teal underline"
+                                >
+                                  Google Cloud → OAuth consent screen
+                                </a>
+                              </li>
+                              <li>Under <span className="text-white">Test users</span>, click <span className="text-white">Add users</span></li>
+                              <li>Add the exact Gmail you sign in with (e.g. nitishanaga127@gmail.com)</li>
+                              <li>Save, wait ~1 minute, then click Continue with Google again</li>
+                            </ol>
+                            <p className="text-muted">
+                              Or click <span className="text-white">Publish app</span> on that page to allow any Google account (may require Google verification for Ads scope).
                             </p>
-                          )}
-                        </div>
-                      )}
-
-                      <Button
-                        variant="secondary"
-                        size="lg"
-                        className="w-full !bg-white !text-gray-800 hover:!bg-gray-100 border-0"
-                        onClick={handleGoogleLogin}
-                        loading={googleLoading}
-                      >
-                        {!googleLoading && <GoogleIcon />}
-                        Continue with Google
-                      </Button>
-                      <p className="text-muted text-xs mt-4 text-center">
-                        Read-only Google Ads access. Your data is never shared with other users.
-                      </p>
-                    </div>
-                  ) : (
-                    <motion.div
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      className="max-w-md bg-navy border border-teal/30 rounded-xl p-4"
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className="w-12 h-12 rounded-full bg-orange/10 border border-orange/20 flex items-center justify-center">
-                          <User size={24} className="text-orange" />
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-white font-semibold">{googleProfile.name}</span>
-                            <Badge variant="teal">Connected</Badge>
                           </div>
-                          <p className="text-muted text-sm">{googleProfile.email}</p>
-                        </div>
+                        )}
+                        {redirectUri && oauthErrorCode !== 'access_denied' && (
+                          <p className="text-xs text-body font-mono break-all">
+                            Required redirect URI: <span className="text-white">{redirectUri}</span>
+                          </p>
+                        )}
                       </div>
-                      <div className="flex items-center gap-2 mt-3 text-teal text-xs">
-                        <CheckCircle size={14} /> Google authentication successful
-                      </div>
-                    </motion.div>
-                  )}
+                    )}
 
-                  <div className="flex justify-end mt-8 pt-6 border-t border-border">
                     <Button
-                      onClick={() => setWizardStep(2)}
-                      disabled={!googleProfile}
+                      type="button"
+                      variant="secondary"
+                      size="lg"
+                      className="w-full !bg-white !text-gray-800 hover:!bg-gray-100 border-0"
+                      onClick={() => handleGoogleLogin()}
+                      loading={googleLoading}
                     >
-                      Continue <ArrowRight size={16} />
+                      {!googleLoading && <GoogleIcon />}
+                      Continue with Google
                     </Button>
+                    <p className="text-muted text-xs mt-4 text-center">
+                      Read-only Google Ads access. Your data is never shared with other users.
+                    </p>
                   </div>
                 </motion.div>
               )}
 
               {/* STEP 2 — Select Account */}
-              {wizardStep === 2 && (
+              {effectiveStep === 2 && (
                 <motion.div
                   key="step2"
                   variants={slideVariants}
@@ -439,6 +512,28 @@ export default function ConnectAccountPage() {
                     </Badge>
                   </div>
 
+                  {verifiedReturning && googleProfile && (
+                    <div className="mb-6 bg-teal/10 border border-teal/30 rounded-xl p-4">
+                      <p className="text-teal font-semibold text-sm">
+                        Welcome back, {googleProfile.name}!
+                      </p>
+                      <p className="text-muted text-xs mt-1">
+                        Signed in as <span className="text-white">{googleProfile.email}</span>.
+                        Select the Google Ads account you want to audit below.
+                      </p>
+                    </div>
+                  )}
+
+                  {googleProfile && !verifiedReturning && (
+                    <p className="text-muted text-xs mb-4">
+                      Connected as <span className="text-white">{googleProfile.email}</span>.
+                      {' '}
+                      <button type="button" className="text-orange hover:underline" onClick={() => handleGoogleLogin(true)}>
+                        Use a different Google account
+                      </button>
+                    </p>
+                  )}
+
                   {accountsLoading ? (
                     <div className="flex items-center justify-center py-12 text-muted">
                       <Loader2 className="animate-spin mr-2" size={20} /> Loading your Google Ads accounts...
@@ -446,10 +541,20 @@ export default function ConnectAccountPage() {
                   ) : accounts.length === 0 ? (
                     <div className="text-center py-12 space-y-4">
                       <p className="text-muted text-sm">{accountsEmptyMessage}</p>
+                      <Button
+                        variant="secondary"
+                        size="lg"
+                        className="w-full max-w-md mx-auto !bg-white !text-gray-800 hover:!bg-gray-100 border-0"
+                        onClick={() => handleGoogleLogin(true)}
+                        loading={googleLoading}
+                      >
+                        {!googleLoading && <GoogleIcon />}
+                        Continue with Google
+                      </Button>
                       {(accountsReason === 'missing_refresh_token' || accountsReason === 'api_error') && (
-                        <Button variant="outline" onClick={() => { setWizardStep(1); handleGoogleLogin(); }}>
-                          Reconnect Google
-                        </Button>
+                        <p className="text-xs text-muted">
+                          Or try reconnecting with full Google Ads permissions.
+                        </p>
                       )}
                     </div>
                   ) : (
@@ -466,8 +571,8 @@ export default function ConnectAccountPage() {
                   )}
 
                   <div className="flex justify-between mt-8 pt-6 border-t border-border">
-                    <Button variant="ghost" onClick={() => setWizardStep(1)}>
-                      <ArrowLeft size={16} /> Back
+                    <Button variant="ghost" onClick={() => { setWizardStep(1); resetToGoogleLogin(); }}>
+                      <ArrowLeft size={16} /> Back to Google login
                     </Button>
                     <Button
                       onClick={goToConfigureStep}
@@ -481,7 +586,7 @@ export default function ConnectAccountPage() {
               )}
 
               {/* STEP 3 — Configure Audit */}
-              {wizardStep === 3 && (
+              {effectiveStep === 3 && (
                 <motion.div
                   key="step3"
                   variants={slideVariants}

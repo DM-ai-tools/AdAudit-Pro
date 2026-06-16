@@ -22,6 +22,8 @@ export interface User {
   avatarUrl?: string;
   googleId?: string;
   googleRefreshToken?: string;
+  googleAccessToken?: string;
+  googleTokenExpiry?: string;
   createdAt: string;
 }
 

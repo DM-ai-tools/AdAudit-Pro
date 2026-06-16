@@ -67,7 +67,7 @@ export default function LandingPage() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    navigate('/connect-account', { state: { formData: form } });
+    navigate('/connect-account', { state: { formData: form, requireGoogleLogin: true } });
   };
 
   return (

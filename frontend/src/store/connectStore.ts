@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import type {
   ConnectFormData,
   GoogleProfile,
@@ -63,6 +64,7 @@ interface ConnectState {
   setReportOption: (key: keyof ReportOptions, value: boolean) => void;
   setConsent: (value: boolean) => void;
   setWizardStep: (step: number) => void;
+  resetToGoogleLogin: () => void;
   reset: () => void;
 }
 
@@ -83,7 +85,9 @@ function applyDepthToModules(modules: AuditModuleOption[], depth: AuditDepth): A
 
 const initialModules = DEFAULT_AUDIT_MODULES.map((m) => ({ ...m, available: true }));
 
-export const useConnectStore = create<ConnectState>((set, get) => ({
+export const useConnectStore = create<ConnectState>()(
+  persist(
+    (set, get) => ({
   landingData: null,
   googleProfile: null,
   selectedAccount: null,
@@ -155,6 +159,16 @@ export const useConnectStore = create<ConnectState>((set, get) => ({
     set({ reportOptions: { ...get().reportOptions, [key]: value } }),
   setConsent: (value) => set({ consent: value }),
   setWizardStep: (step) => set({ wizardStep: step }),
+  resetToGoogleLogin: () =>
+    set({
+      googleProfile: null,
+      selectedAccount: null,
+      wizardStep: 1,
+      configSource: null,
+      accountStats: null,
+      whatWeAnalyze: [],
+      consent: false,
+    }),
   reset: () =>
     set({
       landingData: null,
@@ -173,4 +187,14 @@ export const useConnectStore = create<ConnectState>((set, get) => ({
       accountStats: null,
       configLoading: false,
     }),
-}));
+}),
+{
+  name: 'adaudit-connect',
+  partialize: (s) => ({
+    auditDepth: s.auditDepth,
+    auditWindow: s.auditWindow,
+    landingData: s.landingData,
+  }),
+}
+  )
+);

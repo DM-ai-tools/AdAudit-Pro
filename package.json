@@ -13,7 +13,8 @@
     "build": "npm run build --prefix backend && npm run build --prefix frontend",
     "start": "npm run start --prefix backend",
     "docker:build": "docker build -t adaudit-pro .",
-    "docker:run": "docker run --rm -p 5000:5000 --env-file .env adaudit-pro"
+    "docker:run": "docker run --rm -p 5000:5000 --env-file .env adaudit-pro",
+    "db:setup": "npm run db:generate --prefix backend && npm run db:push --prefix backend"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

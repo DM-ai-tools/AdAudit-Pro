@@ -1,10 +1,16 @@
 import { mockStore, generateId } from './mock-store.js';
+import {
+  findOrCreateUser,
+  getMe,
+  getUserByEmail,
+  updateUser,
+} from './user.service.js';
 import type { AuditRun, User, Account } from '../types/index.js';
 import { DEFAULT_ACCOUNT } from '../audit-engine/mock-data.js';
 import { createModulesFromSelection, getAuditMetrics } from '../audit-engine/index.js';
 import { estimateMinutes } from '../audit-engine/module-queries.js';
+import { getParallelStreamCount } from '../ai/anthropic-pool.js';
 import { runLiveAudit, type LiveAuditConfig } from '../audit-engine/live-audit.runner.js';
-import { MOCK_HEALTH_SCORES } from '../audit-engine/mock-data.js';
 
 export interface StartAuditConfig {
   accountName?: string;
@@ -21,41 +27,11 @@ export interface StartAuditConfig {
   competitors?: string[];
 }
 
-export async function findOrCreateUser(
-  email: string,
-  name: string,
-  googleId?: string,
-  avatarUrl?: string
-): Promise<User> {
-  let user = mockStore.getUserByEmail(email);
-  if (!user) {
-    user = {
-      id: generateId('usr_'),
-      email,
-      name,
-      googleId,
-      avatarUrl,
-      createdAt: new Date().toISOString(),
-    };
-    mockStore.saveUser(user);
-  } else {
-    mockStore.updateUser(user.id, {
-      name: name || user.name,
-      googleId: googleId || user.googleId,
-      avatarUrl: avatarUrl || user.avatarUrl,
-    });
-    user = mockStore.getUser(user.id)!;
-  }
-  return user;
-}
+export { findOrCreateUser, getMe, getUserByEmail, updateUser };
 
 export function saveUserGoogleTokens(userId: string, refreshToken?: string) {
   if (!refreshToken) return;
-  mockStore.updateUser(userId, { googleRefreshToken: refreshToken });
-}
-
-export function getMe(userId: string): User | undefined {
-  return mockStore.getUser(userId);
+  void updateUser(userId, { googleRefreshToken: refreshToken });
 }
 
 function formatGoal(goal?: string): string {
@@ -92,7 +68,7 @@ export async function startAudit(
   mockStore.saveAccount(account);
 
   const auditId = generateId('aud_');
-  const estimatedMinutes = estimateMinutes(totalModules, depth);
+  const estimatedMinutes = estimateMinutes(totalModules, depth, getParallelStreamCount());
 
   const liveConfig: LiveAuditConfig = {
     accountName: account.name,
@@ -176,7 +152,7 @@ export function getAuditHealth(id: string) {
   const metrics = getAuditMetrics(audit.findings, audit.healthScores);
   return {
     overallScore: metrics.healthScore,
-    scores: audit.healthScores.length ? audit.healthScores : MOCK_HEALTH_SCORES,
+    scores: audit.healthScores,
     ...metrics,
   };
 }

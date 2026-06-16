@@ -1,5 +1,5 @@
 import { Router, Response } from 'express';
-import { authMiddleware, AuthRequest } from '../middleware/auth.js';
+import { authMiddleware, optionalAuth, AuthRequest } from '../middleware/auth.js';
 import {
   startAudit,
   getAuditStatus,
@@ -9,6 +9,7 @@ import {
   createSharedReport,
   getSharedReport,
 } from '../services/audit.service.js';
+import { handleOptimizeAd } from '../controllers/optimize-ad.controller.js';
 
 const router = Router();
 
@@ -64,6 +65,15 @@ router.get('/health/:id', async (req, res) => {
   res.json(health);
 });
 
+router.post('/share-demo', async (req, res) => {
+  const { auditRunId } = req.body;
+  if (!auditRunId) return res.status(400).json({ error: 'auditRunId required' });
+  const audit = getAuditStatus(auditRunId);
+  if (!audit) return res.status(404).json({ error: 'Audit not found' });
+  const report = createSharedReport(auditRunId, audit.userId);
+  res.json({ report, url: `/shared/${report.token}` });
+});
+
 router.post('/share', authMiddleware, async (req: AuthRequest, res: Response) => {
   const { auditRunId } = req.body;
   if (!auditRunId) return res.status(400).json({ error: 'auditRunId required' });
@@ -94,9 +104,15 @@ router.get('/pdf/:id', async (req, res) => {
   }
 });
 
+/** Alias for /api/ai/optimize-ad — works even if ai router is not mounted */
+router.post('/optimize-ad', optionalAuth, (req: AuthRequest, res: Response) => {
+  void handleOptimizeAd(req, res);
+});
+
 function sanitizeAudit(audit: ReturnType<typeof getAuditStatus>, shared = false) {
   if (!audit) return null;
-  const metrics = audit.findings.reduce(
+  const validFindings = audit.findings.filter((f) => !/analysis incomplete|configure anthropic/i.test(f.title));
+  const metrics = validFindings.reduce(
     (acc, f) => {
       acc.totalImpact += f.impactMonthly;
       if (f.severity === 'CRITICAL') acc.criticalCount++;

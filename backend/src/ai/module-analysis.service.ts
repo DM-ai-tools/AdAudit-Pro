@@ -1,5 +1,8 @@
 import type { Finding, Severity, FindingCategory } from '../types/index.js';
-import { getClient } from './claude.service.js';
+import { getPrimaryApiKey } from './anthropic-pool.js';
+import { createClaudeMessage, isAnalysisFailureFinding } from './anthropic-client.js';
+import type { RoadmapItem } from '../types/index.js';
+import { generateId } from '../services/mock-store.js';
 
 export interface ModuleAnalysisInput {
   moduleSlug: string;
@@ -11,13 +14,10 @@ export interface ModuleAnalysisInput {
   goal?: string;
   googleAdsData: string;
   competitors?: string[];
+  apiKey?: string;
 }
 
 const VALID_SEVERITIES: Severity[] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
-const VALID_CATEGORIES: FindingCategory[] = [
-  'KEYWORDS', 'BIDDING', 'AUDIENCES', 'AD_COPY', 'BUDGET', 'GEO',
-  'QUALITY_SCORE', 'SEARCH_TERMS', 'CAMPAIGN', 'LANDING_PAGES', 'IMPRESSION_SHARE', 'PMAX',
-];
 
 function slugToCategory(slug: string): FindingCategory {
   const map: Record<string, FindingCategory> = {
@@ -33,6 +33,8 @@ function slugToCategory(slug: string): FindingCategory {
     conversion: 'CAMPAIGN',
     'quality-score': 'QUALITY_SCORE',
     device: 'CAMPAIGN',
+    'impression-share': 'IMPRESSION_SHARE',
+    pmax: 'PMAX',
   };
   return map[slug] ?? 'CAMPAIGN';
 }
@@ -69,15 +71,15 @@ function parseFindingsJson(raw: string, moduleName: string, slug: string): Omit<
 export async function generateModuleFindings(
   input: ModuleAnalysisInput
 ): Promise<Omit<Finding, 'id'>[]> {
-  const anthropic = getClient();
+  const apiKey = input.apiKey || getPrimaryApiKey();
   const defaultCategory = slugToCategory(input.moduleSlug);
 
-  if (!anthropic) {
+  if (!apiKey) {
     return [{
       severity: 'MEDIUM',
-      title: `${input.moduleName} — configure ANTHROPIC_API_KEY for AI analysis`,
-      description: 'Add your Anthropic API key to backend/.env to enable Claude-powered findings for this module.',
-      recommendation: 'Set ANTHROPIC_API_KEY and restart the backend server.',
+      title: `${input.moduleName} — configure Anthropic API keys for AI analysis`,
+      description: 'Add ANTHROPIC_API_KEY (and optional _2/_3/_4) to backend/.env to enable Claude-powered findings.',
+      recommendation: 'Set API keys and restart the backend server.',
       confidence: 100,
       impactMonthly: 0,
       category: defaultCategory,
@@ -87,8 +89,7 @@ export async function generateModuleFindings(
   }
 
   try {
-    const response = await anthropic.messages.create({
-      model: 'claude-3-5-haiku-20241022',
+    const response = await createClaudeMessage({
       max_tokens: 1200,
       messages: [{
         role: 'user',
@@ -115,7 +116,7 @@ Each finding object must have:
 
 Base findings on the provided data. If data is sparse, note setup gaps. Return [] only if no issues found.`,
       }],
-    });
+    }, apiKey);
 
     const block = response.content[0];
     if (block.type !== 'text') return [];
@@ -132,10 +133,11 @@ Base findings on the provided data. If data is sparse, note setup gaps. Return [
     }];
   } catch (err) {
     console.error(`Claude analysis failed for ${input.moduleSlug}:`, err);
+    const detail = err instanceof Error ? err.message.slice(0, 120) : 'Unknown error';
     return [{
       severity: 'MEDIUM',
       title: `${input.moduleName} analysis incomplete`,
-      description: 'Claude API request failed. Check ANTHROPIC_API_KEY and retry the audit.',
+      description: `Claude API request failed (${detail}). Verify Anthropic API keys and model access, then retry the audit.`,
       confidence: 50,
       impactMonthly: 0,
       category: defaultCategory,
@@ -145,31 +147,37 @@ Base findings on the provided data. If data is sparse, note setup gaps. Return [
   }
 }
 
+function scoreDimension(findings: Finding[], dimension: string): { dimension: string; score: number; label: string } {
+  const modFindings = findings.filter((f) => f.dimension === dimension);
+  const penalty = modFindings.filter((f) => f.severity === 'CRITICAL').length * 15
+    + modFindings.filter((f) => f.severity === 'HIGH').length * 8
+    + modFindings.filter((f) => f.severity === 'MEDIUM').length * 3;
+  return { dimension, score: Math.max(15, 88 - penalty), label: 'AI scored' };
+}
+
 export async function generateHealthScoresFromFindings(
   findings: Finding[],
-  accountName: string
+  accountName: string,
+  apiKey?: string
 ): Promise<{ dimension: string; score: number; label?: string }[]> {
-  const anthropic = getClient();
-  const dimensions = [...new Set(findings.map((f) => f.dimension))];
+  const validFindings = findings.filter((f) => !isAnalysisFailureFinding(f.title));
+  const dimensions = [...new Set(validFindings.map((f) => f.dimension))];
+  if (!dimensions.length) return [];
 
-  if (!anthropic || !findings.length) {
-    return dimensions.map((d) => ({
-      dimension: d,
-      score: 50 + Math.floor(Math.random() * 20),
-      label: 'Estimated',
-    }));
+  const key = apiKey || getPrimaryApiKey();
+  if (!key || !validFindings.length) {
+    return dimensions.map((d) => scoreDimension(validFindings, d));
   }
 
   try {
-    const response = await anthropic.messages.create({
-      model: 'claude-3-5-haiku-20241022',
+    const response = await createClaudeMessage({
       max_tokens: 600,
       messages: [{
         role: 'user',
         content: `Score each audit dimension 0-100 for ${accountName}. Return ONLY JSON array: [{"dimension":"...","score":number,"label":"..."}]
-Findings summary: ${findings.map((f) => `${f.dimension}: ${f.severity} - ${f.title}`).join('; ')}`,
+Findings summary: ${validFindings.map((f) => `${f.dimension}: ${f.severity} - ${f.title}`).join('; ')}`,
       }],
-    });
+    }, apiKey);
     const block = response.content[0];
     if (block.type === 'text') {
       const match = block.text.match(/\[[\s\S]*\]/);
@@ -178,10 +186,54 @@ Findings summary: ${findings.map((f) => `${f.dimension}: ${f.severity} - ${f.tit
   } catch {
     /* fallback below */
   }
-  return dimensions.map((d) => {
-    const modFindings = findings.filter((f) => f.dimension === d);
-    const penalty = modFindings.filter((f) => f.severity === 'CRITICAL').length * 15
-      + modFindings.filter((f) => f.severity === 'HIGH').length * 8;
-    return { dimension: d, score: Math.max(20, 85 - penalty), label: 'AI scored' };
-  });
+  return dimensions.map((d) => scoreDimension(validFindings, d));
+}
+
+export async function generateRoadmapWithClaude(
+  findings: Finding[],
+  accountName: string,
+  apiKey?: string
+): Promise<RoadmapItem[]> {
+  const valid = findings.filter((f) => !isAnalysisFailureFinding(f.title));
+  if (!valid.length) return [];
+
+  const key = apiKey || getPrimaryApiKey();
+  if (!key) return [];
+
+  try {
+    const response = await createClaudeMessage({
+      max_tokens: 1200,
+      messages: [{
+        role: 'user',
+        content: `Create a 30/60/90-day Google Ads optimization roadmap for ${accountName}. Return ONLY JSON array of 8-12 items:
+[{"phase":"DAY_30"|"DAY_60"|"DAY_90","title":"...","description":"...","effort":"LOW"|"MEDIUM"|"HIGH","owner":"CLIENT"|"AGENCY"|"SHARED","impactMonthly":number}]
+Base items on these findings: ${valid.map((f) => `${f.severity}: ${f.title} ($${f.impactMonthly}/mo)`).join('; ')}`,
+      }],
+    }, key);
+    const block = response.content[0];
+    if (block.type !== 'text') return [];
+    const match = block.text.match(/\[[\s\S]*\]/);
+    if (!match) return [];
+    const parsed = JSON.parse(match[0]) as Array<{
+      phase?: string;
+      title?: string;
+      description?: string;
+      effort?: string;
+      owner?: string;
+      impactMonthly?: number;
+    }>;
+    return parsed.slice(0, 12).map((item, i) => ({
+      id: generateId('rm_'),
+      phase: (['DAY_30', 'DAY_60', 'DAY_90'].includes(item.phase || '') ? item.phase : 'DAY_30') as RoadmapItem['phase'],
+      order: i + 1,
+      title: item.title || 'Optimization action',
+      description: item.description,
+      effort: (['LOW', 'MEDIUM', 'HIGH'].includes(item.effort || '') ? item.effort : 'MEDIUM') as RoadmapItem['effort'],
+      owner: (['CLIENT', 'AGENCY', 'SHARED'].includes(item.owner || '') ? item.owner : 'AGENCY') as RoadmapItem['owner'],
+      impactMonthly: Math.max(0, Math.round(item.impactMonthly ?? 0)),
+    }));
+  } catch (err) {
+    console.error('Claude roadmap generation failed:', err);
+    return [];
+  }
 }

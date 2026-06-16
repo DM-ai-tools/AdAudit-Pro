@@ -1,8 +1,15 @@
 import { env } from '../config/env.js';
+import {
+  GOOGLE_ADS_API_VERSIONS,
+  isRetryableGoogleAdsVersionError,
+} from '../config/google-ads-api.js';
 import { MOCK_GOOGLE_ADS_ACCOUNTS } from '../data/google-ads-accounts.js';
+import {
+  getAccessTokenFromRefreshToken,
+  getGoogleAccessTokenForUser,
+} from './google-oauth.service.js';
 
-/** Try newest first; v19 is not a valid Google Ads API version (returns 404) */
-const GOOGLE_ADS_API_VERSIONS = ['v20', 'v18', 'v17'];
+/** Try newest first; sunset versions fall through automatically. */
 let resolvedApiVersion: string | null = null;
 
 export interface GoogleAdsAccountDto {
@@ -52,39 +59,28 @@ function parseGoogleAdsError(body: string, status: number): string {
   return `Google Ads API error (HTTP ${status})`;
 }
 
-async function getAccessToken(refreshToken: string): Promise<string | null> {
-  const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      client_id: env.googleClientId,
-      client_secret: env.googleClientSecret,
-      refresh_token: refreshToken,
-      grant_type: 'refresh_token',
-    }),
-  });
-
-  const tokens = await tokenRes.json() as {
-    access_token?: string;
-    error?: string;
-    error_description?: string;
-  };
-
-  if (!tokens.access_token) {
-    console.error('Failed to refresh Google access token:', tokens.error, tokens.error_description);
-    return null;
+async function resolveAccessToken(refreshToken: string, userId?: string): Promise<string | null> {
+  if (userId) {
+    const token = await getGoogleAccessTokenForUser(userId);
+    if (token) return token;
   }
-  return tokens.access_token;
+  return getAccessTokenFromRefreshToken(refreshToken, userId);
 }
 
-function googleAdsHeaders(accessToken: string): Record<string, string> {
+function googleAdsHeaders(
+  accessToken: string,
+  loginCustomerId?: string
+): Record<string, string> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${accessToken}`,
     'developer-token': env.googleAdsDeveloperToken,
     'Content-Type': 'application/json',
   };
-  if (env.googleAdsManagerAccountId) {
-    headers['login-customer-id'] = env.googleAdsManagerAccountId.replace(/-/g, '');
+  const loginId =
+    loginCustomerId?.replace(/-/g, '') ||
+    env.googleAdsManagerAccountId?.replace(/-/g, '');
+  if (loginId) {
+    headers['login-customer-id'] = loginId;
   }
   return headers;
 }
@@ -102,12 +98,14 @@ async function listAccessibleCustomerResourceNames(
       { headers: googleAdsHeaders(accessToken) }
     );
 
-    if (res.status === 404) {
+    const body = await res.text();
+
+    if (isRetryableGoogleAdsVersionError(res.status, body)) {
       console.warn(`Google Ads API ${version} not available, trying next version...`);
+      if (resolvedApiVersion === version) resolvedApiVersion = null;
       continue;
     }
 
-    const body = await res.text();
     if (!res.ok) {
       console.error(`listAccessibleCustomers failed (${version}):`, res.status, body);
       return { resourceNames: null, error: parseGoogleAdsError(body, res.status) };
@@ -125,33 +123,180 @@ async function listAccessibleCustomerResourceNames(
   };
 }
 
-function getApiVersion(): string {
-  return resolvedApiVersion ?? GOOGLE_ADS_API_VERSIONS[0];
-}
-
 async function searchCustomer<T>(
   accessToken: string,
   customerId: string,
-  query: string
+  query: string,
+  options?: { loginCustomerId?: string; silent?: boolean }
 ): Promise<T[]> {
-  const version = getApiVersion();
-  const res = await fetch(
-    `https://googleads.googleapis.com/${version}/customers/${bareCustomerId(customerId)}/googleAds:search`,
-    {
-      method: 'POST',
-      headers: googleAdsHeaders(accessToken),
-      body: JSON.stringify({ query }),
-    }
-  );
+  const bareId = bareCustomerId(customerId);
+  const loginId = options?.loginCustomerId?.replace(/-/g, '');
 
-  if (!res.ok) {
+  const versions = resolvedApiVersion
+    ? [resolvedApiVersion, ...GOOGLE_ADS_API_VERSIONS.filter((v) => v !== resolvedApiVersion)]
+    : [...GOOGLE_ADS_API_VERSIONS];
+
+  for (const version of versions) {
+    const res = await fetch(
+      `https://googleads.googleapis.com/${version}/customers/${bareId}/googleAds:search`,
+      {
+        method: 'POST',
+        headers: googleAdsHeaders(accessToken, loginId),
+        body: JSON.stringify({ query }),
+      }
+    );
+
     const body = await res.text();
-    console.warn(`Google Ads search failed for ${customerId}:`, res.status, body.slice(0, 300));
-    return [];
+
+    if (isRetryableGoogleAdsVersionError(res.status, body)) {
+      if (resolvedApiVersion === version) resolvedApiVersion = null;
+      continue;
+    }
+
+    if (!res.ok) {
+      if (!options?.silent) {
+        if (res.status !== 403 && res.status !== 400) {
+          console.warn(`Google Ads search failed for ${bareId}:`, res.status, body.slice(0, 200));
+        }
+      }
+      return [];
+    }
+
+    resolvedApiVersion = version;
+    const data = JSON.parse(body) as { results?: T[] };
+    return data.results ?? [];
   }
 
-  const data = await res.json() as { results?: T[] };
-  return data.results ?? [];
+  return [];
+}
+
+/** Sum spend for a date window — requires segments.date in SELECT when filtering by date. */
+async function querySpend(
+  accessToken: string,
+  customerId: string,
+  window: string,
+  loginCustomerId?: string
+): Promise<number> {
+  const rows = await searchCustomer<{
+    metrics?: { costMicros?: string };
+  }>(
+    accessToken,
+    customerId,
+    `SELECT metrics.cost_micros, segments.date
+     FROM customer
+     WHERE segments.date DURING ${window}`,
+    { loginCustomerId, silent: true }
+  );
+  const totalMicros = rows.reduce(
+    (sum, row) => sum + Number(row.metrics?.costMicros ?? 0),
+    0
+  );
+  return Math.round(totalMicros / 1_000_000);
+}
+
+async function getCustomerMeta(
+  accessToken: string,
+  customerId: string,
+  loginCustomerId?: string
+): Promise<{
+  descriptiveName?: string;
+  currencyCode?: string;
+  timeZone?: string;
+  manager?: boolean;
+} | null> {
+  const [row] = await searchCustomer<{
+    customer?: {
+      descriptiveName?: string;
+      currencyCode?: string;
+      timeZone?: string;
+      manager?: boolean;
+    };
+  }>(
+    accessToken,
+    customerId,
+    `SELECT customer.descriptive_name, customer.currency_code,
+            customer.time_zone, customer.manager
+     FROM customer LIMIT 1`,
+    { loginCustomerId, silent: true }
+  );
+  return row?.customer ?? null;
+}
+
+/** Client account names under an MCC — used when direct customer queries return no metadata. */
+async function listManagedClientMeta(
+  accessToken: string,
+  managerCustomerId: string
+): Promise<Map<string, {
+  descriptiveName?: string;
+  currencyCode?: string;
+  timeZone?: string;
+}>> {
+  const map = new Map<string, {
+    descriptiveName?: string;
+    currencyCode?: string;
+    timeZone?: string;
+  }>();
+
+  const rows = await searchCustomer<{
+    customerClient?: {
+      clientCustomer?: string;
+      descriptiveName?: string;
+      currencyCode?: string;
+      timeZone?: string;
+      level?: number;
+      manager?: boolean;
+    };
+  }>(
+    accessToken,
+    managerCustomerId,
+    `SELECT customer_client.client_customer, customer_client.descriptive_name,
+            customer_client.currency_code, customer_client.time_zone,
+            customer_client.level, customer_client.manager
+     FROM customer_client`,
+    { silent: true }
+  );
+
+  for (const row of rows) {
+    const cc = row.customerClient;
+    if (!cc?.clientCustomer || cc.manager) continue;
+    const id = bareCustomerId(cc.clientCustomer);
+    map.set(id, {
+      descriptiveName: cc.descriptiveName,
+      currencyCode: cc.currencyCode,
+      timeZone: cc.timeZone,
+    });
+  }
+
+  return map;
+}
+
+async function resolveManagerCustomerId(
+  accessToken: string,
+  resourceNames?: string[]
+): Promise<string | undefined> {
+  const fromEnv = env.googleAdsManagerAccountId?.replace(/-/g, '');
+  if (fromEnv) return fromEnv;
+
+  const names =
+    resourceNames ??
+    (await listAccessibleCustomerResourceNames(accessToken)).resourceNames ??
+    [];
+
+  for (const resourceName of names) {
+    const id = bareCustomerId(resourceName);
+    const meta = await getCustomerMeta(accessToken, id);
+    if (meta?.manager) return id;
+  }
+  return undefined;
+}
+
+function loginCustomerIdForTarget(
+  targetCustomerId: string,
+  managerCustomerId?: string
+): string | undefined {
+  const bare = bareCustomerId(targetCustomerId);
+  if (!managerCustomerId || bare === managerCustomerId) return undefined;
+  return managerCustomerId;
 }
 
 function accountFromResourceName(resourceName: string): GoogleAdsAccountDto {
@@ -168,14 +313,15 @@ function accountFromResourceName(resourceName: string): GoogleAdsAccountDto {
 }
 
 export async function listGoogleAdsAccounts(
-  refreshToken: string
+  refreshToken: string,
+  userId?: string
 ): Promise<{ accounts: GoogleAdsAccountDto[] | null; error?: string }> {
   if (!isGoogleAdsConfigured() || !refreshToken) {
     return { accounts: null, error: 'Google Ads credentials or user OAuth token missing.' };
   }
 
   try {
-    const accessToken = await getAccessToken(refreshToken);
+    const accessToken = await resolveAccessToken(refreshToken, userId);
     if (!accessToken) {
       return { accounts: null, error: 'Could not refresh Google access token. Reconnect your Google account.' };
     }
@@ -189,38 +335,32 @@ export async function listGoogleAdsAccounts(
     }
 
     const accounts: GoogleAdsAccountDto[] = [];
+    const managerCustomerId = await resolveManagerCustomerId(accessToken, resourceNames);
+    const managedClientMeta = managerCustomerId
+      ? await listManagedClientMeta(accessToken, managerCustomerId)
+      : new Map();
 
     for (const resourceName of resourceNames) {
       const customerId = bareCustomerId(resourceName);
       try {
-        const [infoRow] = await searchCustomer<{
-          customer?: {
-            descriptiveName?: string;
-            currencyCode?: string;
-            timeZone?: string;
-            manager?: boolean;
-          };
-        }>(
-          accessToken,
-          customerId,
-          `SELECT customer.id, customer.descriptive_name, customer.currency_code,
-                  customer.time_zone, customer.manager FROM customer LIMIT 1`
-        );
+        const loginId = loginCustomerIdForTarget(customerId, managerCustomerId);
 
-        const customer = infoRow?.customer;
+        let customer = await getCustomerMeta(accessToken, customerId, loginId);
+        const managed = managedClientMeta.get(customerId);
+        if (!customer?.descriptiveName && managed) {
+          customer = { ...customer, ...managed, manager: false };
+        }
         const base = accountFromResourceName(resourceName);
 
         let monthlySpend = 0;
-        const [metricsRow] = await searchCustomer<{
-          metrics?: { costMicros?: string };
-        }>(
-          accessToken,
-          customerId,
-          `SELECT metrics.cost_micros FROM customer
-           WHERE segments.date DURING LAST_30_DAYS LIMIT 1`
-        );
-        if (metricsRow?.metrics?.costMicros) {
-          monthlySpend = Math.round(Number(metricsRow.metrics.costMicros) / 1_000_000);
+        // Skip spend metrics on manager accounts — query client accounts instead
+        if (!customer?.manager) {
+          monthlySpend = await querySpend(
+            accessToken,
+            customerId,
+            'LAST_30_DAYS',
+            loginId
+          );
         }
 
         accounts.push({
@@ -236,6 +376,16 @@ export async function listGoogleAdsAccounts(
         accounts.push(accountFromResourceName(resourceName));
       }
     }
+
+    accounts.sort((a, b) => {
+      const aManager = a.accountType === 'Manager' ? 1 : 0;
+      const bManager = b.accountType === 'Manager' ? 1 : 0;
+      if (aManager !== bManager) return aManager - bManager;
+      const aGeneric = a.name.startsWith('Google Ads ') ? 1 : 0;
+      const bGeneric = b.name.startsWith('Google Ads ') ? 1 : 0;
+      if (aGeneric !== bGeneric) return aGeneric - bGeneric;
+      return a.name.localeCompare(b.name);
+    });
 
     return { accounts };
   } catch (err) {
@@ -260,7 +410,8 @@ export interface GoogleAdsAccountsResult {
 }
 
 export async function getGoogleAdsAccountsForUser(
-  refreshToken?: string
+  refreshToken?: string,
+  userId?: string
 ): Promise<GoogleAdsAccountsResult> {
   if (!isGoogleAdsConfigured()) {
     if (env.useMockData) {
@@ -273,7 +424,7 @@ export async function getGoogleAdsAccountsForUser(
     return { accounts: [], source: 'google_ads_api', reason: 'missing_refresh_token' };
   }
 
-  const { accounts, error } = await listGoogleAdsAccounts(refreshToken);
+  const { accounts, error } = await listGoogleAdsAccounts(refreshToken, userId);
   if (accounts === null) {
     return {
       accounts: [],
@@ -301,41 +452,23 @@ export interface AccountInsights {
   landingPageCount: number;
 }
 
-async function querySpend(
-  accessToken: string,
-  customerId: string,
-  window: string
-): Promise<number> {
-  const [row] = await searchCustomer<{ metrics?: { costMicros?: string } }>(
-    accessToken,
-    customerId,
-    `SELECT metrics.cost_micros FROM customer WHERE segments.date DURING ${window}`
-  );
-  return Math.round(Number(row?.metrics?.costMicros ?? 0) / 1_000_000);
-}
-
 export async function fetchAccountInsights(
   refreshToken: string,
-  customerId: string
+  customerId: string,
+  userId?: string
 ): Promise<AccountInsights | null> {
   try {
-    const accessToken = await getAccessToken(refreshToken);
+    const accessToken = await resolveAccessToken(refreshToken, userId);
     if (!accessToken) return null;
 
-    // Ensure API version is resolved
-    await listAccessibleCustomerResourceNames(accessToken);
-
-    const [infoRow] = await searchCustomer<{
-      customer?: {
-        descriptiveName?: string;
-        currencyCode?: string;
-        timeZone?: string;
-      };
-    }>(
+    const { resourceNames } = await listAccessibleCustomerResourceNames(accessToken);
+    const managerCustomerId = await resolveManagerCustomerId(
       accessToken,
-      customerId,
-      `SELECT customer.descriptive_name, customer.currency_code, customer.time_zone FROM customer LIMIT 1`
+      resourceNames ?? undefined
     );
+    const loginId = loginCustomerIdForTarget(customerId, managerCustomerId);
+
+    const customer = await getCustomerMeta(accessToken, customerId, loginId);
 
     const campaignRows = await searchCustomer<{
       campaign?: { advertisingChannelType?: string; status?: string };
@@ -344,7 +477,8 @@ export async function fetchAccountInsights(
       customerId,
       `SELECT campaign.advertising_channel_type, campaign.status
        FROM campaign
-       WHERE campaign.status IN ('ENABLED', 'PAUSED')`
+       WHERE campaign.status IN ('ENABLED', 'PAUSED')`,
+      { loginCustomerId: loginId, silent: true }
     );
 
     const channelTypes = new Set<string>();
@@ -357,15 +491,16 @@ export async function fetchAccountInsights(
     }
 
     const [spend30Days, spend90Days, spend365Days] = await Promise.all([
-      querySpend(accessToken, customerId, 'LAST_30_DAYS'),
-      querySpend(accessToken, customerId, 'LAST_90_DAYS'),
-      querySpend(accessToken, customerId, 'LAST_365_DAYS'),
+      querySpend(accessToken, customerId, 'LAST_30_DAYS', loginId),
+      querySpend(accessToken, customerId, 'LAST_90_DAYS', loginId),
+      querySpend(accessToken, customerId, 'LAST_365_DAYS', loginId),
     ]);
 
     const conversionRows = await searchCustomer<{ conversionAction?: { status?: string } }>(
       accessToken,
       customerId,
-      `SELECT conversion_action.status FROM conversion_action WHERE conversion_action.status = 'ENABLED'`
+      `SELECT conversion_action.status FROM conversion_action WHERE conversion_action.status = 'ENABLED'`,
+      { loginCustomerId: loginId, silent: true }
     );
 
     const landingRows = await searchCustomer<{
@@ -375,7 +510,8 @@ export async function fetchAccountInsights(
       customerId,
       `SELECT ad_group_ad.ad.final_urls FROM ad_group_ad
        WHERE ad_group_ad.status = 'ENABLED' AND campaign.status = 'ENABLED'
-       LIMIT 50`
+       LIMIT 50`,
+      { loginCustomerId: loginId, silent: true }
     );
 
     const landingUrls = new Set<string>();
@@ -386,9 +522,9 @@ export async function fetchAccountInsights(
     }
 
     return {
-      accountName: infoRow?.customer?.descriptiveName ?? '',
-      currency: infoRow?.customer?.currencyCode ?? 'USD',
-      timezone: infoRow?.customer?.timeZone ?? 'UTC',
+      accountName: customer?.descriptiveName ?? '',
+      currency: customer?.currencyCode ?? 'USD',
+      timezone: customer?.timeZone ?? 'UTC',
       activeCampaigns,
       channelTypes,
       spend30Days,
@@ -407,7 +543,8 @@ export async function fetchModuleGoogleAdsData(
   refreshToken: string,
   customerId: string,
   slug: string,
-  dateRange: string
+  dateRange: string,
+  userId?: string
 ): Promise<string> {
   const { MODULE_GAQL } = await import('../audit-engine/module-queries.js');
   const queryFn = MODULE_GAQL[slug];
@@ -416,14 +553,21 @@ export async function fetchModuleGoogleAdsData(
   }
 
   try {
-    const accessToken = await getAccessToken(refreshToken);
+    const accessToken = await resolveAccessToken(refreshToken, userId);
     if (!accessToken) return '';
 
-    await listAccessibleCustomerResourceNames(accessToken);
+    const { resourceNames } = await listAccessibleCustomerResourceNames(accessToken);
+    const managerCustomerId = await resolveManagerCustomerId(
+      accessToken,
+      resourceNames ?? undefined
+    );
+    const loginId = loginCustomerIdForTarget(customerId, managerCustomerId);
+
     const rows = await searchCustomer<Record<string, unknown>>(
       accessToken,
       customerId,
-      queryFn(dateRange)
+      queryFn(dateRange),
+      { loginCustomerId: loginId, silent: true }
     );
     return JSON.stringify(rows.slice(0, 25), null, 0);
   } catch (err) {

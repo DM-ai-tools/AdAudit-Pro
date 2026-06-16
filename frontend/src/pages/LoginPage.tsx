@@ -9,30 +9,44 @@ import { authApi } from '../services/api';
 export default function LoginPage() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const { setAuth, isAuthenticated } = useAuthStore();
+  const { setAuth, isAuthenticated, authReady } = useAuthStore();
 
   useEffect(() => {
+    if (!authReady) return;
+
     const token = params.get('token');
     if (token) {
       localStorage.setItem('token', token);
       authApi.me().then(({ data }) => {
-        setAuth(token, data.user);
+        setAuth(token, data.user, data.hasGoogleAdsAccess, data.isReturningUser);
         navigate('/settings');
       }).catch(() => navigate('/'));
       return;
     }
     if (isAuthenticated) navigate('/settings');
-  }, [params, setAuth, navigate, isAuthenticated]);
+  }, [params, setAuth, navigate, isAuthenticated, authReady]);
 
   const handleMockLogin = async () => {
     const { data } = await authApi.login('demo@acmeplumbing.com.au', 'Demo User');
-    setAuth(data.token, data.user);
+    setAuth(data.token, data.user, false);
     navigate('/settings');
   };
 
   const handleGoogleLogin = () => {
-    window.location.href = authApi.googleUrl('/login');
+    window.location.assign(
+      authApi.googleUrl('/login', false, {
+        apiBase: 'http://localhost:5000',
+      })
+    );
   };
+
+  if (!authReady) {
+    return (
+      <div className="min-h-screen bg-bg flex items-center justify-center">
+        <div className="skeleton w-48 h-6 rounded" />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-bg flex items-center justify-center relative overflow-hidden">

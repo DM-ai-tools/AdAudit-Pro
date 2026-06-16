@@ -1,12 +1,15 @@
 import { mockStore, generateId } from '../services/mock-store.js';
+import { getMe } from '../services/user.service.js';
 import { fetchModuleGoogleAdsData, isGoogleAdsConfigured } from '../services/google-ads.service.js';
 import { generateExecutiveSummary } from '../ai/claude.service.js';
+import { getParallelApiKeys, getParallelStreamCount, getPrimaryApiKey } from '../ai/anthropic-pool.js';
 import {
   generateModuleFindings,
   generateHealthScoresFromFindings,
+  generateRoadmapWithClaude,
 } from '../ai/module-analysis.service.js';
 import { dateRangeForWindow, estimateMinutes } from '../audit-engine/module-queries.js';
-import type { Finding, RoadmapItem } from '../types/index.js';
+import type { AuditModule, Finding, RoadmapItem } from '../types/index.js';
 
 export interface LiveAuditConfig {
   accountName: string;
@@ -24,8 +27,17 @@ export interface LiveAuditConfig {
 
 const activeRuns = new Set<string>();
 
+function chunkSequential<T>(arr: T[], chunkSize: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < arr.length; i += chunkSize) {
+    chunks.push(arr.slice(i, i + chunkSize));
+  }
+  return chunks;
+}
+
 function createRoadmapFromFindings(findings: Finding[]): RoadmapItem[] {
   const sorted = [...findings]
+    .filter((f) => !/analysis incomplete|configure anthropic/i.test(f.title))
     .sort((a, b) => b.impactMonthly - a.impactMonthly)
     .slice(0, 10);
   const phases: Array<'DAY_30' | 'DAY_60' | 'DAY_90'> = [
@@ -45,27 +57,140 @@ function createRoadmapFromFindings(findings: Finding[]): RoadmapItem[] {
   }));
 }
 
-function bumpProgress(auditId: string, slug: string, from: number, to: number) {
-  const audit = mockStore.getAudit(auditId);
-  const mod = audit?.modules.find((m) => m.slug === slug);
-  if (!mod || mod.status !== 'RUNNING') return;
-  const next = Math.min(to, mod.progress + 8);
-  if (next > mod.progress) {
-    mockStore.updateModule(auditId, slug, { progress: next });
-  }
-}
-
-function refreshAuditProgress(auditId: string) {
+function refreshAuditProgress(auditId: string, totalModules: number, depth: string) {
   const audit = mockStore.getAudit(auditId);
   if (!audit) return;
   const complete = audit.modules.filter((m) => m.status === 'COMPLETED').length;
   const avgProgress = audit.modules.reduce((s, m) => s + m.progress, 0) / audit.modules.length;
-  const remaining = Math.max(1, Math.ceil((audit.estimatedMinutes || 18) * (1 - complete / audit.totalModules)));
+  const parallelStreams = getParallelStreamCount();
+  const baseEstimate = estimateMinutes(totalModules, depth || 'standard', parallelStreams);
+  const remaining = complete >= totalModules
+    ? 0
+    : Math.max(1, Math.ceil(baseEstimate * (1 - complete / totalModules)));
   mockStore.updateAudit(auditId, {
     modulesComplete: complete,
     progress: Math.round(avgProgress),
     estimatedMinutes: remaining,
   });
+}
+
+async function processSingleModule(
+  auditId: string,
+  mod: AuditModule,
+  config: LiveAuditConfig,
+  apiKey: string,
+  refreshToken: string | undefined,
+  customerId: string | undefined,
+  dateRange: string,
+  windowDays: number,
+  userId: string
+): Promise<void> {
+  const slug = mod.slug;
+
+  mockStore.updateModule(auditId, slug, { status: 'RUNNING', progress: 15 });
+  mockStore.addLog(auditId, {
+    id: generateId('log_'),
+    message: `▶ Starting ${mod.name}...`,
+    level: 'info',
+    createdAt: new Date().toISOString(),
+  });
+
+  let googleAdsData = '';
+  if (refreshToken && customerId && isGoogleAdsConfigured()) {
+    mockStore.addLog(auditId, {
+      id: generateId('log_'),
+      message: `Fetching Google Ads data for ${mod.name}...`,
+      level: 'info',
+      createdAt: new Date().toISOString(),
+    });
+    googleAdsData = await fetchModuleGoogleAdsData(refreshToken, customerId, slug, dateRange, userId);
+    mockStore.updateModule(auditId, slug, { progress: 40 });
+  }
+
+  if (!googleAdsData) {
+    googleAdsData = JSON.stringify({
+      accountName: config.accountName,
+      monthlySpend: config.monthlySpend,
+      campaignCount: config.campaignCount,
+      dataWindowDays: windowDays,
+      goal: config.goal,
+      websiteUrl: config.websiteUrl,
+      note: 'Limited Google Ads API rows — analysis based on account profile.',
+    });
+  }
+
+  mockStore.updateModule(auditId, slug, { progress: 55 });
+  mockStore.addLog(auditId, {
+    id: generateId('log_'),
+    message: `Claude AI analyzing ${mod.name}...`,
+    level: 'info',
+    createdAt: new Date().toISOString(),
+  });
+
+  const rawFindings = await generateModuleFindings({
+    moduleSlug: slug,
+    moduleName: mod.name,
+    accountName: config.accountName,
+    monthlySpend: config.monthlySpend,
+    campaignCount: config.campaignCount,
+    dataWindowDays: windowDays,
+    goal: config.goal,
+    googleAdsData,
+    competitors: config.competitors,
+    apiKey,
+  });
+
+  mockStore.updateModule(auditId, slug, { progress: 90 });
+
+  for (const f of rawFindings) {
+    const finding = { ...f, id: generateId('find_') };
+    mockStore.addFinding(auditId, finding);
+    mockStore.addLog(auditId, {
+      id: generateId('log_'),
+      message: `⚡ Finding: ${finding.title.slice(0, 70)}${finding.title.length > 70 ? '...' : ''}`,
+      level: 'finding',
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  mockStore.updateModule(auditId, slug, {
+    status: 'COMPLETED',
+    progress: 100,
+    findingsCount: rawFindings.length,
+  });
+  mockStore.addLog(auditId, {
+    id: generateId('log_'),
+    message: `✓ ${mod.name} complete — ${rawFindings.length} finding${rawFindings.length === 1 ? '' : 's'}`,
+    level: 'success',
+    createdAt: new Date().toISOString(),
+  });
+  refreshAuditProgress(auditId, mockStore.getAudit(auditId)!.totalModules, config.auditDepth || 'standard');
+}
+
+async function processModuleChunk(
+  auditId: string,
+  modules: AuditModule[],
+  apiKey: string,
+  streamIndex: number,
+  config: LiveAuditConfig,
+  refreshToken: string | undefined,
+  customerId: string | undefined,
+  dateRange: string,
+  windowDays: number,
+  userId: string
+): Promise<void> {
+  mockStore.addLog(auditId, {
+    id: generateId('log_'),
+    message: `Parallel stream ${streamIndex + 1} started (${modules.length} module${modules.length === 1 ? '' : 's'})...`,
+    level: 'info',
+    createdAt: new Date().toISOString(),
+  });
+
+  await Promise.all(
+    modules.map((mod) =>
+      processSingleModule(auditId, mod, config, apiKey, refreshToken, customerId, dateRange, windowDays, userId)
+    )
+  );
 }
 
 export function runLiveAudit(auditId: string, userId: string, config: LiveAuditConfig): void {
@@ -74,13 +199,16 @@ export function runLiveAudit(auditId: string, userId: string, config: LiveAuditC
 
   void (async () => {
     try {
-      const user = mockStore.getUser(userId);
+      const user = await getMe(userId);
       const refreshToken = user?.googleRefreshToken;
       const customerId = config.googleAdsCustomerId?.replace(/-/g, '');
       const windowDays = config.auditWindow || 365;
       const dateRange = dateRangeForWindow(windowDays);
       const audit = mockStore.getAudit(auditId);
       if (!audit) return;
+
+      const parallelKeys = getParallelApiKeys();
+      const streamCount = parallelKeys.length;
 
       if (refreshToken && customerId && isGoogleAdsConfigured()) {
         mockStore.addLog(auditId, {
@@ -100,98 +228,64 @@ export function runLiveAudit(auditId: string, userId: string, config: LiveAuditC
 
       mockStore.addLog(auditId, {
         id: generateId('log_'),
-        message: 'Claude AI engine initialized — analyzing modules sequentially...',
+        message: streamCount >= 3
+          ? `Claude AI engine initialized — ${streamCount} parallel streams (${Math.ceil(audit.modules.length / streamCount)} modules each)...`
+          : `Claude AI engine initialized — analyzing ${audit.modules.length} modules...`,
         level: 'info',
         createdAt: new Date().toISOString(),
       });
 
-      for (const mod of audit.modules) {
-        const slug = mod.slug;
-        mockStore.updateModule(auditId, slug, { status: 'RUNNING', progress: 15 });
-        mockStore.addLog(auditId, {
-          id: generateId('log_'),
-          message: `▶ Starting ${mod.name}...`,
-          level: 'info',
-          createdAt: new Date().toISOString(),
-        });
-
-        let googleAdsData = '';
-        if (refreshToken && customerId && isGoogleAdsConfigured()) {
-          mockStore.addLog(auditId, {
-            id: generateId('log_'),
-            message: `Fetching Google Ads data for ${mod.name}...`,
-            level: 'info',
-            createdAt: new Date().toISOString(),
-          });
-          googleAdsData = await fetchModuleGoogleAdsData(refreshToken, customerId, slug, dateRange);
-          bumpProgress(auditId, slug, 15, 45);
+      if (streamCount >= 2) {
+        const chunkSize = Math.ceil(audit.modules.length / streamCount);
+        const chunks = chunkSequential(audit.modules, chunkSize);
+        await Promise.all(
+          chunks.map((chunk, idx) =>
+            processModuleChunk(
+              auditId,
+              chunk,
+              parallelKeys[idx] || parallelKeys[0],
+              idx,
+              config,
+              refreshToken,
+              customerId,
+              dateRange,
+              windowDays,
+              userId
+            )
+          )
+        );
+      } else {
+        const key = parallelKeys[0] || getPrimaryApiKey() || '';
+        for (const mod of audit.modules) {
+          await processSingleModule(
+            auditId,
+            mod,
+            config,
+            key,
+            refreshToken,
+            customerId,
+            dateRange,
+            windowDays,
+            userId
+          );
         }
-
-        if (!googleAdsData) {
-          googleAdsData = JSON.stringify({
-            accountName: config.accountName,
-            monthlySpend: config.monthlySpend,
-            campaignCount: config.campaignCount,
-            dataWindowDays: windowDays,
-            goal: config.goal,
-            websiteUrl: config.websiteUrl,
-            note: 'Limited Google Ads API rows — analysis based on account profile.',
-          });
-        }
-
-        mockStore.updateModule(auditId, slug, { progress: 50 });
-        mockStore.addLog(auditId, {
-          id: generateId('log_'),
-          message: `Claude AI analyzing ${mod.name}...`,
-          level: 'info',
-          createdAt: new Date().toISOString(),
-        });
-
-        const rawFindings = await generateModuleFindings({
-          moduleSlug: slug,
-          moduleName: mod.name,
-          accountName: config.accountName,
-          monthlySpend: config.monthlySpend,
-          campaignCount: config.campaignCount,
-          dataWindowDays: windowDays,
-          goal: config.goal,
-          googleAdsData,
-          competitors: config.competitors,
-        });
-
-        mockStore.updateModule(auditId, slug, { progress: 85 });
-
-        for (const f of rawFindings) {
-          const finding = { ...f, id: generateId('find_') };
-          mockStore.addFinding(auditId, finding);
-          mockStore.addLog(auditId, {
-            id: generateId('log_'),
-            message: `⚡ Finding: ${finding.title.slice(0, 70)}${finding.title.length > 70 ? '...' : ''}`,
-            level: 'finding',
-            createdAt: new Date().toISOString(),
-          });
-        }
-
-        mockStore.updateModule(auditId, slug, {
-          status: 'COMPLETED',
-          progress: 100,
-          findingsCount: rawFindings.length,
-        });
-        mockStore.addLog(auditId, {
-          id: generateId('log_'),
-          message: `✓ ${mod.name} complete — ${rawFindings.length} finding${rawFindings.length === 1 ? '' : 's'}`,
-          level: 'success',
-          createdAt: new Date().toISOString(),
-        });
-        refreshAuditProgress(auditId);
       }
 
       const finalAudit = mockStore.getAudit(auditId)!;
+      const summaryKey = getPrimaryApiKey() || parallelKeys[0];
       const healthScores = await generateHealthScoresFromFindings(
         finalAudit.findings,
-        config.accountName
+        config.accountName,
+        summaryKey
       );
-      const roadmap = createRoadmapFromFindings(finalAudit.findings);
+      let roadmap = await generateRoadmapWithClaude(
+        finalAudit.findings,
+        config.accountName,
+        summaryKey
+      );
+      if (!roadmap.length) {
+        roadmap = createRoadmapFromFindings(finalAudit.findings);
+      }
       const healthScore = healthScores.length
         ? Math.round(healthScores.reduce((s, h) => s + h.score, 0) / healthScores.length)
         : 50;
