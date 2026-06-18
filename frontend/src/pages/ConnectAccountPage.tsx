@@ -2,14 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useLocation, useSearchParams, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  ArrowLeft, ArrowRight, Loader2, Plus, Trash2,
+  ArrowLeft, ArrowRight, Loader2, Plus, Trash2, History,
 } from 'lucide-react';
 import { Logo } from '../components/layout/Logo';
 import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
 import { StepWizard } from '../components/connect/StepWizard';
 import { AccountCard } from '../components/connect/AccountCard';
-import { CampaignCard } from '../components/connect/CampaignCard';
 import { AuditModuleCard } from '../components/connect/AuditModuleCard';
 import { ConfigSelector } from '../components/connect/ConfigSelector';
 import { ToggleSwitch } from '../components/connect/ToggleSwitch';
@@ -17,16 +16,18 @@ import { SecurityCard } from '../components/connect/SecurityCard';
 import { WhatWeAnalyze } from '../components/connect/WhatWeAnalyze';
 import { SummaryCard, ProgressPreview } from '../components/connect/SummaryCard';
 import { useConnectStore } from '../store/connectStore';
-import { auditApi, authApi, googleAdsApi, LAST_GOOGLE_EMAIL_KEY } from '../services/api';
+import { auditApi, authApi, googleAdsApi, LAST_GOOGLE_EMAIL_KEY, getApiOrigin, isAdAuditHealthPayload } from '../services/api';
+import axios from 'axios';
 import { useAuthStore } from '../store';
 import { AUDIT_WINDOW_OPTIONS } from '../data/auditModules';
 import type { ConnectFormData } from '../types/connect';
+import { usePreviousAudits } from '../hooks/usePreviousAudits';
+import { PreviousAuditsList } from '../components/dashboard/PreviousAuditsList';
 
 const WIZARD_STEPS = [
   { id: 1, label: 'Google Login' },
   { id: 2, label: 'Select Account' },
-  { id: 3, label: 'Select Campaigns' },
-  { id: 4, label: 'Configure Audit' },
+  { id: 3, label: 'Configure Audit' },
 ];
 
 const slideVariants = {
@@ -54,23 +55,16 @@ export default function ConnectAccountPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { setAuth, hasGoogleAdsAccess, authReady, user: authUser } = useAuthStore();
   const {
-    landingData, googleProfile, selectedAccount, selectedCampaigns, auditDepth, auditWindow,
+    landingData, googleProfile, selectedAccount, auditDepth, auditWindow,
     modules, depthOptions, competitors, reportOptions, consent, wizardStep,
     whatWeAnalyze, accountStats, configSource, configLoading,
-    setLandingData, setGoogleProfile, setSelectedAccount, setSelectedCampaigns, toggleCampaign, setAuditDepth,
+    setLandingData, setGoogleProfile, setSelectedAccount, setAuditDepth,
     setAuditWindow, toggleModule, addCompetitor, updateCompetitor,
     removeCompetitor, setReportOption, setConsent, setWizardStep,
     applyAuditConfig, setConfigLoading, resetToGoogleLogin,
   } = useConnectStore();
 
   const [accounts, setAccounts] = useState<import('../types/connect').GoogleAdsAccount[]>([]);
-  const [campaigns, setCampaigns] = useState<import('../types/connect').GoogleAdsCampaign[]>([]);
-  const [campaignsLoading, setCampaignsLoading] = useState(false);
-  const [campaignsMeta, setCampaignsMeta] = useState<{
-    hasCampaigns: boolean;
-    hasAds: boolean;
-    source: string;
-  } | null>(null);
   const [accountsSource, setAccountsSource] = useState<'google_ads_api' | 'mock'>('mock');
   const [accountsReason, setAccountsReason] = useState<string | null>(null);
   const [accountsErrorDetail, setAccountsErrorDetail] = useState<string | null>(null);
@@ -89,27 +83,9 @@ export default function ConnectAccountPage() {
   const [sessionChecked, setSessionChecked] = useState(false);
   const sessionInitialized = useRef(false);
   const processedOAuthToken = useRef<string | null>(null);
-
-  const fetchCampaigns = async (customerId: string) => {
-    setCampaignsLoading(true);
-    try {
-      const { data } = await googleAdsApi.campaigns(customerId);
-      setCampaigns(data.campaigns);
-      setCampaignsMeta({
-        hasCampaigns: data.hasCampaigns,
-        hasAds: data.hasAds,
-        source: data.source,
-      });
-      if (data.account.websiteUrl && selectedAccount) {
-        setSelectedAccount({ ...selectedAccount, websiteUrl: data.account.websiteUrl, industry: data.account.industry });
-      }
-    } catch {
-      setCampaigns([]);
-      setCampaignsMeta({ hasCampaigns: false, hasAds: false, source: 'error' });
-    } finally {
-      setCampaignsLoading(false);
-    }
-  };
+  /** Only load audits after Google OAuth completes and user is on step 2 */
+  const canShowPreviousAudits = wizardStep === 2 && !!googleProfile?.email;
+  const { audits: previousAudits, userEmail: previousAuditsEmail, loading: previousAuditsLoading, error: previousAuditsError, reload: reloadPreviousAudits } = usePreviousAudits(canShowPreviousAudits);
 
   const fetchAccounts = async () => {
     setAccountsLoading(true);
@@ -133,7 +109,7 @@ export default function ConnectAccountPage() {
   const handleGoogleLogin = (forceReconnect = false) => {
     if (!backendOnline) {
       setOauthError(
-        'Backend API is not running. Run `npm run dev` from the project root and wait for the server to start on port 5000.'
+        'Backend API is not running. Run `npm run dev` from the project root and wait for "AdAudit Pro API running on port 5001".'
       );
       return;
     }
@@ -141,6 +117,7 @@ export default function ConnectAccountPage() {
       setOauthError(null);
       setOauthErrorCode(null);
       sessionStorage.removeItem(CONNECT_OAUTH_DONE_KEY);
+      useAuthStore.getState().logout();
 
       // Always send user through Google OAuth so they pick the correct account.
       const url = authApi.googleUrl('/connect-account', true, {
@@ -177,18 +154,34 @@ export default function ConnectAccountPage() {
   const onAccountSelectStep = wizardStep >= 2;
 
   useEffect(() => {
-    authApi.config()
+    const apiOrigin = getApiOrigin();
+    axios
+      .get(`${apiOrigin}/api/health`, { timeout: 5000 })
       .then(({ data }) => {
+        if (!isAdAuditHealthPayload(data)) {
+          throw new Error('wrong_app');
+        }
         setBackendOnline(true);
+        return authApi.config();
+      })
+      .then((res) => {
+        if (!res) return;
+        const { data } = res;
         setOauthConfigured(data.googleOAuth);
         setMockDataMode(data.mockData);
         if (data.redirectUri) setRedirectUri(data.redirectUri);
         if (data.oauthApiBase) setOauthApiBase(data.oauthApiBase);
       })
-      .catch(() => {
+      .catch((err) => {
         setBackendOnline(false);
+        const wrongApp = err?.message === 'wrong_app';
+        const unreachable = axios.isAxiosError(err) && !err.response;
         setOauthError(
-          'Cannot reach the API server on port 5000. From the project root run: npm run dev — then wait for "AdAudit Pro API running on http://localhost:5000".'
+          wrongApp
+            ? 'Port 5000 is used by another app (not AdAudit Pro). AdAudit runs on port 5001 — restart with: npm run dev from the project root. Add http://localhost:5001/api/auth/google/callback to Google Cloud Console redirect URIs for OAuth.'
+            : unreachable
+              ? `Cannot reach AdAudit Pro API at ${getApiOrigin()}. Run "npm run dev" from the project root and wait for "AdAudit Pro API running on port 5001".`
+              : 'AdAudit Pro API is not responding. Restart the backend with npm run dev from the project root.'
         );
       });
   }, []);
@@ -284,6 +277,7 @@ export default function ConnectAccountPage() {
         setWizardStep(2);
         sessionStorage.setItem(CONNECT_OAUTH_DONE_KEY, '1');
         fetchAccounts();
+        void reloadPreviousAudits();
         setSearchParams({}, { replace: true });
       })
       .catch(() => {
@@ -307,6 +301,12 @@ export default function ConnectAccountPage() {
       });
     }
   }, [location.state, landingData, setLandingData]);
+
+  useEffect(() => {
+    if (canShowPreviousAudits) {
+      void reloadPreviousAudits();
+    }
+  }, [canShowPreviousAudits, reloadPreviousAudits]);
 
   useEffect(() => {
     if (wizardStep !== 2) return;
@@ -346,16 +346,9 @@ export default function ConnectAccountPage() {
     }
   };
 
-  const goToCampaignStep = async () => {
-    if (!selectedAccount || selectedAccount.selectable === false) return;
-    setWizardStep(3);
-    setSelectedCampaigns([]);
-    await fetchCampaigns(selectedAccount.customerId);
-  };
-
   const goToConfigureStep = async () => {
     if (!selectedAccount) return;
-    setWizardStep(4);
+    setWizardStep(3);
     await loadAuditConfig(selectedAccount.customerId);
   };
 
@@ -364,7 +357,6 @@ export default function ConnectAccountPage() {
     setStartLoading(true);
     const payload = {
       googleAdsCustomerId: selectedAccount.customerId,
-      selectedCampaignIds: selectedCampaigns.map((c) => c.id),
       auditDepth,
       auditWindow,
       selectedModules: enabledModules.map((m) => m.id),
@@ -372,11 +364,12 @@ export default function ConnectAccountPage() {
       reportOptions,
       accountName: selectedAccount.name,
       monthlySpend: selectedAccount.monthlySpend,
-      campaignCount: selectedCampaigns.length || accountStats?.activeCampaigns,
+      campaignCount: accountStats?.activeCampaigns ?? 0,
       websiteUrl: selectedAccount.websiteUrl || landingData?.website || '',
       email: landingData?.email || googleProfile?.email,
       name: landingData?.name || googleProfile?.name,
       goal: landingData?.goal,
+      auditScope: 'account' as const,
     };
 
     try {
@@ -398,7 +391,6 @@ export default function ConnectAccountPage() {
   };
 
   const canProceedStep2 = !!selectedAccount && selectedAccount.selectable !== false;
-  const canProceedStep3 = true;
 
   const accountsEmptyMessage = (() => {
     switch (accountsReason) {
@@ -447,7 +439,7 @@ export default function ConnectAccountPage() {
       <div className="max-w-7xl mx-auto px-6 py-8 lg:py-12">
         {/* Page title */}
         <div className="mb-8">
-          <Badge variant="orange" className="mb-3">Step {effectiveStep} of 4</Badge>
+          <Badge variant="orange" className="mb-3">Step {effectiveStep} of 3</Badge>
           <h1 className="text-2xl lg:text-3xl font-bold text-white mb-2">
             Connect Your Google Ads Account
           </h1>
@@ -546,7 +538,7 @@ export default function ConnectAccountPage() {
                     <div>
                       <h2 className="text-white font-bold text-lg mb-1">Select Google Ads Account</h2>
                       <p className="text-muted text-sm">
-                        Choose the account you want to audit. You can run additional audits later.
+                        Choose the account for a full account-wide audit. You can run individual campaign audits after the report is ready.
                       </p>
                     </div>
                     <Badge variant={accountsSource === 'google_ads_api' ? 'teal' : 'muted'}>
@@ -558,8 +550,14 @@ export default function ConnectAccountPage() {
                     <div className="mb-6 bg-teal/10 border border-teal/30 rounded-xl p-4">
                       <p className="text-teal font-semibold text-sm">Welcome back!</p>
                       <p className="text-muted text-xs mt-1">
-                        Select the Google Ads business account you want to audit below.
+                        Signed in as <span className="text-white">{googleProfile?.email}</span>. Select the Google Ads business account you want to audit below.
                       </p>
+                    </div>
+                  )}
+
+                  {!verifiedReturning && googleProfile?.email && (
+                    <div className="mb-4 bg-panel/50 border border-border rounded-lg px-3 py-2 text-xs text-muted">
+                      Signed in as <span className="text-white font-medium">{googleProfile.email}</span>
                     </div>
                   )}
 
@@ -608,88 +606,46 @@ export default function ConnectAccountPage() {
                   </div>
                   )}
 
-                  <div className="flex justify-between mt-8 pt-6 border-t border-border">
-                    <Button variant="ghost" onClick={() => { setWizardStep(1); resetToGoogleLogin(); }}>
-                      <ArrowLeft size={16} /> Back to Google login
-                    </Button>
-                    <Button
-                      onClick={goToCampaignStep}
-                      disabled={!canProceedStep2}
-                    >
-                      Select Campaigns <ArrowRight size={16} />
-                    </Button>
-                  </div>
-                </motion.div>
-              )}
-
-              {/* STEP 3 — Select Campaigns */}
-              {effectiveStep === 3 && (
-                <motion.div
-                  key="step3-campaigns"
-                  variants={slideVariants}
-                  initial="enter"
-                  animate="center"
-                  exit="exit"
-                  transition={{ duration: 0.3 }}
-                >
-                  <div className="mb-6">
-                    <h2 className="text-white font-bold text-lg mb-1">Select Campaigns To Optimize</h2>
-                    <p className="text-muted text-sm">
-                      {selectedAccount?.name}
-                      {selectedAccount?.websiteUrl && (
-                        <span className="text-teal"> — {selectedAccount.websiteUrl.replace(/^https?:\/\//, '')}</span>
-                      )}
-                    </p>
-                    <p className="text-muted text-xs mt-1 font-mono">
-                      Google Ads ID: {selectedAccount?.customerId}
-                    </p>
-                  </div>
-
-                  {campaignsLoading ? (
-                    <div className="flex items-center justify-center py-12 text-muted">
-                      <Loader2 className="animate-spin mr-2" size={20} /> Loading campaigns from Google Ads...
-                    </div>
-                  ) : campaigns.length === 0 ? (
-                    <div className="bg-orange/5 border border-orange/20 rounded-xl p-6 text-center">
-                      <p className="text-white font-semibold text-sm mb-2">No campaigns found</p>
-                      <p className="text-muted text-xs">
-                        Claude will analyze your business website and audit findings to recommend a full
-                        campaign strategy, ad groups, keywords, and Responsive Search Ads.
+                  {googleProfile?.email && (
+                    <div className="mt-8 pt-6 border-t border-border">
+                      <div className="flex items-center gap-2 mb-1">
+                        <History size={16} className="text-orange" />
+                        <h3 className="text-white font-semibold text-sm">Your Previous Audits</h3>
+                      </div>
+                      <p className="text-muted text-xs mb-4">
+                        Only audits you ran while signed in as <span className="text-white">{previousAuditsEmail || googleProfile.email}</span>
                       </p>
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      <p className="text-muted text-xs">
-                        Select one or more campaigns to include in the audit and AI optimization scope.
-                        {campaignsMeta && !campaignsMeta.hasAds && ' Some campaigns have no ads — AI will generate new RSAs.'}
-                      </p>
-                      {campaigns.map((campaign) => (
-                        <CampaignCard
-                          key={campaign.id}
-                          campaign={campaign}
-                          selected={selectedCampaigns.some((c) => c.id === campaign.id)}
-                          onToggle={() => toggleCampaign(campaign)}
-                          currency={selectedAccount?.currency}
-                        />
-                      ))}
+                      <PreviousAuditsList
+                        audits={previousAudits}
+                        loading={previousAuditsLoading}
+                        error={previousAuditsError}
+                        userEmail={previousAuditsEmail || googleProfile.email}
+                        emptyMessage="No audits yet for this Gmail account. Select a Google Ads account above to start your first audit."
+                      />
                     </div>
                   )}
 
                   <div className="flex justify-between mt-8 pt-6 border-t border-border">
-                    <Button variant="ghost" onClick={() => setWizardStep(2)}>
-                      <ArrowLeft size={16} /> Back
+                    <Button variant="ghost" onClick={() => {
+                      useAuthStore.getState().logout();
+                      resetToGoogleLogin();
+                    }}>
+                      <ArrowLeft size={16} /> Back to Google login
                     </Button>
-                    <Button onClick={goToConfigureStep} disabled={!canProceedStep3}>
-                      Configure Audit <ArrowRight size={16} />
+                    <Button
+                      onClick={() => void goToConfigureStep()}
+                      disabled={!canProceedStep2}
+                    >
+                      Configure Account Audit <ArrowRight size={16} />
                     </Button>
                   </div>
                 </motion.div>
               )}
 
-              {/* STEP 4 — Configure Audit */}
-              {effectiveStep === 4 && (
+              {/* STEP 3 — Configure Audit */}
+              {effectiveStep === 3 && (
                 <motion.div
-                  key="step4"
+                  key="step3-config"
                   variants={slideVariants}
                   initial="enter"
                   animate="center"
@@ -698,15 +654,15 @@ export default function ConnectAccountPage() {
                   className="space-y-8"
                 >
                   <div>
-                    <h2 className="text-white font-bold text-lg mb-1">Audit Configuration</h2>
+                    <h2 className="text-white font-bold text-lg mb-1">Configure Account Audit</h2>
                     <p className="text-muted text-sm">
                       {configLoading
                         ? 'Loading account data from Google Ads...'
-                        : `Settings tailored for ${selectedAccount?.name ?? 'your account'}${
+                        : `Full account audit for ${selectedAccount?.name ?? 'your account'}${
                             accountStats
                               ? ` — ${accountStats.activeCampaigns} active campaign(s), ${accountStats.campaignTypes.join(', ') || 'no channel data'}`
                               : ''
-                          }.`}
+                          }. Campaign-level audits are available after this completes.`}
                     </p>
                   </div>
 
@@ -849,20 +805,20 @@ export default function ConnectAccountPage() {
                   </label>
 
                   <div className="flex justify-between pt-6 border-t border-border">
-                    <Button variant="ghost" onClick={() => setWizardStep(3)}>
+                    <Button variant="ghost" onClick={() => setWizardStep(2)}>
                       <ArrowLeft size={16} /> Back
                     </Button>
                     <Button
                       size="lg"
                       className="glow-orange uppercase tracking-wide"
-                      onClick={handleStartAudit}
+                      onClick={() => void handleStartAudit()}
                       loading={startLoading}
                       disabled={!canStart}
                     >
                       {startLoading ? (
                         <><Loader2 size={18} className="animate-spin" /> Starting...</>
                       ) : (
-                        <>Start Audit Processing <ArrowRight size={18} /></>
+                        <>Start Account Audit <ArrowRight size={18} /></>
                       )}
                     </Button>
                   </div>

@@ -11,6 +11,7 @@ import type {
   SharedReport,
 } from '../types/index.js';
 import { generateId } from './mock-store.js';
+import { resolveBusinessName } from '../utils/business-identity.js';
 
 const auditInclude = {
   account: true,
@@ -25,12 +26,17 @@ type AuditRow = Prisma.AuditRunGetPayload<{ include: typeof auditInclude }>;
 
 const cache = new Map<string, AuditRun>();
 
+function normalizeAuditBrand(audit: AuditRun): AuditRun {
+  const accountName = resolveBusinessName(audit.accountName, audit.websiteUrl);
+  return accountName === audit.accountName ? audit : { ...audit, accountName };
+}
+
 function mapRowToAuditRun(row: AuditRow): AuditRun {
-  return {
+  return normalizeAuditBrand({
     id: row.id,
     userId: row.userId,
     accountId: row.accountId,
-    accountName: row.account.name,
+    accountName: resolveBusinessName(row.account.name, row.account.websiteUrl ?? undefined),
     status: row.status,
     progress: row.progress,
     modulesComplete: row.modulesComplete,
@@ -46,6 +52,7 @@ function mapRowToAuditRun(row: AuditRow): AuditRun {
     email: row.email ?? undefined,
     goal: row.account.goal ?? undefined,
     googleAdsCustomerId: row.googleAdsCustomerId ?? row.account.googleAdsId ?? undefined,
+    websiteUrl: row.account.websiteUrl ?? undefined,
     modules: row.modules.map((m) => ({
       id: m.id,
       name: m.name,
@@ -89,7 +96,7 @@ function mapRowToAuditRun(row: AuditRow): AuditRun {
       level: l.level,
       createdAt: l.createdAt.toISOString(),
     })),
-  };
+  });
 }
 
 function getCachedOrNull(id: string): AuditRun | null {
@@ -191,8 +198,11 @@ export const auditStore = {
 
   async getAudit(id: string): Promise<AuditRun | null> {
     const cached = getCachedOrNull(id);
-    if (cached) return cached;
-    return loadAudit(id);
+    const audit = cached ?? (await loadAudit(id));
+    if (!audit) return null;
+    const normalized = normalizeAuditBrand(audit);
+    if (normalized !== audit) cache.set(id, normalized);
+    return normalized;
   },
 
   async updateAudit(id: string, partial: Partial<AuditRun>): Promise<AuditRun | null> {
@@ -262,6 +272,48 @@ export const auditStore = {
         createdAt: new Date(log.createdAt),
       },
     });
+  },
+
+  async ensureModule(auditId: string, slug: string, name: string): Promise<AuditModule> {
+    let audit = getCachedOrNull(auditId);
+    if (!audit) audit = await loadAudit(auditId);
+    if (!audit) throw new Error('Audit not found');
+
+    const existing = audit.modules.find((m) => m.slug === slug);
+    if (existing) return existing;
+
+    const mod: AuditModule = {
+      id: generateId('mod_'),
+      name,
+      slug,
+      status: 'PENDING',
+      progress: 0,
+      findingsCount: 0,
+      order: audit.modules.length + 1,
+    };
+
+    audit.modules.push(mod);
+    cache.set(auditId, audit);
+
+    await prisma.auditModule.create({
+      data: {
+        id: mod.id,
+        auditRunId: auditId,
+        name: mod.name,
+        slug: mod.slug,
+        status: mod.status,
+        progress: mod.progress,
+        findingsCount: mod.findingsCount,
+        order: mod.order,
+      },
+    });
+
+    await prisma.auditRun.update({
+      where: { id: auditId },
+      data: { totalModules: audit.modules.length },
+    });
+
+    return mod;
   },
 
   async updateModule(
@@ -348,5 +400,67 @@ export const auditStore = {
       auditRunId: row.auditRunId,
       createdAt: row.createdAt.toISOString(),
     };
+  },
+
+  async listAuditsForUser(userId: string) {
+    const rows = await prisma.auditRun.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        account: true,
+        healthScores: { select: { score: true } },
+        auditLogs: {
+          where: { message: { startsWith: 'Campaign audit initiated:' } },
+          take: 1,
+          orderBy: { createdAt: 'asc' },
+        },
+        findings: { select: { impactMonthly: true, severity: true, title: true } },
+      },
+    });
+
+    return rows.map((row) => {
+      const validFindings = row.findings.filter(
+        (f) => !/analysis incomplete|configure anthropic/i.test(f.title)
+      );
+      const totalImpact = validFindings.reduce((s, f) => s + f.impactMonthly, 0);
+      const criticalCount = validFindings.filter((f) => f.severity === 'CRITICAL').length;
+      const healthScore = row.healthScores.length
+        ? Math.round(row.healthScores.reduce((s, h) => s + h.score, 0) / row.healthScores.length)
+        : null;
+      const campaignLog = row.auditLogs[0]?.message;
+      const campaignName = campaignLog
+        ? campaignLog.replace(/^Campaign audit initiated:\s*/i, '').trim()
+        : undefined;
+      const auditScope = campaignName ? ('campaign' as const) : ('account' as const);
+      const accountName = resolveBusinessName(row.account.name, row.account.websiteUrl ?? undefined);
+      const displayName =
+        auditScope === 'campaign' && campaignName
+          ? `${accountName} — ${campaignName}`
+          : accountName;
+
+      return {
+        id: row.id,
+        accountName: displayName,
+        baseAccountName: accountName,
+        status: row.status,
+        progress: row.progress,
+        modulesComplete: row.modulesComplete,
+        totalModules: row.totalModules,
+        findingsCount: validFindings.length,
+        healthScore,
+        totalImpact,
+        criticalCount,
+        dataWindowDays: row.dataWindowDays,
+        googleAdsCustomerId: row.googleAdsCustomerId ?? row.account.googleAdsId ?? undefined,
+        auditScope,
+        campaignName,
+        monthlySpend: row.account.monthlySpend,
+        campaignCount: row.account.campaignCount,
+        goal: row.account.goal ?? undefined,
+        startedAt: row.startedAt?.toISOString(),
+        completedAt: row.completedAt?.toISOString(),
+        createdAt: row.createdAt.toISOString(),
+      };
+    });
   },
 };

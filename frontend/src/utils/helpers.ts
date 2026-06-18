@@ -6,6 +6,23 @@ export function formatCurrency(amount: number, currency = 'USD'): string {
   }).format(amount);
 }
 
+export function formatCurrencyPrecise(amount: number, currency = 'USD'): string {
+  return new Intl.NumberFormat('en-AU', {
+    style: 'currency',
+    currency,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(amount);
+}
+
+export function formatPercent(value: number, decimals = 2): string {
+  return `${value.toFixed(decimals)}%`;
+}
+
+export function formatNumber(value: number): string {
+  return value.toLocaleString('en-AU');
+}
+
 export function formatImpact(amount: number): string {
   return `$${amount.toLocaleString()}/mo`;
 }

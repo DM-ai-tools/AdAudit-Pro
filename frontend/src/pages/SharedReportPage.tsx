@@ -75,7 +75,7 @@ export default function SharedReportPage() {
             <Button size="sm" variant="secondary" className="!bg-teal/20 !text-teal !border-teal/30">
               <Link2 size={14} /> Shared link
             </Button>
-            <Button size="sm" variant="secondary" onClick={() => audit.id && window.open(auditApi.pdfUrl(audit.id), '_blank')}>
+            <Button size="sm" variant="secondary" onClick={() => audit.id && auditApi.downloadPdf(audit.id, audit.accountName).catch(() => window.open(`${auditApi.pdfUrl(audit.id)}?inline=1`, '_blank'))}>
               <Download size={14} /> Download PDF
             </Button>
             <Link to="/"><Button size="sm">Run your own audit</Button></Link>

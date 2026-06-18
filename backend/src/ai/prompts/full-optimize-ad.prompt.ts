@@ -1,6 +1,7 @@
 import type { AuditIntelligence, LiveAdRow, OptimizationScenario } from '../../services/audit-intelligence.service.js';
 import type { Finding } from '../../types/index.js';
 import type { OptimizationTone } from './optimize-ad.prompt.js';
+import { resolveBusinessName, displayPathFromWebsite } from '../../utils/business-identity.js';
 
 export interface FullOptimizeAdContext {
   intelligence: AuditIntelligence;
@@ -18,6 +19,7 @@ export interface FullOptimizeAdContext {
   scenario: OptimizationScenario;
   tone?: OptimizationTone;
   variationHint?: string;
+  customPrompt?: string;
 }
 
 const TONE_INSTRUCTIONS: Record<OptimizationTone, string> = {
@@ -30,9 +32,9 @@ const TONE_INSTRUCTIONS: Record<OptimizationTone, string> = {
 };
 
 function summarizeFindings(intelligence: AuditIntelligence): string {
-  const top = [...intelligence.findings.critical, ...intelligence.findings.high]
-    .slice(0, 8)
-    .map((f) => `- [${f.severity}] ${f.title}: ${f.description.slice(0, 200)}${f.recommendation ? ` → ${f.recommendation.slice(0, 120)}` : ''}`);
+  const top = [...intelligence.findings.critical, ...intelligence.findings.high, ...intelligence.findings.medium]
+    .slice(0, 12)
+    .map((f) => `- [${f.severity}] ${f.title}: ${f.description.slice(0, 280)}${f.recommendation ? ` → Fix: ${f.recommendation.slice(0, 160)}` : ''}`);
   return top.length ? top.join('\n') : 'No critical findings — optimize for growth.';
 }
 
@@ -41,9 +43,13 @@ function trimJson(data: unknown[], max = 12): string {
 }
 
 export function buildFullOptimizeAdPrompt(ctx: FullOptimizeAdContext): string {
-  const { intelligence, finding, currentAd, scenario, tone, variationHint } = ctx;
+  const { intelligence, finding, currentAd, scenario, tone, variationHint, customPrompt } = ctx;
   const biz = intelligence.business;
+  const brandName = resolveBusinessName(biz.name, biz.websiteUrl);
   const toneInstruction = TONE_INSTRUCTIONS[tone ?? 'default'];
+  const websiteNote = biz.websiteUrl
+    ? `Brand name MUST be "${brandName}" (derived from ${biz.websiteUrl}). Use this in headlines, descriptions, and extensions. NEVER use contact-person names, Google Ads account IDs, or unrelated names in ad copy. Display paths should reflect real site sections (e.g. "${displayPathFromWebsite(biz.websiteUrl)}", "services").`
+    : `Brand name for ads: "${brandName}". Never use Google Ads customer IDs or contact-person names in copy.`;
 
   return `You are a Senior Google Ads Strategist at a top performance agency. Your goal: maximize CTR, conversions, quality score, and ad relevance while reducing wasted spend.
 
@@ -56,7 +62,8 @@ SCENARIO: ${
   }
 
 BUSINESS
-- Name: ${biz.name}
+- Brand name (use in ALL ad copy): ${brandName}
+- Google Ads account label: ${biz.name}
 - Goal: ${biz.goal ?? 'Lead generation / conversions'}
 - Website: ${biz.websiteUrl ?? 'Not specified'}
 - Monthly spend: ${biz.monthlySpend != null ? `$${biz.monthlySpend.toLocaleString()}` : 'Unknown'}
@@ -101,13 +108,19 @@ ${scenario === 'REPLACE_EXISTING' ? `EXISTING AD TO IMPROVE
 
 TONE: ${toneInstruction}
 ${variationHint ? `VARIATION: ${variationHint}` : ''}
+${customPrompt?.trim() ? `\nUSER CUSTOM INSTRUCTIONS (follow closely):\n${customPrompt.trim()}\n` : ''}
+${websiteNote}
 
 COMPLIANCE
 - Headlines: max 30 chars, exactly 15 unique headlines
 - Descriptions: max 90 chars, exactly 4 unique descriptions
-- Display paths: max 15 chars each
+- Display paths: max 15 chars each, derived from website/service pages (not account IDs)
 - No ALL CAPS, misleading claims, or excessive punctuation
 - Keyword-relevant, conversion-focused, publishable today
+- ALWAYS include "headlines" (15 items) and "descriptions" (4 items) even for CREATE_STRATEGY scenario
+- Reference specific services, value props, and audit findings in descriptions — be detailed and specific to this business
+- Include 4 sitelinks, 4 callouts, and structured snippets relevant to ${brandName}
+- "reasoning" must be 3-5 sentences explaining strategy tied to audit data
 
 Return ONLY a single valid JSON object with no markdown fences and no text before or after:
 {
@@ -128,14 +141,15 @@ Return ONLY a single valid JSON object with no markdown fences and no text befor
 }`;
 }
 
-export function liveAdToCurrentAd(ad: LiveAdRow | null, fallbackBrand: string) {
+export function liveAdToCurrentAd(ad: LiveAdRow | null, fallbackBrand: string, websiteUrl?: string) {
+  const bizName = resolveBusinessName(fallbackBrand, websiteUrl);
+  const brand = bizName.split(' ')[0];
   if (!ad) {
-    const brand = fallbackBrand.split(' ')[0];
     return {
       headlines: [`${brand} — Get Started`, 'Trusted Experts', 'Free Consultation', 'Call Today', 'Book Online'],
       descriptions: [
-        `${fallbackBrand} delivers results. Contact us for a free consultation.`,
-        'Professional services tailored to your goals. Start today.',
+        `${bizName} delivers measurable results. Visit us online for a free consultation today.`,
+        'Professional services tailored to your goals. Start improving performance now.',
       ],
       keywords: [brand.toLowerCase()],
       qualityScore: 0,

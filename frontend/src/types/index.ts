@@ -77,6 +77,12 @@ export interface AuditRun {
   email?: string;
   goal?: string;
   googleAdsCustomerId?: string;
+  websiteUrl?: string;
+  selectedCampaignIds?: string[];
+  auditScope?: 'account' | 'campaign';
+  campaignId?: string;
+  campaignName?: string;
+  parentAuditId?: string;
   modules: AuditModule[];
   findings: Finding[];
   healthScores: HealthScore[];
@@ -94,5 +100,29 @@ export interface SharedReport {
   id: string;
   token: string;
   auditRunId: string;
+  createdAt: string;
+}
+
+export interface AuditSummary {
+  id: string;
+  accountName: string;
+  baseAccountName: string;
+  status: AuditStatus;
+  progress: number;
+  modulesComplete: number;
+  totalModules: number;
+  findingsCount: number;
+  healthScore: number | null;
+  totalImpact: number;
+  criticalCount: number;
+  dataWindowDays: number;
+  googleAdsCustomerId?: string;
+  auditScope: 'account' | 'campaign';
+  campaignName?: string;
+  monthlySpend: number;
+  campaignCount: number;
+  goal?: string;
+  startedAt?: string;
+  completedAt?: string;
   createdAt: string;
 }

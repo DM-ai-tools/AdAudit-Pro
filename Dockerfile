@@ -52,6 +52,8 @@ COPY backend/prisma ./prisma
 COPY backend/scripts/start-production.mjs ./scripts/start-production.mjs
 COPY --from=frontend-build /app/frontend/dist /app/frontend/dist
 
+# Railway injects PORT at runtime; default for local Docker runs
+ENV PORT=5000
 EXPOSE 5000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \

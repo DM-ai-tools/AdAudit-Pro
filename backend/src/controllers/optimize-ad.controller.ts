@@ -23,6 +23,7 @@ export async function handleOptimizeAd(req: AuthRequest, res: Response): Promise
       findingId,
       tone,
       variation,
+      customPrompt,
       findingSnapshot,
       auditFindingsSnapshot,
       accountContext,
@@ -31,6 +32,7 @@ export async function handleOptimizeAd(req: AuthRequest, res: Response): Promise
       findingId?: string;
       tone?: OptimizationTone;
       variation?: 'regenerate' | 'shorter' | 'more-variations' | 'aggressive-cta';
+      customPrompt?: string;
       findingSnapshot?: Finding;
       auditFindingsSnapshot?: Finding[];
       accountContext?: {
@@ -40,6 +42,7 @@ export async function handleOptimizeAd(req: AuthRequest, res: Response): Promise
         googleAdsCustomerId?: string;
         websiteUrl?: string;
         userId?: string;
+        campaignId?: string;
       };
     };
 
@@ -69,6 +72,7 @@ export async function handleOptimizeAd(req: AuthRequest, res: Response): Promise
       findingId,
       tone,
       variation,
+      customPrompt,
       findingSnapshot,
       auditFindingsSnapshot,
       accountContext,

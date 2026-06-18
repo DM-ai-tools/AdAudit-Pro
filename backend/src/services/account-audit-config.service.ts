@@ -96,9 +96,9 @@ function recommendWindow(spend30: number, spend90: number, spend365: number): Au
 }
 
 function recommendDepth(activeCampaigns: number, spend30: number): AuditDepth {
-  if (activeCampaigns > 25 || spend30 > 50000) return 'deep';
   if (activeCampaigns === 0 && spend30 === 0) return 'standard';
-  if (activeCampaigns > 8 || spend30 > 10000) return 'standard';
+  if (activeCampaigns > 25 || spend30 > 50000) return 'deep';
+  if (activeCampaigns > 0 || spend30 > 0) return 'deep';
   return 'standard';
 }
 
@@ -115,7 +115,7 @@ function mockConfig(account: GoogleAdsAccountDto): AccountAuditConfig {
   return {
     account,
     source: 'mock',
-    recommendedDepth: 'standard',
+    recommendedDepth: 'deep',
     recommendedWindow: 365,
     modules,
     whatWeAnalyze: modules.filter((m) => m.enabled).map((m) => m.name),

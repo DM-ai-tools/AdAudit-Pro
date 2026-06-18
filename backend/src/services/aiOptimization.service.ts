@@ -13,6 +13,11 @@ import {
 import type { Finding } from '../types/index.js';
 import { prisma } from '../lib/prisma.js';
 import { extractJsonFromClaudeText } from '../utils/claude-json.js';
+import {
+  displayPathFromWebsite,
+  resolveBusinessName,
+  resolveDisplayHost,
+} from '../utils/business-identity.js';
 
 export type { OptimizationTone } from '../ai/prompts/optimize-ad.prompt.js';
 
@@ -74,6 +79,7 @@ export interface OptimizeAdRequest {
   findingId: string;
   tone?: OptimizationTone;
   variation?: 'regenerate' | 'shorter' | 'more-variations' | 'aggressive-cta';
+  customPrompt?: string;
   findingSnapshot?: Finding;
   auditFindingsSnapshot?: Finding[];
   accountContext?: {
@@ -111,22 +117,75 @@ const VARIATION_HINTS: Record<string, string> = {
   'aggressive-cta': 'Use stronger, more urgent call-to-action language.',
 };
 
-function parseClaudeJson(text: string): OptimizedAdContent {
-  const parsed = extractJsonFromClaudeText(text);
+function normalizeStringArray(val: unknown): string[] {
+  if (!val) return [];
+  if (Array.isArray(val)) return val.map((v) => String(v).trim()).filter(Boolean);
+  if (typeof val === 'string') return [val.trim()].filter(Boolean);
+  return [];
+}
 
-  const headlines = (parsed.headlines as string[] | undefined) ?? [];
-  const descriptions = (parsed.descriptions as string[] | undefined) ?? [];
-  if (!headlines.length || !descriptions.length) {
-    throw new Error('Claude returned incomplete ad copy');
+function enforceGoogleAdsLimits(
+  headlines: string[],
+  descriptions: string[],
+  brand: string
+): { headlines: string[]; descriptions: string[] } {
+  const h = headlines.map((s) => s.trim().slice(0, 30)).filter(Boolean);
+  const d = descriptions.map((s) => s.trim().slice(0, 90)).filter(Boolean);
+
+  const fallbacksH = [
+    `${brand} — Get Started`,
+    `Trusted ${brand} Experts`,
+    'Free Consultation Today',
+    'Book Online Now',
+    'Call For a Quote',
+  ];
+  const fallbacksD = [
+    `${brand} delivers results you can measure. Contact us for a free consultation today.`,
+    'Professional services tailored to your goals. Start improving performance now.',
+  ];
+
+  while (h.length < 5) {
+    const next = fallbacksH[h.length % fallbacksH.length];
+    if (!h.includes(next)) h.push(next.slice(0, 30));
+    else break;
+  }
+  while (d.length < 2) {
+    const next = fallbacksD[d.length % fallbacksD.length];
+    if (!d.includes(next)) d.push(next.slice(0, 90));
+    else break;
   }
 
-  const displayPathsRaw = parsed.displayPaths;
+  return { headlines: h.slice(0, 15), descriptions: d.slice(0, 4) };
+}
+
+function parseClaudeJson(text: string, brand: string): OptimizedAdContent {
+  const parsed = extractJsonFromClaudeText(text);
+
+  let headlines = normalizeStringArray(parsed.headlines);
+  let descriptions = normalizeStringArray(parsed.descriptions);
+
+  // Some Claude responses nest RSA under responsiveSearchAd
+  const rsa = parsed.responsiveSearchAd as Record<string, unknown> | undefined;
+  if (rsa) {
+    if (!headlines.length) headlines = normalizeStringArray(rsa.headlines);
+    if (!descriptions.length) descriptions = normalizeStringArray(rsa.descriptions);
+  }
+
+  ({ headlines, descriptions } = enforceGoogleAdsLimits(headlines, descriptions, brand));
+
+  const displayPathsRaw = parsed.displayPaths ?? rsa?.displayPaths;
   let displayPaths: { path1?: string; path2?: string } | undefined;
   if (Array.isArray(displayPathsRaw)) {
-    displayPaths = { path1: displayPathsRaw[0], path2: displayPathsRaw[1] };
+    displayPaths = {
+      path1: String(displayPathsRaw[0] ?? '').slice(0, 15) || undefined,
+      path2: String(displayPathsRaw[1] ?? '').slice(0, 15) || undefined,
+    };
   } else if (displayPathsRaw && typeof displayPathsRaw === 'object') {
     const dp = displayPathsRaw as { path1?: string; path2?: string };
-    displayPaths = dp;
+    displayPaths = {
+      path1: dp.path1?.slice(0, 15),
+      path2: dp.path2?.slice(0, 15),
+    };
   }
 
   const predicted = parsed.predictedImprovements as Record<string, string> | undefined;
@@ -163,8 +222,17 @@ function intelligenceToCurrentAd(
   intelligence: AuditIntelligence,
   finding: Finding
 ): CurrentAdData {
+  const bizName = resolveBusinessName(
+    intelligence.business.name,
+    intelligence.business.websiteUrl
+  );
+  const brand = bizName.split(' ')[0];
+
   const ad = intelligence.primaryAd;
-  const base = liveAdToCurrentAd(ad, intelligence.business.name);
+  const base = liveAdToCurrentAd(ad, bizName, intelligence.business.websiteUrl);
+
+  const displayHost = resolveDisplayHost(intelligence.business.websiteUrl, bizName);
+  const pathBrand = displayPathFromWebsite(intelligence.business.websiteUrl);
 
   if (ad) {
     return {
@@ -176,28 +244,49 @@ function intelligenceToCurrentAd(
       adGroupResourceName: ad.adGroupResourceName,
       campaignName: ad.campaignName,
       adGroupName: ad.adGroupName,
-      finalUrls: ad.finalUrls,
-      displayPath1: intelligence.business.name.split(' ')[0].toLowerCase().slice(0, 15),
+      finalUrls: ad.finalUrls?.length
+        ? ad.finalUrls
+        : intelligence.business.websiteUrl
+          ? [intelligence.business.websiteUrl.startsWith('http')
+              ? intelligence.business.websiteUrl
+              : `https://${intelligence.business.websiteUrl}`]
+          : undefined,
+      displayPath1: pathBrand,
+      displayPath2: 'services',
     };
   }
 
-  const brand = intelligence.business.name.split(' ')[0];
-  const noData = /no ad|no active|empty|not available|not detected|no data/i.test(
+  const noData = /no ad|no active|empty|not available|not detected|no data|no campaign/i.test(
     `${finding.title} ${finding.description}`
   );
 
+  const website = intelligence.business.websiteUrl;
+  const finalUrl = website
+    ? (website.startsWith('http') ? website : `https://${website}`)
+    : undefined;
+
   return {
-    headlines: base.headlines,
-    descriptions: base.descriptions,
+    headlines: [
+      `${brand} — Get Started`,
+      `Trusted ${brand} Experts`,
+      'Free Consultation',
+      'Book Online Today',
+      'Quality Service Guaranteed',
+    ].map((h) => h.slice(0, 30)),
+    descriptions: [
+      `${bizName} helps you reach more customers. Visit ${displayHost} to learn more and get started.`,
+      'Professional service backed by proven results. Contact us today for your free consultation.',
+    ].map((d) => d.slice(0, 90)),
     keywords: [brand.toLowerCase(), 'services'],
     qualityScore: noData ? 0 : 3,
     ctr: 0,
     conversions: 0,
     adStrength: noData ? 'NONE' : 'POOR',
-    campaignName: `${intelligence.business.name} - Search`,
-    adGroupName: 'Brand Services',
-    displayPath1: brand.toLowerCase().slice(0, 15),
+    campaignName: `${bizName} - Search`,
+    adGroupName: 'Core Services',
+    displayPath1: pathBrand,
     displayPath2: 'services',
+    finalUrls: finalUrl ? [finalUrl] : undefined,
     cta: 'Learn More',
   };
 }
@@ -234,6 +323,10 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
   const originalAd = intelligenceToCurrentAd(intelligence, finding);
   const tone = request.tone ?? 'default';
   const variationHint = request.variation ? VARIATION_HINTS[request.variation] : undefined;
+  const brand = resolveBusinessName(
+    intelligence.business.name,
+    intelligence.business.websiteUrl
+  );
 
   const response = await createClaudeMessage({
     max_tokens: 8192,
@@ -247,6 +340,7 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
           scenario: intelligence.scenario,
           tone,
           variationHint,
+          customPrompt: request.customPrompt,
         }),
       },
     ],
@@ -255,7 +349,31 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
   const block = response.content[0];
   if (block.type !== 'text') throw new Error('Unexpected Claude response format');
 
-  const optimized = parseClaudeJson(block.text);
+  let optimized: OptimizedAdContent;
+  try {
+    optimized = parseClaudeJson(block.text, brand);
+  } catch (firstErr) {
+    const retry = await createClaudeMessage({
+      max_tokens: 8192,
+      messages: [
+        {
+          role: 'user',
+          content: `${buildFullOptimizeAdPrompt({
+            intelligence,
+            finding,
+            currentAd: originalAd,
+            scenario: intelligence.scenario,
+            tone,
+            variationHint,
+            customPrompt: request.customPrompt,
+          })}\n\nIMPORTANT: Your previous response was missing required headlines/descriptions. Return ONLY valid JSON with exactly 15 headlines (≤30 chars) and 4 descriptions (≤90 chars).`,
+        },
+      ],
+    });
+    const retryBlock = retry.content[0];
+    if (retryBlock.type !== 'text') throw firstErr;
+    optimized = parseClaudeJson(retryBlock.text, brand);
+  }
 
   if (originalAd.campaignId) optimized.campaignId = originalAd.campaignId;
   if (originalAd.adGroupId) optimized.adGroupId = originalAd.adGroupId;

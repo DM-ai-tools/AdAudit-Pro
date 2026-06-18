@@ -19,9 +19,17 @@ export const AUDIT_MODULE_CATALOG: AuditModuleCatalogItem[] = [
   { id: 'conversion', name: 'Conversion Tracking Audit', description: 'Tag health, attribution, and goal setup', icon: 'activity', quickDefault: true },
   { id: 'quality-score', name: 'Quality Score Audit', description: 'QS breakdown by keyword and landing page', icon: 'bar', quickDefault: false },
   { id: 'device', name: 'Device Performance Audit', description: 'Mobile vs desktop performance gaps', icon: 'smartphone', quickDefault: false },
+  { id: 'impression-share', name: 'Impression Share', description: 'Lost impression share and competitive visibility', icon: 'eye', quickDefault: false },
+  { id: 'pmax', name: 'PMax Placements', description: 'Performance Max placement and asset analysis', icon: 'sparkles', quickDefault: false },
 ];
 
 export const QUICK_MODULE_IDS = AUDIT_MODULE_CATALOG.filter((m) => m.quickDefault).map((m) => m.id);
+
+export const ALL_AUDIT_MODULE_IDS = AUDIT_MODULE_CATALOG.map((m) => m.id);
+
+export function getModuleCatalogName(slug: string): string {
+  return AUDIT_MODULE_CATALOG.find((m) => m.id === slug)?.name ?? slug;
+}
 
 export const AUDIT_DEPTH_OPTIONS = [
   { id: 'quick' as const, title: 'Quick Scan', description: 'Fast overview of top issues and wasted spend', modules: 6, estimatedMinutes: 8 },

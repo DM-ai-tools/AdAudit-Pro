@@ -22,6 +22,26 @@ export interface GoogleAdsAccount {
   managerName?: string;
 }
 
+export interface GoogleAdsCampaignAd {
+  id: string;
+  resourceName: string;
+  adGroupName: string;
+  adType: string;
+  status: string;
+  adStrength?: string;
+  headlines: string[];
+  descriptions: string[];
+  finalUrls: string[];
+  displayPath1?: string;
+  displayPath2?: string;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+  ctr: number;
+  cost: number;
+  avgCpc: number;
+}
+
 export interface GoogleAdsCampaign {
   id: string;
   resourceName: string;
@@ -29,12 +49,34 @@ export interface GoogleAdsCampaign {
   type: string;
   status: string;
   budgetDaily: number;
+  biddingStrategyType?: string;
   impressions: number;
   clicks: number;
   conversions: number;
   ctr: number;
+  avgCpc: number;
+  conversionRate: number;
+  costPerConversion: number;
   cost: number;
   adCount: number;
+  metricsWindowDays: number;
+  ads: GoogleAdsCampaignAd[];
+}
+
+export interface AccountPerformanceSummary {
+  currency: string;
+  timezone: string;
+  windowDays: number;
+  dateRange: string;
+  clicks: number;
+  impressions: number;
+  conversions: number;
+  cost: number;
+  ctr: number;
+  avgCpc: number;
+  conversionRate: number;
+  costPerConversion: number;
+  activeCampaigns: number;
 }
 
 export interface AuditModuleOption {

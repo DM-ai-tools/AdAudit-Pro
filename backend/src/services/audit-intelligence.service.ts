@@ -2,6 +2,7 @@ import { getAuditReport } from './audit.service.js';
 import { getMe } from './user.service.js';
 import { fetchModuleGoogleAdsData, isGoogleAdsConfigured } from './google-ads.service.js';
 import type { Finding } from '../types/index.js';
+import { resolveBusinessName } from '../utils/business-identity.js';
 
 export type OptimizationScenario = 'REPLACE_EXISTING' | 'CREATE_ADS' | 'CREATE_STRATEGY';
 
@@ -147,6 +148,7 @@ export async function gatherAuditIntelligence(options: {
     googleAdsCustomerId?: string;
     websiteUrl?: string;
     industry?: string;
+    campaignId?: string;
   };
   auditFindingsSnapshot?: Finding[];
 }): Promise<AuditIntelligence> {
@@ -156,14 +158,18 @@ export async function gatherAuditIntelligence(options: {
   );
 
   const business = {
-    name: stored?.accountName ?? options.accountContext?.accountName ?? 'Account',
+    name: resolveBusinessName(
+      stored?.accountName ?? options.accountContext?.accountName ?? 'Account',
+      stored?.websiteUrl ?? options.accountContext?.websiteUrl,
+    ),
     goal: stored?.goal ?? options.accountContext?.goal,
-    websiteUrl: options.accountContext?.websiteUrl,
+    websiteUrl: stored?.websiteUrl ?? options.accountContext?.websiteUrl,
     monthlySpend: stored?.monthlySpend ?? options.accountContext?.monthlySpend,
     campaignCount: stored?.campaignCount,
   };
 
   const customerId = stored?.googleAdsCustomerId ?? options.accountContext?.googleAdsCustomerId;
+  const campaignId = options.campaignId ?? options.accountContext?.campaignId;
   const windowDays = stored?.dataWindowDays ?? options.dataWindowDays ?? 30;
   const dateRange = windowDays >= 365 ? 'LAST_365_DAYS' : windowDays >= 90 ? 'LAST_90_DAYS' : 'LAST_30_DAYS';
 
@@ -220,15 +226,15 @@ export async function gatherAuditIntelligence(options: {
     }
   }
 
-  if (options.campaignId && campaigns.length) {
+  if (campaignId && campaigns.length) {
     campaigns = campaigns.filter((row) => {
       const r = row as { campaign?: { id?: string } };
-      return r.campaign?.id === options.campaignId;
+      return r.campaign?.id === campaignId;
     });
-    ads = ads.filter((a) => a.campaignId === options.campaignId);
+    ads = ads.filter((a) => a.campaignId === campaignId);
     keywords = keywords.filter((row) => {
       const r = row as { campaign?: { id?: string } };
-      return r.campaign?.id === options.campaignId;
+      return r.campaign?.id === campaignId;
     });
   }
 

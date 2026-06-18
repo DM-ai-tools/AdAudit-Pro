@@ -22,7 +22,7 @@ const MODULE_FINDING_MAP: Record<string, number[]> = {
   pmax: [9],
 };
 
-import { AUDIT_MODULE_CATALOG } from '../data/audit-module-catalog.js';
+import { AUDIT_MODULE_CATALOG, ALL_AUDIT_MODULE_IDS } from '../data/audit-module-catalog.js';
 
 const MODULE_DISPLAY_NAMES: Record<string, string> = {
   campaign: 'Campaign Architecture',
@@ -42,15 +42,13 @@ const MODULE_DISPLAY_NAMES: Record<string, string> = {
 };
 
 export function createModulesFromSelection(selectedIds?: string[]): import('../types/index.js').AuditModule[] {
-  const ids = selectedIds?.length
-    ? selectedIds
-    : AUDIT_MODULE_CATALOG.map((m) => m.id);
+  const ids = selectedIds?.length ? selectedIds : ALL_AUDIT_MODULE_IDS;
 
   return ids.map((id, index) => {
     const catalog = AUDIT_MODULE_CATALOG.find((m) => m.id === id);
     return {
       id: generateId('mod_'),
-      name: MODULE_DISPLAY_NAMES[id] || catalog?.name || id,
+      name: catalog?.name || MODULE_DISPLAY_NAMES[id] || id,
       slug: id,
       status: 'PENDING' as const,
       progress: 0,

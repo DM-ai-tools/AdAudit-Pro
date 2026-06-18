@@ -1,8 +1,9 @@
 import axios from 'axios';
-import type { AuditRun, Finding, HealthScore, User, SharedReport, AuditLog } from '../types';
+import type { AuditRun, Finding, HealthScore, User, SharedReport, AuditLog, AuditSummary } from '../types';
+import { getApiBaseUrl, getApiOrigin } from './api-base';
 
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: getApiBaseUrl(),
   headers: { 'Content-Type': 'application/json' },
 });
 
@@ -88,7 +89,7 @@ export const authApi = {
     if (sessionToken) params.set('session', sessionToken);
     if (loginHint) params.set('login_hint', loginHint);
     const path = `/api/auth/google?${params.toString()}`;
-    const base = apiBase.replace(/\/$/, '');
+    const base = (apiBase || getApiOrigin()).replace(/\/$/, '');
     return base ? `${base}${path}` : path;
   },
 };
@@ -98,6 +99,9 @@ export const auditApi = {
     api.post<{ audit: AuditRun; auditId: string }>('/audit/start-demo', data),
   start: (data: Record<string, unknown>) =>
     api.post<{ audit: AuditRun }>('/audit/start', data),
+  list: () => api.get<{ audits: AuditSummary[]; userEmail: string }>('/audit/list'),
+  startCampaign: (data: { parentAuditId: string; campaignId: string; campaignName: string }) =>
+    api.post<{ audit: AuditRun; auditId: string }>('/audit/start-campaign', data),
   status: (id: string) => api.get<{ audit: AuditRun }>(`/audit/status/${id}`),
   findings: (id: string) => api.get<{ findings: Finding[] }>(`/audit/findings/${id}`),
   report: (id: string) => api.get<{ audit: AuditRun }>(`/audit/report/${id}`),
@@ -110,9 +114,52 @@ export const auditApi = {
     api.post<{ report: SharedReport; url: string }>('/audit/share', { auditRunId }),
   shareDemo: (auditRunId: string) =>
     api.post<{ report: SharedReport; url: string }>('/audit/share-demo', { auditRunId }),
+  backfillModules: (auditRunId: string) =>
+    api.post<{ added: number; slugs: string[]; audit: AuditRun }>(`/audit/${auditRunId}/backfill-modules`),
+  backfillModulesDemo: (auditRunId: string) =>
+    api.post<{ added: number; slugs: string[]; audit: AuditRun }>(`/audit/${auditRunId}/backfill-demo`),
   shared: (token: string) =>
     api.get<{ report: SharedReport; audit: AuditRun }>(`/audit/shared/${token}`),
-  pdfUrl: (id: string) => `/api/audit/pdf/${id}`,
+  pdfUrl: (id: string) => {
+    const origin = getApiOrigin();
+    return origin ? `${origin}/api/audit/pdf/${id}` : `/api/audit/pdf/${id}`;
+  },
+  downloadPdf: async (id: string, accountName?: string) => {
+    const res = await api.get(`/audit/pdf/${id}`, {
+      responseType: 'blob',
+      params: { inline: '1' },
+    });
+    const contentType = String(res.headers['content-type'] || '');
+    if (contentType.includes('application/json')) {
+      const text = await (res.data as Blob).text();
+      let message = 'Could not generate report';
+      try {
+        message = JSON.parse(text).error || message;
+      } catch {
+        /* ignore */
+      }
+      throw new Error(message);
+    }
+
+    const blob = res.data as Blob;
+    const isPdf = contentType.includes('pdf') || blob.type.includes('pdf');
+    const url = window.URL.createObjectURL(blob);
+
+    const opened = window.open(url, '_blank', 'noopener,noreferrer');
+    if (!opened) {
+      const safeName = (accountName || id).replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '-') || 'report';
+      const link = document.createElement('a');
+      link.href = url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.download = `adaudit-${safeName}.${isPdf ? 'pdf' : 'html'}`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    }
+
+    window.setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
+  },
 };
 
 export const googleAdsApi = {
@@ -127,7 +174,7 @@ export const googleAdsApi = {
       googleAdsConfigured: boolean;
       hasRefreshToken: boolean;
     }>('/google-ads/accounts'),
-  campaigns: (customerId: string) =>
+  campaigns: (customerId: string, windowDays = 30) =>
     api.get<{
       account: {
         customerId: string;
@@ -137,10 +184,22 @@ export const googleAdsApi = {
         currency: string;
       };
       campaigns: import('../types/connect').GoogleAdsCampaign[];
+      performance: import('../types/connect').AccountPerformanceSummary | null;
+      metricsWindowDays: number;
       source: 'google_ads_api' | 'mock';
       hasCampaigns: boolean;
       hasAds: boolean;
-    }>(`/google-ads/accounts/${encodeURIComponent(customerId)}/campaigns`),
+    }>(`/google-ads/accounts/${encodeURIComponent(customerId)}/campaigns`, {
+      params: { window: windowDays },
+    }),
+  performance: (customerId: string, windowDays = 30) =>
+    api.get<{
+      account: { customerId: string; name: string; currency: string };
+      performance: import('../types/connect').AccountPerformanceSummary;
+      source: 'google_ads_api' | 'mock';
+    }>(`/google-ads/accounts/${encodeURIComponent(customerId)}/performance`, {
+      params: { window: windowDays },
+    }),
   status: () =>
     api.get<{ googleAdsConfigured: boolean; hasRefreshToken: boolean; managerAccountId: string | null }>(
       '/google-ads/status'
@@ -173,6 +232,7 @@ export const aiApi = {
     findingId: string;
     tone?: import('../types/optimization').OptimizationTone;
     variation?: import('../types/optimization').OptimizationVariation;
+    customPrompt?: string;
     findingSnapshot?: import('../types').Finding;
     auditFindingsSnapshot?: import('../types').Finding[];
     accountContext?: {
@@ -182,6 +242,7 @@ export const aiApi = {
       googleAdsCustomerId?: string;
       websiteUrl?: string;
       userId?: string;
+      campaignId?: string;
     };
   }) => {
     try {
@@ -201,4 +262,5 @@ export const aiApi = {
   },
 };
 
+export { getApiBaseUrl, getApiOrigin, isAdAuditHealthPayload } from './api-base';
 export default api;

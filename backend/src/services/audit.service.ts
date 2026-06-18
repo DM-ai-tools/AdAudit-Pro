@@ -11,7 +11,9 @@ import { DEFAULT_ACCOUNT } from '../audit-engine/mock-data.js';
 import { createModulesFromSelection, getAuditMetrics } from '../audit-engine/index.js';
 import { estimateMinutes } from '../audit-engine/module-queries.js';
 import { getParallelStreamCount } from '../ai/anthropic-pool.js';
-import { runLiveAudit, type LiveAuditConfig } from '../audit-engine/live-audit.runner.js';
+import { resolveBusinessName } from '../utils/business-identity.js';
+import { ALL_AUDIT_MODULE_IDS } from '../data/audit-module-catalog.js';
+import { runLiveAudit, backfillMissingModules, type LiveAuditConfig } from '../audit-engine/live-audit.runner.js';
 
 export interface StartAuditConfig {
   accountName?: string;
@@ -27,6 +29,10 @@ export interface StartAuditConfig {
   selectedModules?: string[];
   selectedCampaignIds?: string[];
   competitors?: string[];
+  auditScope?: 'account' | 'campaign';
+  campaignId?: string;
+  campaignName?: string;
+  parentAuditId?: string;
 }
 
 export { findOrCreateUser, getMe, getUserByEmail, updateUser };
@@ -57,10 +63,15 @@ export async function startAudit(
   const dataWindowDays = data.auditWindow || 365;
   const depth = data.auditDepth || 'standard';
 
+  const resolvedAccountName = resolveBusinessName(
+    data.accountName || DEFAULT_ACCOUNT.name,
+    data.websiteUrl
+  );
+
   const account: Account = {
     id: generateId('acc_'),
     userId,
-    name: data.accountName || DEFAULT_ACCOUNT.name,
+    name: resolvedAccountName,
     monthlySpend: data.monthlySpend ?? DEFAULT_ACCOUNT.monthlySpend,
     campaignCount: data.campaignCount ?? DEFAULT_ACCOUNT.campaignCount,
     websiteUrl: data.websiteUrl || DEFAULT_ACCOUNT.websiteUrl,
@@ -72,10 +83,16 @@ export async function startAudit(
   const auditId = generateId('aud_');
   const estimatedMinutes = estimateMinutes(totalModules, depth, getParallelStreamCount());
 
+  const scope = data.auditScope ?? 'account';
+  const displayName =
+    scope === 'campaign' && data.campaignName
+      ? `${resolvedAccountName} — ${data.campaignName}`
+      : resolvedAccountName;
+
   const liveConfig: LiveAuditConfig = {
-    accountName: account.name,
+    accountName: displayName,
     monthlySpend: account.monthlySpend,
-    campaignCount: account.campaignCount,
+    campaignCount: data.campaignCount ?? account.campaignCount,
     websiteUrl: account.websiteUrl,
     email: data.email,
     goal: account.goal,
@@ -84,13 +101,17 @@ export async function startAudit(
     auditWindow: dataWindowDays,
     selectedModules: data.selectedModules,
     competitors: data.competitors,
+    auditScope: scope,
+    campaignId: data.campaignId,
+    campaignName: data.campaignName,
+    parentAuditId: data.parentAuditId,
   };
 
   const audit: AuditRun = {
     id: auditId,
     userId,
     accountId: account.id,
-    accountName: account.name,
+    accountName: displayName,
     status: 'RUNNING',
     progress: 0,
     modulesComplete: 0,
@@ -104,6 +125,12 @@ export async function startAudit(
     email: data.email,
     goal: account.goal,
     googleAdsCustomerId: data.googleAdsCustomerId,
+    websiteUrl: account.websiteUrl,
+    auditScope: scope,
+    campaignId: data.campaignId,
+    campaignName: data.campaignName,
+    parentAuditId: data.parentAuditId,
+    selectedCampaignIds: data.selectedCampaignIds,
     modules,
     findings: [],
     healthScores: [],
@@ -111,7 +138,9 @@ export async function startAudit(
     logs: [
       {
         id: generateId('log_'),
-        message: `Audit initiated for ${account.name}`,
+        message: scope === 'campaign' && data.campaignName
+          ? `Campaign audit initiated: ${data.campaignName}`
+          : `Audit initiated for ${account.name}`,
         level: 'info',
         createdAt: new Date().toISOString(),
       },
@@ -133,6 +162,36 @@ export async function startAudit(
   await auditStore.saveAudit(audit);
   runLiveAudit(auditId, userId, liveConfig);
   return audit;
+}
+
+export async function startCampaignAudit(
+  userId: string,
+  parentAuditId: string,
+  campaign: { id: string; name: string }
+): Promise<AuditRun> {
+  const parent = await getAuditReport(parentAuditId);
+  if (!parent) throw new Error('Parent account audit not found');
+  if (parent.userId !== userId) throw new Error('Not authorized for this audit');
+
+  const moduleIds = ALL_AUDIT_MODULE_IDS;
+
+  return startAudit(userId, {
+    googleAdsCustomerId: parent.googleAdsCustomerId,
+    accountName: parent.accountName.split(' — ')[0],
+    monthlySpend: parent.monthlySpend,
+    campaignCount: 1,
+    websiteUrl: parent.websiteUrl,
+    email: parent.email,
+    goal: parent.goal,
+    auditDepth: 'deep',
+    auditWindow: parent.dataWindowDays as 30 | 90 | 365,
+    selectedModules: moduleIds,
+    selectedCampaignIds: [campaign.id],
+    auditScope: 'campaign',
+    campaignId: campaign.id,
+    campaignName: campaign.name,
+    parentAuditId,
+  });
 }
 
 export async function getAuditStatus(id: string): Promise<AuditRun | null> {
@@ -160,6 +219,9 @@ export async function getAuditHealth(id: string) {
 }
 
 export async function createSharedReport(auditRunId: string, userId: string) {
+  const audit = await auditStore.getAudit(auditRunId);
+  if (!audit) throw new Error('Audit not found');
+  if (audit.userId !== userId) throw new Error('Not authorized to share this audit');
   const token = generateId('shr_');
   const report = {
     id: generateId('sr_'),
@@ -177,4 +239,29 @@ export async function getSharedReport(token: string) {
   const audit = await auditStore.getAudit(report.auditRunId);
   if (!audit) return null;
   return { report, audit };
+}
+
+export async function backfillAuditModules(auditRunId: string, userId: string): Promise<{ added: number; slugs: string[] }> {
+  const audit = await auditStore.getAudit(auditRunId);
+  if (!audit) throw new Error('Audit not found');
+  if (audit.userId !== userId) throw new Error('Not authorized for this audit');
+  if (audit.status !== 'COMPLETED') throw new Error('Audit must be completed before backfill');
+  return backfillMissingModules(auditRunId, userId);
+}
+
+export async function backfillAuditModulesDemo(auditRunId: string): Promise<{ added: number; slugs: string[] }> {
+  const audit = await auditStore.getAudit(auditRunId);
+  if (!audit) throw new Error('Audit not found');
+  if (audit.status !== 'COMPLETED') throw new Error('Audit must be completed before backfill');
+  return backfillMissingModules(auditRunId, audit.userId);
+}
+
+export async function listUserAudits(userId: string, jwtEmail?: string) {
+  const user = await getMe(userId);
+  if (!user) throw new Error('User not found');
+  if (jwtEmail && user.email.toLowerCase() !== jwtEmail.trim().toLowerCase()) {
+    throw new Error('Not authorized');
+  }
+  const audits = await auditStore.listAuditsForUser(userId);
+  return { audits, userEmail: user.email };
 }

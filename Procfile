@@ -1,1 +1,1 @@
-web: cd backend && node dist/index.js
+web: cd backend && node scripts/start-production.mjs

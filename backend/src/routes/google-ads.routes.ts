@@ -4,10 +4,12 @@ import { getMe } from '../services/audit.service.js';
 import {
   getGoogleAdsAccountsForUser,
   fetchCampaignsForAccount,
+  fetchAccountPerformanceSummary,
   isGoogleAdsConfigured,
+  resolveAccountLoginCustomerId,
+  listManagerCustomerIds,
 } from '../services/google-ads.service.js';
 import { getMockCampaigns } from '../data/google-ads-campaigns.js';
-import { env } from '../config/env.js';
 import { getAccountAuditConfig } from '../services/account-audit-config.service.js';
 import {
   publishOptimizedAd,
@@ -67,12 +69,30 @@ router.get('/accounts/:customerId/campaigns', authMiddleware, async (req: AuthRe
     }
 
     let campaigns;
-    if (source === 'mock' || env.useMockData) {
+    const loginCustomerId = resolveAccountLoginCustomerId(account, accounts);
+    const windowDays = Math.min(365, Math.max(30, parseInt(String(req.query.window ?? '30'), 10) || 30));
+
+    if (source === 'mock') {
       campaigns = getMockCampaigns(customerId);
     } else if (!user.googleRefreshToken) {
       return res.status(401).json({ error: 'Google Ads not connected' });
     } else {
-      campaigns = await fetchCampaignsForAccount(user.googleRefreshToken, customerId, user.id);
+      campaigns = await fetchCampaignsForAccount(
+        user.googleRefreshToken,
+        customerId,
+        user.id,
+        { loginCustomerId, managerIds: listManagerCustomerIds(accounts), dateWindowDays: windowDays }
+      );
+    }
+
+    let performance = null;
+    if (source !== 'mock' && user.googleRefreshToken) {
+      performance = await fetchAccountPerformanceSummary(
+        user.googleRefreshToken,
+        customerId,
+        user.id,
+        { loginCustomerId, managerIds: listManagerCustomerIds(accounts), dateWindowDays: windowDays }
+      );
     }
 
     res.json({
@@ -84,13 +104,53 @@ router.get('/accounts/:customerId/campaigns', authMiddleware, async (req: AuthRe
         currency: account.currency,
       },
       campaigns,
-      source: source === 'mock' || env.useMockData ? 'mock' : 'google_ads_api',
+      performance,
+      metricsWindowDays: windowDays,
+      source: source === 'mock' ? 'mock' : 'google_ads_api',
       hasCampaigns: campaigns.length > 0,
       hasAds: campaigns.some((c) => c.adCount > 0),
     });
   } catch (err) {
     console.error('Failed to fetch campaigns:', err);
     res.status(500).json({ error: 'Failed to fetch campaigns' });
+  }
+});
+
+router.get('/accounts/:customerId/performance', authMiddleware, async (req: AuthRequest, res: Response) => {
+  try {
+    const user = await getMe(req.authUser!.userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const customerId = String(req.params.customerId);
+    const windowDays = Math.min(365, Math.max(30, parseInt(String(req.query.window ?? '30'), 10) || 30));
+    const { accounts, source } = await getGoogleAdsAccountsForUser(user.googleRefreshToken, user.id);
+    const account = accounts.find(
+      (a) => a.customerId === customerId || a.customerId.replace(/-/g, '') === customerId.replace(/-/g, '')
+    );
+
+    if (!account) return res.status(404).json({ error: 'Account not found for this user' });
+    if (!user.googleRefreshToken) return res.status(401).json({ error: 'Google Ads not connected' });
+
+    const loginCustomerId = resolveAccountLoginCustomerId(account, accounts);
+    const performance = await fetchAccountPerformanceSummary(
+      user.googleRefreshToken,
+      customerId,
+      user.id,
+      { loginCustomerId, managerIds: listManagerCustomerIds(accounts), dateWindowDays: windowDays }
+    );
+
+    if (!performance) {
+      return res.status(502).json({ error: 'Could not load performance data from Google Ads' });
+    }
+
+    res.json({
+      account: { customerId: account.customerId, name: account.name, currency: account.currency },
+      performance,
+      source: source === 'mock' ? 'mock' : 'google_ads_api',
+    });
+  } catch (err) {
+    console.error('Failed to fetch performance:', err);
+    res.status(500).json({ error: 'Failed to fetch performance summary' });
   }
 });
 

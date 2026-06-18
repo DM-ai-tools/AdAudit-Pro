@@ -13,14 +13,16 @@ export const DEFAULT_AUDIT_MODULES: AuditModuleOption[] = [
   { id: 'conversion', name: 'Conversion Tracking Audit', description: 'Tag health, attribution, and goal setup', icon: 'activity', enabled: true },
   { id: 'quality-score', name: 'Quality Score Audit', description: 'QS breakdown by keyword and landing page', icon: 'bar', enabled: true },
   { id: 'device', name: 'Device Performance Audit', description: 'Mobile vs desktop performance gaps', icon: 'smartphone', enabled: true },
+  { id: 'impression-share', name: 'Impression Share', description: 'Lost impression share and competitive visibility', icon: 'eye', enabled: true },
+  { id: 'pmax', name: 'PMax Placements', description: 'Performance Max placement and asset analysis', icon: 'sparkles', enabled: true },
 ];
 
 export const QUICK_MODULE_IDS = DEFAULT_AUDIT_MODULES.filter((_, i) => [0, 1, 2, 3, 6, 9].includes(i)).map((m) => m.id);
 
 export const AUDIT_DEPTH_OPTIONS = [
   { id: 'quick' as const, title: 'Quick Scan', description: 'Fast overview of top issues and wasted spend', modules: 6, estimatedMinutes: 8 },
-  { id: 'standard' as const, title: 'Standard Audit', description: 'Recommended full forensic audit for your account', modules: 12, estimatedMinutes: 18 },
-  { id: 'deep' as const, title: 'Deep Audit', description: 'Advanced forensic analysis with AI deep-dives', modules: 12, estimatedMinutes: 32 },
+  { id: 'standard' as const, title: 'Standard Audit', description: 'Recommended full forensic audit for your account', modules: 14, estimatedMinutes: 18 },
+  { id: 'deep' as const, title: 'Deep Audit', description: 'Advanced forensic analysis with AI deep-dives', modules: 14, estimatedMinutes: 32 },
 ];
 
 export const AUDIT_WINDOW_OPTIONS = [

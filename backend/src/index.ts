@@ -19,6 +19,7 @@ const frontendDist = join(__dirname, '../../frontend/dist');
 const corsOrigins = new Set<string>([env.clientUrl]);
 if (!env.isProduction) {
   corsOrigins.add('http://localhost:5173');
+  corsOrigins.add('http://localhost:3000');
   corsOrigins.add(`http://localhost:${env.port}`);
 }
 if (env.railwayPublicDomain) {

@@ -28,6 +28,26 @@ export interface GoogleAdsAccountDto {
   managerName?: string;
 }
 
+export interface CampaignAdDto {
+  id: string;
+  resourceName: string;
+  adGroupName: string;
+  adType: string;
+  status: string;
+  adStrength?: string;
+  headlines: string[];
+  descriptions: string[];
+  finalUrls: string[];
+  displayPath1?: string;
+  displayPath2?: string;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+  ctr: number;
+  cost: number;
+  avgCpc: number;
+}
+
 export interface CampaignDto {
   id: string;
   resourceName: string;
@@ -35,12 +55,34 @@ export interface CampaignDto {
   type: string;
   status: string;
   budgetDaily: number;
+  biddingStrategyType?: string;
   impressions: number;
   clicks: number;
   conversions: number;
   ctr: number;
+  avgCpc: number;
+  conversionRate: number;
+  costPerConversion: number;
   cost: number;
   adCount: number;
+  metricsWindowDays: number;
+  ads: CampaignAdDto[];
+}
+
+export interface AccountPerformanceSummary {
+  currency: string;
+  timezone: string;
+  windowDays: number;
+  dateRange: string;
+  clicks: number;
+  impressions: number;
+  conversions: number;
+  cost: number;
+  ctr: number;
+  avgCpc: number;
+  conversionRate: number;
+  costPerConversion: number;
+  activeCampaigns: number;
 }
 
 export function isGoogleAdsConfigured(): boolean {
@@ -57,6 +99,38 @@ function formatCustomerId(resourceName: string): string {
 
 function bareCustomerId(resourceName: string): string {
   return resourceName.replace('customers/', '').replace(/-/g, '');
+}
+
+export function dateRangeForDays(days: number): string {
+  if (days >= 365) return 'LAST_365_DAYS';
+  if (days >= 90) return 'LAST_90_DAYS';
+  return 'LAST_30_DAYS';
+}
+
+function parseAdTextAssets(assets?: Array<{ text?: string } | string> | null): string[] {
+  if (!assets?.length) return [];
+  return assets
+    .map((a) => (typeof a === 'string' ? a : a.text))
+    .filter((t): t is string => !!t);
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+function computeRates(metrics: {
+  impressions: number;
+  clicks: number;
+  conversions: number;
+  cost: number;
+}): { ctr: number; avgCpc: number; conversionRate: number; costPerConversion: number } {
+  const { impressions, clicks, conversions, cost } = metrics;
+  return {
+    ctr: impressions > 0 ? round2((clicks / impressions) * 100) : 0,
+    avgCpc: clicks > 0 ? round2(cost / clicks) : 0,
+    conversionRate: clicks > 0 ? round2((conversions / clicks) * 100) : 0,
+    costPerConversion: conversions > 0 ? round2(cost / conversions) : 0,
+  };
 }
 
 function parseGoogleAdsError(body: string, status: number): string {
@@ -97,9 +171,7 @@ function googleAdsHeaders(
     'developer-token': env.googleAdsDeveloperToken,
     'Content-Type': 'application/json',
   };
-  const loginId =
-    loginCustomerId?.replace(/-/g, '') ||
-    env.googleAdsManagerAccountId?.replace(/-/g, '');
+  const loginId = loginCustomerId?.replace(/-/g, '');
   if (loginId) {
     headers['login-customer-id'] = loginId;
   }
@@ -320,6 +392,29 @@ function loginCustomerIdForTarget(
   return managerCustomerId;
 }
 
+/** login-customer-id for API calls — prefers MCC parent on the account DTO. */
+export function resolveAccountLoginCustomerId(
+  account: GoogleAdsAccountDto,
+  allAccounts?: GoogleAdsAccountDto[]
+): string | undefined {
+  if (account.parentManagerId) {
+    return bareCustomerId(account.parentManagerId);
+  }
+  if (allAccounts?.length) {
+    const managers = allAccounts.filter((a) => a.accountType === 'Manager');
+    if (managers.length === 1) {
+      return bareCustomerId(managers[0].customerId);
+    }
+  }
+  return undefined;
+}
+
+export function listManagerCustomerIds(accounts: GoogleAdsAccountDto[]): string[] {
+  return accounts
+    .filter((a) => a.accountType === 'Manager')
+    .map((a) => bareCustomerId(a.customerId));
+}
+
 function accountFromResourceName(resourceName: string): GoogleAdsAccountDto {
   const customerId = bareCustomerId(resourceName);
   return {
@@ -420,6 +515,9 @@ export async function listGoogleAdsAccounts(
           accountType: customer?.manager ? 'Manager' : 'Standard',
           monthlySpend,
           selectable: !customer?.manager,
+          parentManagerId: !customer?.manager && managerCustomerId && customerId !== managerCustomerId
+            ? formatCustomerId(`customers/${managerCustomerId}`)
+            : undefined,
         });
       } catch (err) {
         console.warn(`Skipping customer ${customerId}:`, err instanceof Error ? err.message : err);
@@ -650,28 +748,366 @@ export async function fetchAccountInsights(
 export async function fetchCampaignsForAccount(
   refreshToken: string,
   customerId: string,
-  userId?: string
+  userId?: string,
+  options?: { loginCustomerId?: string; managerIds?: string[]; dateWindowDays?: number }
 ): Promise<CampaignDto[]> {
+  const windowDays = options?.dateWindowDays ?? 30;
+  const dateRange = dateRangeForDays(windowDays);
+
   try {
     const accessToken = await resolveAccessToken(refreshToken, userId);
     if (!accessToken) return [];
+
+    const loginIdsToTry: Array<string | undefined> = [];
+    const seen = new Set<string>();
+
+    const addLoginId = (id?: string) => {
+      const bare = id?.replace(/-/g, '');
+      if (!bare || bare === bareCustomerId(customerId)) return;
+      if (seen.has(bare)) return;
+      seen.add(bare);
+      loginIdsToTry.push(bare);
+    };
+
+    addLoginId(options?.loginCustomerId);
+    for (const mgr of options?.managerIds ?? []) addLoginId(mgr);
 
     const { resourceNames } = await listAccessibleCustomerResourceNames(accessToken);
     const managerCustomerId = await resolveManagerCustomerId(
       accessToken,
       resourceNames ?? undefined
     );
-    const loginId = loginCustomerIdForTarget(customerId, managerCustomerId);
+    addLoginId(managerCustomerId);
+    loginIdsToTry.push(undefined);
 
-    const campaignRows = await searchCustomer<{
+    for (const loginId of loginIdsToTry) {
+      const campaigns = await queryCampaignsForAccount(
+        accessToken,
+        customerId,
+        loginId,
+        dateRange,
+        windowDays
+      );
+      if (campaigns.length) {
+        return campaigns;
+      }
+    }
+
+    console.warn(
+      `fetchCampaignsForAccount: no campaigns for ${customerId} after ${loginIdsToTry.length} login-customer-id attempt(s)`
+    );
+    return [];
+  } catch (err) {
+    console.error('fetchCampaignsForAccount failed:', err);
+    return [];
+  }
+}
+
+async function queryCampaignsForAccount(
+  accessToken: string,
+  customerId: string,
+  loginId: string | undefined,
+  dateRange: string,
+  windowDays: number
+): Promise<CampaignDto[]> {
+  const campaignRows = await searchCustomer<{
+    campaign?: {
+      id?: string;
+      name?: string;
+      resourceName?: string;
+      advertisingChannelType?: string;
+      status?: string;
+      biddingStrategyType?: string;
+    };
+    campaignBudget?: { amountMicros?: string };
+  }>(
+    accessToken,
+    customerId,
+    `SELECT campaign.id, campaign.name, campaign.resource_name,
+            campaign.advertising_channel_type, campaign.status,
+            campaign.bidding_strategy_type,
+            campaign_budget.amount_micros
+     FROM campaign
+     WHERE campaign.status IN ('ENABLED', 'PAUSED')
+     ORDER BY campaign.name`,
+    { loginCustomerId: loginId, silent: true }
+  );
+
+  if (!campaignRows.length) {
+    const fallbackRows = await searchCustomer<{
       campaign?: {
         id?: string;
         name?: string;
         resourceName?: string;
         advertisingChannelType?: string;
         status?: string;
+        biddingStrategyType?: string;
       };
-      campaignBudget?: { amountMicros?: string };
+    }>(
+      accessToken,
+      customerId,
+      `SELECT campaign.id, campaign.name, campaign.resource_name,
+              campaign.advertising_channel_type, campaign.status,
+              campaign.bidding_strategy_type
+       FROM campaign
+       ORDER BY campaign.name
+       LIMIT 100`,
+      { loginCustomerId: loginId, silent: true }
+    );
+    if (!fallbackRows.length) return [];
+    return buildCampaignDtos(
+      accessToken,
+      customerId,
+      loginId,
+      fallbackRows,
+      new Map(),
+      dateRange,
+      windowDays
+    );
+  }
+
+  const metricRows = await searchCustomer<{
+    campaign?: { id?: string };
+    metrics?: {
+      impressions?: string;
+      clicks?: string;
+      conversions?: number;
+      costMicros?: string;
+    };
+  }>(
+    accessToken,
+    customerId,
+    `SELECT campaign.id,
+            metrics.impressions, metrics.clicks, metrics.conversions, metrics.cost_micros
+     FROM campaign
+     WHERE campaign.status IN ('ENABLED', 'PAUSED')
+     AND segments.date DURING ${dateRange}`,
+    { loginCustomerId: loginId, silent: true }
+  );
+
+  const metricsByCampaign = new Map<string, {
+    impressions: number;
+    clicks: number;
+    conversions: number;
+    cost: number;
+  }>();
+  for (const row of metricRows) {
+    const id = row.campaign?.id;
+    if (!id) continue;
+    const impressions = Number(row.metrics?.impressions ?? 0);
+    const clicks = Number(row.metrics?.clicks ?? 0);
+    const costMicros = Number(row.metrics?.costMicros ?? 0);
+    const conversions = Number(row.metrics?.conversions ?? 0);
+    const existing = metricsByCampaign.get(id);
+    if (existing) {
+      existing.impressions += impressions;
+      existing.clicks += clicks;
+      existing.conversions += conversions;
+      existing.cost += costMicros / 1_000_000;
+    } else {
+      metricsByCampaign.set(id, {
+        impressions,
+        clicks,
+        conversions,
+        cost: costMicros / 1_000_000,
+      });
+    }
+  }
+
+  return buildCampaignDtos(
+    accessToken,
+    customerId,
+    loginId,
+    campaignRows,
+    metricsByCampaign,
+    dateRange,
+    windowDays
+  );
+}
+
+async function buildCampaignDtos(
+  accessToken: string,
+  customerId: string,
+  loginId: string | undefined,
+  campaignRows: Array<{
+    campaign?: {
+      id?: string;
+      name?: string;
+      resourceName?: string;
+      advertisingChannelType?: string;
+      status?: string;
+      biddingStrategyType?: string;
+    };
+    campaignBudget?: { amountMicros?: string };
+  }>,
+  metricsByCampaign: Map<string, { impressions: number; clicks: number; conversions: number; cost: number }>,
+  dateRange: string,
+  windowDays: number
+): Promise<CampaignDto[]> {
+  const adsByCampaign = await fetchAdsByCampaign(accessToken, customerId, loginId, dateRange);
+
+  const campaigns: CampaignDto[] = campaignRows
+    .filter((row) => row.campaign?.id)
+    .map((row) => {
+      const c = row.campaign!;
+      const id = c.id!;
+      const m = metricsByCampaign.get(id) ?? { impressions: 0, clicks: 0, conversions: 0, cost: 0 };
+      const rates = computeRates(m);
+      const ads = adsByCampaign.get(id) ?? [];
+
+      return {
+        id,
+        resourceName: c.resourceName ?? '',
+        name: c.name ?? `Campaign ${id}`,
+        type: c.advertisingChannelType ?? 'UNKNOWN',
+        status: c.status ?? 'UNKNOWN',
+        budgetDaily: round2(Number(row.campaignBudget?.amountMicros ?? 0) / 1_000_000),
+        biddingStrategyType: c.biddingStrategyType,
+        impressions: m.impressions,
+        clicks: m.clicks,
+        conversions: round2(m.conversions),
+        ctr: rates.ctr,
+        avgCpc: rates.avgCpc,
+        conversionRate: rates.conversionRate,
+        costPerConversion: rates.costPerConversion,
+        cost: round2(m.cost),
+        adCount: ads.length,
+        metricsWindowDays: windowDays,
+        ads,
+      };
+    });
+
+  return campaigns.sort((a, b) => b.cost - a.cost || a.name.localeCompare(b.name));
+}
+
+async function fetchAdsByCampaign(
+  accessToken: string,
+  customerId: string,
+  loginId: string | undefined,
+  dateRange: string
+): Promise<Map<string, CampaignAdDto[]>> {
+  const adRows = await searchCustomer<{
+    campaign?: { id?: string };
+    adGroup?: { name?: string };
+    adGroupAd?: {
+      resourceName?: string;
+      status?: string;
+      adStrength?: string;
+      ad?: {
+        id?: string;
+        type?: string;
+        finalUrls?: string[];
+        responsiveSearchAd?: {
+          headlines?: Array<{ text?: string }>;
+          descriptions?: Array<{ text?: string }>;
+          path1?: string;
+          path2?: string;
+        };
+      };
+    };
+    metrics?: {
+      impressions?: string;
+      clicks?: string;
+      conversions?: number;
+      costMicros?: string;
+      ctr?: number;
+      averageCpc?: number;
+    };
+  }>(
+    accessToken,
+    customerId,
+    `SELECT campaign.id, ad_group.name, ad_group_ad.resource_name, ad_group_ad.status,
+            ad_group_ad.ad_strength, ad_group_ad.ad.id, ad_group_ad.ad.type,
+            ad_group_ad.ad.final_urls,
+            ad_group_ad.ad.responsive_search_ad.headlines,
+            ad_group_ad.ad.responsive_search_ad.descriptions,
+            ad_group_ad.ad.responsive_search_ad.path1,
+            ad_group_ad.ad.responsive_search_ad.path2,
+            metrics.impressions, metrics.clicks, metrics.conversions,
+            metrics.cost_micros, metrics.ctr, metrics.average_cpc
+     FROM ad_group_ad
+     WHERE ad_group_ad.status IN ('ENABLED', 'PAUSED')
+     AND campaign.status IN ('ENABLED', 'PAUSED')
+     AND segments.date DURING ${dateRange}
+     ORDER BY metrics.impressions DESC
+     LIMIT 200`,
+    { loginCustomerId: loginId, silent: true }
+  );
+
+  const map = new Map<string, CampaignAdDto[]>();
+  const seen = new Map<string, Set<string>>();
+
+  for (const row of adRows) {
+    const campaignId = row.campaign?.id;
+    const adId = row.adGroupAd?.ad?.id;
+    if (!campaignId || !adId) continue;
+
+    const dedupeKey = `${campaignId}:${adId}`;
+    const campaignSeen = seen.get(campaignId) ?? new Set<string>();
+    if (campaignSeen.has(dedupeKey)) continue;
+    campaignSeen.add(dedupeKey);
+    seen.set(campaignId, campaignSeen);
+
+    const impressions = Number(row.metrics?.impressions ?? 0);
+    const clicks = Number(row.metrics?.clicks ?? 0);
+    const cost = Number(row.metrics?.costMicros ?? 0) / 1_000_000;
+    const rsa = row.adGroupAd?.ad?.responsiveSearchAd;
+
+    const ad: CampaignAdDto = {
+      id: adId,
+      resourceName: row.adGroupAd?.resourceName ?? '',
+      adGroupName: row.adGroup?.name ?? 'Ad group',
+      adType: row.adGroupAd?.ad?.type ?? 'UNKNOWN',
+      status: row.adGroupAd?.status ?? 'UNKNOWN',
+      adStrength: row.adGroupAd?.adStrength,
+      headlines: parseAdTextAssets(rsa?.headlines),
+      descriptions: parseAdTextAssets(rsa?.descriptions),
+      finalUrls: row.adGroupAd?.ad?.finalUrls ?? [],
+      displayPath1: rsa?.path1,
+      displayPath2: rsa?.path2,
+      impressions,
+      clicks,
+      conversions: round2(Number(row.metrics?.conversions ?? 0)),
+      ctr: impressions > 0 ? round2((clicks / impressions) * 100) : round2(Number(row.metrics?.ctr ?? 0) * 100),
+      cost: round2(cost),
+      avgCpc: clicks > 0 ? round2(cost / clicks) : round2(Number(row.metrics?.averageCpc ?? 0) / 1_000_000),
+    };
+
+    const list = map.get(campaignId) ?? [];
+    list.push(ad);
+    map.set(campaignId, list);
+  }
+
+  return map;
+}
+
+export async function fetchAccountPerformanceSummary(
+  refreshToken: string,
+  customerId: string,
+  userId?: string,
+  options?: { loginCustomerId?: string; managerIds?: string[]; dateWindowDays?: number }
+): Promise<AccountPerformanceSummary | null> {
+  try {
+    const accessToken = await resolveAccessToken(refreshToken, userId);
+    if (!accessToken) return null;
+
+    const windowDays = options?.dateWindowDays ?? 30;
+    const dateRange = dateRangeForDays(windowDays);
+
+    let loginId = options?.loginCustomerId?.replace(/-/g, '');
+    if (!loginId) {
+      const { resourceNames } = await listAccessibleCustomerResourceNames(accessToken);
+      const managerCustomerId = await resolveManagerCustomerId(
+        accessToken,
+        resourceNames ?? undefined
+      );
+      loginId = loginCustomerIdForTarget(customerId, managerCustomerId);
+    }
+
+    const customer = await getCustomerMeta(accessToken, customerId, loginId);
+
+    const rows = await searchCustomer<{
+      campaign?: { status?: string };
       metrics?: {
         impressions?: string;
         clicks?: string;
@@ -681,69 +1117,191 @@ export async function fetchCampaignsForAccount(
     }>(
       accessToken,
       customerId,
-      `SELECT campaign.id, campaign.name, campaign.resource_name,
-              campaign.advertising_channel_type, campaign.status,
-              campaign_budget.amount_micros,
+      `SELECT campaign.status,
               metrics.impressions, metrics.clicks, metrics.conversions, metrics.cost_micros
        FROM campaign
        WHERE campaign.status IN ('ENABLED', 'PAUSED')
-       AND segments.date DURING LAST_30_DAYS`,
+       AND segments.date DURING ${dateRange}`,
       { loginCustomerId: loginId, silent: true }
     );
 
-    const adCountRows = await searchCustomer<{
-      campaign?: { id?: string };
-    }>(
+    let impressions = 0;
+    let clicks = 0;
+    let conversions = 0;
+    let cost = 0;
+
+    for (const row of rows) {
+      impressions += Number(row.metrics?.impressions ?? 0);
+      clicks += Number(row.metrics?.clicks ?? 0);
+      conversions += Number(row.metrics?.conversions ?? 0);
+      cost += Number(row.metrics?.costMicros ?? 0) / 1_000_000;
+    }
+
+    const campaignCountRows = await searchCustomer<{ campaign?: { id?: string } }>(
       accessToken,
       customerId,
-      `SELECT campaign.id
-       FROM ad_group_ad
-       WHERE ad_group_ad.status IN ('ENABLED', 'PAUSED')
-       AND campaign.status IN ('ENABLED', 'PAUSED')`,
+      `SELECT campaign.id FROM campaign WHERE campaign.status = 'ENABLED'`,
       { loginCustomerId: loginId, silent: true }
     );
+    const enabledCampaigns = new Set(
+      campaignCountRows.filter((r) => r.campaign?.id).map((r) => r.campaign!.id!)
+    );
 
-    const adCounts = new Map<string, number>();
-    for (const row of adCountRows) {
-      const id = row.campaign?.id;
-      if (!id) continue;
-      adCounts.set(id, (adCounts.get(id) ?? 0) + 1);
-    }
+    const rates = computeRates({ impressions, clicks, conversions, cost });
 
-    const byCampaign = new Map<string, CampaignDto>();
-    for (const row of campaignRows) {
-      const c = row.campaign;
-      if (!c?.id) continue;
-      const impressions = Number(row.metrics?.impressions ?? 0);
-      const clicks = Number(row.metrics?.clicks ?? 0);
-      const existing = byCampaign.get(c.id);
-      if (existing) {
-        existing.impressions += impressions;
-        existing.clicks += clicks;
-        existing.conversions += Number(row.metrics?.conversions ?? 0);
-        existing.cost += Number(row.metrics?.costMicros ?? 0) / 1_000_000;
-      } else {
-        byCampaign.set(c.id, {
-          id: c.id,
-          resourceName: c.resourceName ?? '',
-          name: c.name ?? `Campaign ${c.id}`,
-          type: c.advertisingChannelType ?? 'UNKNOWN',
-          status: c.status ?? 'UNKNOWN',
-          budgetDaily: Math.round(Number(row.campaignBudget?.amountMicros ?? 0) / 1_000_000),
-          impressions,
-          clicks,
-          conversions: Number(row.metrics?.conversions ?? 0),
-          ctr: impressions > 0 ? Math.round((clicks / impressions) * 1000) / 10 : 0,
-          cost: Math.round(Number(row.metrics?.costMicros ?? 0) / 1_000_000),
-          adCount: adCounts.get(c.id) ?? 0,
-        });
-      }
-    }
-
-    return [...byCampaign.values()].sort((a, b) => b.cost - a.cost);
+    return {
+      currency: customer?.currencyCode ?? 'USD',
+      timezone: customer?.timeZone ?? 'UTC',
+      windowDays,
+      dateRange,
+      clicks,
+      impressions,
+      conversions: round2(conversions),
+      cost: round2(cost),
+      ctr: rates.ctr,
+      avgCpc: rates.avgCpc,
+      conversionRate: rates.conversionRate,
+      costPerConversion: rates.costPerConversion,
+      activeCampaigns: enabledCampaigns.size,
+    };
   } catch (err) {
-    console.error('fetchCampaignsForAccount failed:', err);
-    return [];
+    console.error('fetchAccountPerformanceSummary failed:', err);
+    return null;
+  }
+}
+
+/** Rich campaign snapshot for campaign-scoped audits (ad groups, keywords, ads, search terms). */
+export async function fetchCampaignAuditContext(
+  refreshToken: string,
+  customerId: string,
+  campaignId: string,
+  userId?: string,
+  options?: { loginCustomerId?: string; dateRange?: string }
+): Promise<string> {
+  const cid = campaignId.replace(/\D/g, '');
+  if (!cid) return '';
+
+  try {
+    const accessToken = await resolveAccessToken(refreshToken, userId);
+    if (!accessToken) return '';
+
+    let loginId = options?.loginCustomerId?.replace(/-/g, '');
+    if (!loginId) {
+      const { resourceNames } = await listAccessibleCustomerResourceNames(accessToken);
+      const managerCustomerId = await resolveManagerCustomerId(
+        accessToken,
+        resourceNames ?? undefined
+      );
+      loginId = loginCustomerIdForTarget(customerId, managerCustomerId);
+    }
+
+    const dateRange = options?.dateRange ?? 'LAST_90_DAYS';
+    const searchOpts = { loginCustomerId: loginId, silent: true as const };
+    const campaignClause = ` AND campaign.id = ${cid}`;
+
+    const [campaignRows, adGroupRows, keywordRows, searchTermRows, adRows, deviceRows] =
+      await Promise.all([
+        searchCustomer<Record<string, unknown>>(
+          accessToken,
+          customerId,
+          `SELECT campaign.id, campaign.name, campaign.status, campaign.advertising_channel_type,
+                  campaign.bidding_strategy_type, campaign_budget.amount_micros,
+                  metrics.cost_micros, metrics.clicks, metrics.conversions, metrics.impressions,
+                  metrics.ctr, metrics.average_cpc, metrics.search_impression_share
+           FROM campaign WHERE segments.date DURING ${dateRange}${campaignClause} LIMIT 5`,
+          searchOpts
+        ),
+        searchCustomer<Record<string, unknown>>(
+          accessToken,
+          customerId,
+          `SELECT ad_group.id, ad_group.name, ad_group.status, metrics.cost_micros,
+                  metrics.conversions, metrics.clicks, metrics.impressions
+           FROM ad_group WHERE segments.date DURING ${dateRange}${campaignClause}
+           ORDER BY metrics.cost_micros DESC LIMIT 20`,
+          searchOpts
+        ),
+        searchCustomer<Record<string, unknown>>(
+          accessToken,
+          customerId,
+          `SELECT ad_group.name, ad_group_criterion.keyword.text, ad_group_criterion.match_type,
+                  ad_group_criterion.quality_info.quality_score,
+                  metrics.cost_micros, metrics.conversions, metrics.clicks
+           FROM keyword_view WHERE segments.date DURING ${dateRange}${campaignClause}
+           ORDER BY metrics.cost_micros DESC LIMIT 25`,
+          searchOpts
+        ),
+        searchCustomer<Record<string, unknown>>(
+          accessToken,
+          customerId,
+          `SELECT search_term_view.search_term, search_term_view.status,
+                  metrics.cost_micros, metrics.conversions, metrics.clicks
+           FROM search_term_view WHERE segments.date DURING ${dateRange}${campaignClause}
+           ORDER BY metrics.cost_micros DESC LIMIT 25`,
+          searchOpts
+        ),
+        searchCustomer<Record<string, unknown>>(
+          accessToken,
+          customerId,
+          `SELECT ad_group.name, ad_group_ad.ad_strength,
+                  ad_group_ad.ad.responsive_search_ad.headlines,
+                  ad_group_ad.ad.responsive_search_ad.descriptions,
+                  ad_group_ad.ad.final_urls,
+                  metrics.impressions, metrics.clicks, metrics.conversions, metrics.cost_micros, metrics.ctr
+           FROM ad_group_ad WHERE segments.date DURING ${dateRange}
+           AND ad_group_ad.status IN ('ENABLED', 'PAUSED')${campaignClause}
+           ORDER BY metrics.impressions DESC LIMIT 15`,
+          searchOpts
+        ),
+        searchCustomer<Record<string, unknown>>(
+          accessToken,
+          customerId,
+          `SELECT segments.device, metrics.cost_micros, metrics.conversions, metrics.clicks,
+                  metrics.impressions
+           FROM campaign WHERE segments.date DURING ${dateRange}${campaignClause} LIMIT 10`,
+          searchOpts
+        ),
+      ]);
+
+    let impressions = 0;
+    let clicks = 0;
+    let conversions = 0;
+    let cost = 0;
+    for (const row of campaignRows) {
+      const m = row.metrics as {
+        impressions?: string;
+        clicks?: string;
+        conversions?: number;
+        costMicros?: string;
+      } | undefined;
+      impressions += Number(m?.impressions ?? 0);
+      clicks += Number(m?.clicks ?? 0);
+      conversions += Number(m?.conversions ?? 0);
+      cost += Number(m?.costMicros ?? 0) / 1_000_000;
+    }
+    const campaignPerformance = {
+      ...computeRates({ impressions, clicks, conversions, cost }),
+      impressions,
+      clicks,
+      conversions: round2(conversions),
+      cost: round2(cost),
+      dateRange,
+      note: 'Aggregated campaign metrics matching Google Ads campaigns table (clicks, impressions, CTR, avg CPC, cost, conversions, conv rate, cost/conv).',
+    };
+
+    return JSON.stringify({
+      campaignId: cid,
+      dateRange,
+      campaignPerformance,
+      campaign: campaignRows,
+      adGroups: adGroupRows,
+      keywords: keywordRows,
+      searchTerms: searchTermRows,
+      ads: adRows,
+      deviceBreakdown: deviceRows,
+    });
+  } catch (err) {
+    console.warn('fetchCampaignAuditContext failed:', err);
+    return '';
   }
 }
 
@@ -752,7 +1310,8 @@ export async function fetchModuleGoogleAdsData(
   customerId: string,
   slug: string,
   dateRange: string,
-  userId?: string
+  userId?: string,
+  campaignId?: string
 ): Promise<string> {
   const { MODULE_GAQL } = await import('../audit-engine/module-queries.js');
   const queryFn = MODULE_GAQL[slug];
@@ -774,10 +1333,11 @@ export async function fetchModuleGoogleAdsData(
     const rows = await searchCustomer<Record<string, unknown>>(
       accessToken,
       customerId,
-      queryFn(dateRange),
+      queryFn(dateRange, { campaignId }),
       { loginCustomerId: loginId, silent: true }
     );
-    return JSON.stringify(rows.slice(0, 25), null, 0);
+    const limit = campaignId ? 40 : 30;
+    return JSON.stringify(rows.slice(0, limit), null, 0);
   } catch (err) {
     console.warn(`fetchModuleGoogleAdsData(${slug}) failed:`, err);
     return '';

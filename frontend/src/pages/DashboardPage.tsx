@@ -3,8 +3,8 @@ import { useParams, Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
   Share2, Download, ArrowLeft, Link2, ChevronRight,
-  AlertTriangle, TrendingUp, Target, Heart,
-  Search, Globe, Users, FileText, BarChart3, MapPin, Eye, Sparkles,
+  AlertTriangle, TrendingUp, Target, Heart, Megaphone,
+  Search, Globe, Users, FileText, BarChart3, MapPin, Eye, Sparkles, History,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { Logo } from '../components/layout/Logo';
@@ -14,44 +14,85 @@ import { HealthProgressBar } from '../components/ui/ProgressBar';
 import { HealthChart } from '../charts/HealthChart';
 import { SeverityDot } from '../components/ui/Severity';
 import { formatImpact, formatCurrency, getHealthLabel } from '../utils/helpers';
+import {
+  filterFindings,
+  countFindingsForModule,
+  moduleLabelForSlug,
+  isFailureFinding,
+  SEVERITY_FILTERS,
+  CATEGORY_FILTERS,
+  FINDINGS_NAV_MODULES,
+  type SeverityFilter,
+  type CategoryFilterId,
+} from '../utils/findingFilters';
 import { useAuditReport } from '../hooks/useAuditPolling';
 import { auditApi } from '../services/api';
 import type { Finding } from '../types';
 import { AIOptimizationModal, MakeItBetterButton, isOptimizableFinding } from '../components/optimization';
+import { CampaignAuditsSection } from '../components/dashboard/CampaignAuditsSection';
+import { AccountPerformanceStats } from '../components/dashboard/AccountPerformanceStats';
+import { PreviousAuditsList } from '../components/dashboard/PreviousAuditsList';
+import { usePreviousAudits } from '../hooks/usePreviousAudits';
+import { useAuthStore } from '../store';
 
-const navItems = [
+const MODULE_NAV_ICONS: Record<string, typeof FileText> = {
+  'search-terms': Search,
+  keywords: Target,
+  quality: BarChart3,
+  bidding: TrendingUp,
+  'ad-copy': FileText,
+  audiences: Users,
+  geo: MapPin,
+  landing: Globe,
+  impression: Eye,
+  pmax: Sparkles,
+  campaign: Megaphone,
+  budget: TrendingUp,
+  conversion: Heart,
+  device: BarChart3,
+};
+
+const baseNavItems: Array<{
+  id: string;
+  label: string;
+  icon: typeof FileText;
+  sectionId: string;
+  badge?: boolean;
+  sub?: string;
+  moduleSlug?: string;
+  accountOnly?: boolean;
+}> = [
   { id: 'executive', label: 'Executive Summary', icon: FileText, sectionId: 'executive' },
+  { id: 'previous-audits', label: 'Previous Audits', icon: History, sectionId: 'previous-audits' },
+  { id: 'campaigns', label: 'Your Campaigns', icon: Megaphone, sectionId: 'campaign-audits', accountOnly: true },
   { id: 'findings', label: 'All Findings', icon: AlertTriangle, badge: true, sectionId: 'findings' },
   { id: 'roadmap', label: 'Growth Roadmap', icon: TrendingUp, sub: '30/60/90d', sectionId: 'roadmap' },
   { id: 'health', label: 'Account Health', icon: Heart, sectionId: 'health' },
-  { id: 'search-terms', label: 'Search Term Waste', icon: Search, moduleFilter: 'Search Term Waste', sectionId: 'findings' },
-  { id: 'keywords', label: 'Keyword Analysis', icon: Target, moduleFilter: 'Keyword Audit', sectionId: 'findings' },
-  { id: 'quality', label: 'Quality Score', icon: BarChart3, moduleFilter: 'Quality Score Audit', sectionId: 'findings' },
-  { id: 'bidding', label: 'Bidding Strategy', icon: TrendingUp, moduleFilter: 'Bidding Analysis', sectionId: 'findings' },
-  { id: 'ad-copy', label: 'Ad Copy Review', icon: FileText, moduleFilter: 'Ad Copy Review', sectionId: 'findings' },
-  { id: 'audiences', label: 'Audiences', icon: Users, moduleFilter: 'Audience Analysis', sectionId: 'findings' },
-  { id: 'geo', label: 'Geographic', icon: MapPin, moduleFilter: 'Geo Analysis', sectionId: 'findings' },
-  { id: 'landing', label: 'Landing Pages', icon: Globe, moduleFilter: 'Landing Page Analysis', sectionId: 'findings' },
-  { id: 'impression', label: 'Impression Share', icon: Eye, moduleFilter: 'Impression Share', sectionId: 'findings' },
-  { id: 'pmax', label: 'PMax Placements', icon: Sparkles, moduleFilter: 'PMax', sectionId: 'findings' },
+  ...FINDINGS_NAV_MODULES.map((m) => ({
+    id: m.id,
+    label: m.label,
+    icon: MODULE_NAV_ICONS[m.id] ?? FileText,
+    sectionId: 'findings' as const,
+    moduleSlug: m.slug,
+  })),
 ];
-
-const filters = ['All', 'Critical', 'High', 'Medium', 'Low', 'Keywords', 'Bidding', 'Audiences', 'Ad Copy'];
-
-function isFailureFinding(f: Finding): boolean {
-  return /analysis incomplete|configure anthropic|configure API keys/i.test(f.title);
-}
 
 export default function DashboardPage() {
   const { auditId } = useParams<{ auditId: string }>();
-  const { audit, loading } = useAuditReport(auditId);
+  const { audit, loading, backfilling } = useAuditReport(auditId);
+  const authUser = useAuthStore((s) => s.user);
+  const { audits: previousAudits, userEmail: previousAuditsEmail, loading: previousAuditsLoading, error: previousAuditsError } = usePreviousAudits(!!authUser);
   const [activeSection, setActiveSection] = useState('executive');
-  const [activeFilter, setActiveFilter] = useState('All');
-  const [moduleFilter, setModuleFilter] = useState<string | null>(null);
+  const [activeSeverity, setActiveSeverity] = useState<SeverityFilter>('All');
+  const [activeCategory, setActiveCategory] = useState<CategoryFilterId | null>(null);
+  const [activeModuleSlug, setActiveModuleSlug] = useState<string | null>(null);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [shareError, setShareError] = useState<string | null>(null);
   const [shareCopied, setShareCopied] = useState(false);
+  const [pdfLoading, setPdfLoading] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
   const [optimizeFinding, setOptimizeFinding] = useState<Finding | null>(null);
+  const [optimizeCampaignId, setOptimizeCampaignId] = useState<string | undefined>();
   const mainRef = useRef<HTMLDivElement>(null);
 
   const validFindings = useMemo(
@@ -59,24 +100,20 @@ export default function DashboardPage() {
     [audit]
   );
 
-  const filteredFindings = useMemo(() => {
-    let items = moduleFilter
-      ? validFindings.filter((f) =>
-          f.dimension === moduleFilter ||
-          f.dimension.startsWith(moduleFilter) ||
-          (moduleFilter === 'Ad Copy Review' && f.category === 'AD_COPY')
-        )
-      : [...validFindings];
+  const filteredFindings = useMemo(
+    () => filterFindings(validFindings, {
+      moduleSlug: activeModuleSlug,
+      severityFilter: activeSeverity,
+      categoryFilter: activeCategory,
+    }),
+    [validFindings, activeModuleSlug, activeSeverity, activeCategory]
+  );
 
-    if (activeFilter === 'Critical') items = items.filter((f) => f.severity === 'CRITICAL');
-    else if (activeFilter === 'High') items = items.filter((f) => f.severity === 'HIGH');
-    else if (activeFilter === 'Medium') items = items.filter((f) => f.severity === 'MEDIUM');
-    else if (activeFilter === 'Low') items = items.filter((f) => f.severity === 'LOW');
-    else if (activeFilter !== 'All') {
-      items = items.filter((f) => f.category.includes(activeFilter.toUpperCase().replace(' ', '_')));
-    }
-    return items.sort((a, b) => b.impactMonthly - a.impactMonthly);
-  }, [validFindings, activeFilter, moduleFilter]);
+  const findingsSectionTitle = activeModuleSlug
+    ? `${moduleLabelForSlug(activeModuleSlug)} Findings`
+    : activeCategory
+      ? `${activeCategory} Findings`
+      : 'All Findings';
 
   const healthScore = audit?.healthScore
     ?? (audit?.healthScores?.length
@@ -85,20 +122,39 @@ export default function DashboardPage() {
   const totalImpact = audit?.totalImpact ?? validFindings.reduce((s, f) => s + f.impactMonthly, 0);
   const healthLabel = getHealthLabel(healthScore ?? 50);
 
+  const navItems = useMemo(() => {
+    const showCampaigns = audit?.status === 'COMPLETED' && audit.auditScope !== 'campaign';
+    return baseNavItems.filter((item) => !('accountOnly' in item && item.accountOnly) || showCampaigns);
+  }, [audit?.status, audit?.auditScope]);
+
   const scrollToSection = useCallback((sectionId: string) => {
     const el = document.getElementById(sectionId);
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, []);
 
-  const handleNavClick = (item: typeof navItems[number]) => {
+  const handleNavClick = (item: (typeof baseNavItems)[number]) => {
     setActiveSection(item.id);
-    if (item.moduleFilter) {
-      setModuleFilter(item.moduleFilter);
-      setActiveFilter('All');
+    if (item.moduleSlug) {
+      setActiveModuleSlug(item.moduleSlug);
+      setActiveCategory(null);
+      setActiveSeverity('All');
+    } else if (item.id === 'findings') {
+      setActiveModuleSlug(null);
+      setActiveCategory(null);
+      setActiveSeverity('All');
     } else {
-      setModuleFilter(null);
+      setActiveModuleSlug(null);
+      setActiveCategory(null);
     }
     scrollToSection(item.sectionId);
+  };
+
+  const clearFindingsFilters = () => {
+    setActiveModuleSlug(null);
+    setActiveCategory(null);
+    setActiveSeverity('All');
+    setActiveSection('findings');
+    scrollToSection('findings');
   };
 
   const copyShareUrl = async (url: string) => {
@@ -131,14 +187,34 @@ export default function DashboardPage() {
     }
   };
 
-  const handleDownloadPdf = () => {
-    if (auditId) window.open(auditApi.pdfUrl(auditId), '_blank', 'noopener,noreferrer');
+  const handleDownloadPdf = async () => {
+    if (!auditId) return;
+    setPdfError(null);
+    setPdfLoading(true);
+    try {
+      await auditApi.downloadPdf(auditId, audit?.accountName);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not open audit report';
+      setPdfError(message);
+      try {
+        window.open(`${auditApi.pdfUrl(auditId)}?inline=1`, '_blank', 'noopener,noreferrer');
+      } catch {
+        /* popup blocked */
+      }
+    } finally {
+      setPdfLoading(false);
+    }
   };
 
   if (loading || !audit) {
     return (
       <div className="min-h-screen bg-bg flex items-center justify-center">
-        <div className="skeleton w-64 h-8 rounded" />
+        <div className="text-center space-y-3">
+          <div className="skeleton w-64 h-8 rounded mx-auto" />
+          {backfilling && (
+            <p className="text-muted text-sm">Generating missing module findings with Claude...</p>
+          )}
+        </div>
       </div>
     );
   }
@@ -171,7 +247,11 @@ export default function DashboardPage() {
 
         <nav className="flex-1 overflow-y-auto py-2">
           <div className="px-4 text-[10px] text-muted uppercase tracking-wider mb-2">Report Sections</div>
-          {navItems.map((item) => (
+          {navItems.map((item) => {
+            const moduleCount = item.moduleSlug
+              ? countFindingsForModule(validFindings, item.moduleSlug)
+              : 0;
+            return (
             <button
               key={item.id}
               type="button"
@@ -179,8 +259,11 @@ export default function DashboardPage() {
               className={clsx(
                 'w-full flex items-center gap-2.5 px-4 py-2.5 text-left text-sm transition-colors',
                 activeSection === item.id
+                  || (item.id === 'findings' && !activeModuleSlug && !activeCategory && activeSeverity === 'All')
+                  || (item.moduleSlug != null && activeModuleSlug === item.moduleSlug)
                   ? 'bg-orange/10 text-white border-l-2 border-orange'
-                  : 'text-muted hover:text-white hover:bg-panel/50 border-l-2 border-transparent'
+                  : 'text-muted hover:text-white hover:bg-panel/50 border-l-2 border-transparent',
+                item.moduleSlug && moduleCount === 0 && 'opacity-60'
               )}
             >
               <item.icon size={16} />
@@ -190,18 +273,27 @@ export default function DashboardPage() {
                   {validFindings.length}
                 </span>
               )}
+              {item.moduleSlug && moduleCount > 0 && (
+                <span className="bg-orange/15 text-orange text-[10px] font-bold px-1.5 py-0.5 rounded">
+                  {moduleCount}
+                </span>
+              )}
               {item.sub && <span className="text-[9px] text-muted">{item.sub}</span>}
             </button>
-          ))}
+            );
+          })}
         </nav>
 
         <div className="p-4 space-y-2 border-t border-border">
           <Button variant="outline" size="sm" className="w-full" onClick={handleShare}>
             <Link2 size={14} /> {shareCopied ? 'Link copied!' : 'Share report link'}
           </Button>
-          <Button variant="secondary" size="sm" className="w-full" onClick={handleDownloadPdf}>
-            <Download size={14} /> Download PDF
+          <Button variant="secondary" size="sm" className="w-full" onClick={handleDownloadPdf} disabled={pdfLoading}>
+            <Download size={14} /> {pdfLoading ? 'Opening report...' : 'View PDF Report'}
           </Button>
+          {pdfError && (
+            <p className="text-red-400 text-[10px]">{pdfError}</p>
+          )}
           {shareUrl && (
             <p className="text-teal text-[10px] break-all">{shareUrl}</p>
           )}
@@ -216,23 +308,40 @@ export default function DashboardPage() {
           <div className="flex items-center justify-between">
             <div>
               <div className="flex items-center gap-3">
-                <h1 className="text-white font-bold text-lg">Audit Report • {audit.accountName}</h1>
+                <h1 className="text-white font-bold text-lg">
+                  {audit.auditScope === 'campaign' ? 'Campaign Audit' : 'Audit Report'} • {audit.accountName}
+                </h1>
                 <Badge variant="teal">✓ Audit Complete • {audit.modulesComplete}/{audit.totalModules} modules</Badge>
+                {audit.auditScope === 'campaign' && (
+                  <Badge variant="orange">Campaign deep-dive</Badge>
+                )}
               </div>
               <p className="text-muted text-xs mt-1">
                 Generated {audit.completedAt ? new Date(audit.completedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'} • {audit.dataWindowDays}-day data window • Engine v{audit.engineVersion}
               </p>
             </div>
             <div className="flex items-center gap-3">
-              <Link to="/" className="text-muted text-sm hover:text-white flex items-center gap-1">
-                <ArrowLeft size={14} /> All audits
+              <Link to="/connect-account" className="text-muted text-sm hover:text-white flex items-center gap-1">
+                <ArrowLeft size={14} /> New audit
               </Link>
+              <button
+                type="button"
+                onClick={() => handleNavClick({ id: 'previous-audits', label: 'Previous Audits', icon: History, sectionId: 'previous-audits' })}
+                className="text-muted text-sm hover:text-white flex items-center gap-1"
+              >
+                <History size={14} /> Previous audits
+              </button>
               <Button size="sm" onClick={handleShare}><Share2 size={14} /> Share</Button>
             </div>
           </div>
         </header>
 
         <div className="px-8 py-6 space-y-8 max-w-5xl">
+          {backfilling && (
+            <div className="bg-orange/10 border border-orange/30 rounded-xl p-4 text-sm text-orange">
+              Generating missing module findings with Claude (Quality Score, Bidding, Audiences, etc.)...
+            </div>
+          )}
           {failureFindings.length > 0 && (
             <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-sm text-red-300">
               {failureFindings.length} module{failureFindings.length === 1 ? '' : 's'} could not complete Claude analysis.
@@ -251,6 +360,15 @@ export default function DashboardPage() {
               ))}
             </div>
 
+            {audit.googleAdsCustomerId && audit.status === 'COMPLETED' && (
+              <div className="mb-6">
+                <AccountPerformanceStats
+                  googleAdsCustomerId={audit.googleAdsCustomerId}
+                  dataWindowDays={audit.dataWindowDays}
+                />
+              </div>
+            )}
+
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               {[
                 { label: 'TOTAL FINDINGS', value: validFindings.length, color: 'text-red-400' },
@@ -265,6 +383,43 @@ export default function DashboardPage() {
               ))}
             </div>
           </section>
+
+          <section id="previous-audits" className="scroll-mt-24">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-white font-bold text-xl">Previous Audits</h2>
+                <p className="text-muted text-sm">
+                  All audits run while signed in as {previousAuditsEmail || authUser?.email || 'your Google account'}
+                </p>
+              </div>
+              <Link to="/connect-account">
+                <Button size="sm" variant="outline">Start new audit</Button>
+              </Link>
+            </div>
+            <PreviousAuditsList
+              audits={previousAudits}
+              loading={previousAuditsLoading}
+              error={previousAuditsError}
+              userEmail={previousAuditsEmail || authUser?.email}
+              currentAuditId={auditId}
+              emptyMessage="No other audits found for this Gmail account."
+            />
+          </section>
+
+          {audit.status === 'COMPLETED' && (
+            <CampaignAuditsSection
+              auditId={auditId!}
+              googleAdsCustomerId={audit.googleAdsCustomerId}
+              dataWindowDays={audit.dataWindowDays}
+              auditScope={audit.auditScope}
+              parentAuditId={audit.parentAuditId}
+              campaignName={audit.campaignName}
+              onOptimizeCampaign={(finding, campaignId) => {
+                setOptimizeCampaignId(campaignId);
+                setOptimizeFinding(finding);
+              }}
+            />
+          )}
 
           <section id="health" className="scroll-mt-24">
             <h2 className="text-white font-bold text-xl mb-4">Health Score Breakdown</h2>
@@ -290,33 +445,65 @@ export default function DashboardPage() {
 
           <section id="findings" className="scroll-mt-24">
             <div className="mb-4">
-              <h2 className="text-white font-bold text-xl">
-                {moduleFilter ? `${moduleFilter} Findings` : 'All Findings'}
-              </h2>
+              <h2 className="text-white font-bold text-xl">{findingsSectionTitle}</h2>
               <p className="text-muted text-sm">
                 {filteredFindings.length} findings • sorted by financial impact
-                {moduleFilter && (
-                  <button type="button" onClick={() => { setModuleFilter(null); setActiveSection('findings'); }} className="ml-2 text-orange hover:underline">
-                    Clear filter
+                {(activeModuleSlug || activeCategory || activeSeverity !== 'All') && (
+                  <button type="button" onClick={clearFindingsFilters} className="ml-2 text-orange hover:underline">
+                    Clear filters
                   </button>
                 )}
               </p>
             </div>
 
-            <div className="flex gap-2 overflow-x-auto pb-3 mb-4">
-              {filters.map((f) => (
+            <div className="flex gap-2 overflow-x-auto pb-3 mb-2">
+              {SEVERITY_FILTERS.map((f) => (
                 <button
                   key={f}
                   type="button"
-                  onClick={() => { setActiveFilter(f); setModuleFilter(null); }}
+                  onClick={() => {
+                    setActiveSeverity(f);
+                    setActiveSection('findings');
+                    scrollToSection('findings');
+                  }}
                   className={clsx(
                     'px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap border transition-colors',
-                    activeFilter === f && !moduleFilter
+                    activeSeverity === f && !activeCategory && !activeModuleSlug
                       ? 'bg-orange/15 text-orange border-orange/30'
+                      : activeSeverity === f
+                        ? 'bg-orange/10 text-orange border-orange/20'
+                        : 'bg-panel text-muted border-border hover:text-white'
+                  )}
+                >
+                  {f}
+                  {f === 'All' && ` (${validFindings.length})`}
+                  {f === 'Critical' && ` (${validFindings.filter((x) => x.severity === 'CRITICAL').length})`}
+                  {f === 'High' && ` (${validFindings.filter((x) => x.severity === 'HIGH').length})`}
+                  {f === 'Medium' && ` (${validFindings.filter((x) => x.severity === 'MEDIUM').length})`}
+                  {f === 'Low' && ` (${validFindings.filter((x) => x.severity === 'LOW').length})`}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex gap-2 overflow-x-auto pb-3 mb-4">
+              {CATEGORY_FILTERS.map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  onClick={() => {
+                    setActiveCategory(activeCategory === f.id ? null : f.id);
+                    setActiveModuleSlug(null);
+                    setActiveSection('findings');
+                    scrollToSection('findings');
+                  }}
+                  className={clsx(
+                    'px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap border transition-colors',
+                    activeCategory === f.id
+                      ? 'bg-teal/15 text-teal border-teal/30'
                       : 'bg-panel text-muted border-border hover:text-white'
                   )}
                 >
-                  {f} {f === 'All' ? `(${validFindings.length})` : f === 'Critical' ? `(${validFindings.filter((x) => x.severity === 'CRITICAL').length})` : ''}
+                  {f.id}
                 </button>
               ))}
             </div>
@@ -324,7 +511,11 @@ export default function DashboardPage() {
             <div className="space-y-3">
               {filteredFindings.length === 0 ? (
                 <p className="text-muted text-sm py-8 text-center">
-                  {moduleFilter ? `No findings for ${moduleFilter} in this audit.` : 'No findings match this filter.'}
+                  {activeModuleSlug
+                    ? `No findings for ${moduleLabelForSlug(activeModuleSlug)} in this audit.`
+                    : activeCategory
+                      ? `No findings in the ${activeCategory} category for this audit.`
+                      : 'No findings match the current filters.'}
                 </p>
               ) : (
                 filteredFindings.map((finding, i) => (
@@ -369,15 +560,20 @@ export default function DashboardPage() {
       {optimizeFinding && auditId && audit && (
         <AIOptimizationModal
           open={!!optimizeFinding}
-          onClose={() => setOptimizeFinding(null)}
+          onClose={() => {
+            setOptimizeFinding(null);
+            setOptimizeCampaignId(undefined);
+          }}
           auditId={auditId}
           finding={optimizeFinding}
           auditFindings={validFindings}
           accountName={audit.accountName}
           googleAdsCustomerId={audit.googleAdsCustomerId}
+          websiteUrl={audit.websiteUrl}
           goal={audit.goal}
           monthlySpend={audit.monthlySpend}
           userId={audit.userId}
+          initialCampaignId={optimizeCampaignId}
         />
       )}
     </div>

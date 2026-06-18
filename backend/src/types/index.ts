@@ -106,6 +106,12 @@ export interface AuditRun {
   email?: string;
   goal?: string;
   googleAdsCustomerId?: string;
+  websiteUrl?: string;
+  selectedCampaignIds?: string[];
+  auditScope?: 'account' | 'campaign';
+  campaignId?: string;
+  campaignName?: string;
+  parentAuditId?: string;
   modules: AuditModule[];
   findings: Finding[];
   healthScores: HealthScore[];

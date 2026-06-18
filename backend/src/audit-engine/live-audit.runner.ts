@@ -1,7 +1,7 @@
 import { generateId } from '../services/mock-store.js';
 import { auditStore } from '../services/audit-store.service.js';
 import { getMe } from '../services/user.service.js';
-import { fetchModuleGoogleAdsData, isGoogleAdsConfigured } from '../services/google-ads.service.js';
+import { fetchModuleGoogleAdsData, fetchCampaignAuditContext, isGoogleAdsConfigured } from '../services/google-ads.service.js';
 import { generateExecutiveSummary } from '../ai/claude.service.js';
 import { getParallelApiKeys, getParallelStreamCount, getPrimaryApiKey } from '../ai/anthropic-pool.js';
 import {
@@ -10,6 +10,7 @@ import {
   generateRoadmapWithClaude,
 } from '../ai/module-analysis.service.js';
 import { dateRangeForWindow, estimateMinutes } from '../audit-engine/module-queries.js';
+import { ALL_AUDIT_MODULE_IDS, getModuleCatalogName } from '../data/audit-module-catalog.js';
 import type { AuditModule, Finding, RoadmapItem } from '../types/index.js';
 
 export interface LiveAuditConfig {
@@ -24,9 +25,28 @@ export interface LiveAuditConfig {
   auditWindow?: number;
   selectedModules?: string[];
   competitors?: string[];
+  auditScope?: 'account' | 'campaign';
+  campaignId?: string;
+  campaignName?: string;
+  parentAuditId?: string;
+  campaignContext?: string;
 }
 
 const activeRuns = new Set<string>();
+
+function enrichModuleData(raw: string, config: LiveAuditConfig): string {
+  if (!raw) return raw;
+  if (config.campaignContext && config.auditScope === 'campaign') {
+    try {
+      const moduleRows = JSON.parse(raw);
+      const campaignContext = JSON.parse(config.campaignContext);
+      return JSON.stringify({ campaignContext, moduleRows }, null, 0);
+    } catch {
+      return raw;
+    }
+  }
+  return raw;
+}
 
 function chunkSequential<T>(arr: T[], chunkSize: number): T[][] {
   const chunks: T[][] = [];
@@ -104,7 +124,15 @@ async function processSingleModule(
       level: 'info',
       createdAt: new Date().toISOString(),
     });
-    googleAdsData = await fetchModuleGoogleAdsData(refreshToken, customerId, slug, dateRange, userId);
+    googleAdsData = await fetchModuleGoogleAdsData(
+      refreshToken,
+      customerId,
+      slug,
+      dateRange,
+      userId,
+      config.campaignId
+    );
+    googleAdsData = enrichModuleData(googleAdsData, config);
     await auditStore.updateModule(auditId, slug, { progress: 40 });
   }
 
@@ -116,7 +144,12 @@ async function processSingleModule(
       dataWindowDays: windowDays,
       goal: config.goal,
       websiteUrl: config.websiteUrl,
-      note: 'Limited Google Ads API rows — analysis based on account profile.',
+      auditScope: config.auditScope ?? 'account',
+      campaignId: config.campaignId,
+      campaignName: config.campaignName,
+      note: config.campaignId
+        ? `Campaign-scoped audit for ${config.campaignName ?? config.campaignId}.`
+        : 'Limited Google Ads API rows — analysis based on account profile.',
     });
   }
 
@@ -139,6 +172,9 @@ async function processSingleModule(
     googleAdsData,
     competitors: config.competitors,
     apiKey,
+    auditScope: config.auditScope,
+    campaignName: config.campaignName,
+    auditDepth: config.auditDepth,
   });
 
   await auditStore.updateModule(auditId, slug, { progress: 90 });
@@ -217,10 +253,30 @@ export function runLiveAudit(auditId: string, userId: string, config: LiveAuditC
       if (refreshToken && customerId && isGoogleAdsConfigured()) {
         await auditStore.addLog(auditId, {
           id: generateId('log_'),
-          message: 'Google Ads API connected — fetching live account data...',
+          message: config.auditScope === 'campaign' && config.campaignName
+            ? `Google Ads API connected — fetching live data for campaign "${config.campaignName}"...`
+            : 'Google Ads API connected — fetching live account data...',
           level: 'success',
           createdAt: new Date().toISOString(),
         });
+
+        if (config.auditScope === 'campaign' && config.campaignId) {
+          config.campaignContext = await fetchCampaignAuditContext(
+            refreshToken,
+            customerId,
+            config.campaignId,
+            userId,
+            { dateRange }
+          );
+          if (config.campaignContext) {
+            await auditStore.addLog(auditId, {
+              id: generateId('log_'),
+              message: 'Campaign context loaded — ad groups, keywords, ads, and search terms.',
+              level: 'info',
+              createdAt: new Date().toISOString(),
+            });
+          }
+        }
       } else {
         await auditStore.addLog(auditId, {
           id: generateId('log_'),
@@ -287,7 +343,8 @@ export function runLiveAudit(auditId: string, userId: string, config: LiveAuditC
       let roadmap = await generateRoadmapWithClaude(
         finalAudit.findings,
         config.accountName,
-        summaryKey
+        summaryKey,
+        { auditScope: config.auditScope, campaignName: config.campaignName }
       );
       if (!roadmap.length) {
         roadmap = createRoadmapFromFindings(finalAudit.findings);
@@ -309,7 +366,8 @@ export function runLiveAudit(auditId: string, userId: string, config: LiveAuditC
       const summary = await generateExecutiveSummary(
         config.accountName,
         finalAudit.findings,
-        healthScore
+        healthScore,
+        { auditScope: config.auditScope, campaignName: config.campaignName }
       );
 
       await auditStore.updateAudit(auditId, {
@@ -340,4 +398,99 @@ export function runLiveAudit(auditId: string, userId: string, config: LiveAuditC
       activeRuns.delete(auditId);
     }
   })();
+}
+
+function isSkippedFinding(f: Finding): boolean {
+  return /analysis incomplete|configure anthropic/i.test(f.title);
+}
+
+function findingMatchesModuleSlug(finding: Finding, slug: string): boolean {
+  if (isSkippedFinding(finding)) return false;
+  const evidenceSlug = finding.evidence?.module;
+  if (typeof evidenceSlug === 'string' && evidenceSlug === slug) return true;
+  const name = getModuleCatalogName(slug);
+  if (finding.dimension === name || finding.dimension.startsWith(name)) return true;
+  return false;
+}
+
+function slugsMissingFindings(findings: Finding[]): string[] {
+  return ALL_AUDIT_MODULE_IDS.filter((slug) => !findings.some((f) => findingMatchesModuleSlug(f, slug)));
+}
+
+export async function backfillMissingModules(
+  auditRunId: string,
+  userId: string
+): Promise<{ added: number; slugs: string[] }> {
+  const audit = await auditStore.getAudit(auditRunId);
+  if (!audit) throw new Error('Audit not found');
+
+  const missingSlugs = slugsMissingFindings(audit.findings);
+  if (!missingSlugs.length) return { added: 0, slugs: [] };
+
+  const user = await getMe(userId);
+  const refreshToken = user?.googleRefreshToken;
+  const customerId = audit.googleAdsCustomerId?.replace(/-/g, '');
+  const windowDays = audit.dataWindowDays || 365;
+  const dateRange = dateRangeForWindow(windowDays);
+
+  const config: LiveAuditConfig = {
+    accountName: audit.accountName,
+    monthlySpend: audit.monthlySpend,
+    campaignCount: audit.campaignCount,
+    websiteUrl: audit.websiteUrl,
+    goal: audit.goal,
+    googleAdsCustomerId: audit.googleAdsCustomerId,
+    auditDepth: 'deep',
+    auditWindow: windowDays,
+    auditScope: audit.auditScope,
+    campaignId: audit.campaignId,
+    campaignName: audit.campaignName,
+    parentAuditId: audit.parentAuditId,
+  };
+
+  if (config.auditScope === 'campaign' && config.campaignId && refreshToken && customerId && isGoogleAdsConfigured()) {
+    config.campaignContext = await fetchCampaignAuditContext(
+      refreshToken,
+      customerId,
+      config.campaignId,
+      userId,
+      { dateRange }
+    );
+  }
+
+  const apiKey = getPrimaryApiKey() || '';
+  let added = 0;
+
+  await auditStore.addLog(auditRunId, {
+    id: generateId('log_'),
+    message: `Backfilling ${missingSlugs.length} module${missingSlugs.length === 1 ? '' : 's'} with Claude...`,
+    level: 'info',
+    createdAt: new Date().toISOString(),
+  });
+
+  for (const slug of missingSlugs) {
+    const name = getModuleCatalogName(slug);
+    const mod = await auditStore.ensureModule(auditRunId, slug, name);
+    await processSingleModule(
+      auditRunId,
+      mod,
+      config,
+      apiKey,
+      refreshToken,
+      customerId,
+      dateRange,
+      windowDays,
+      userId
+    );
+    added += 1;
+  }
+
+  await auditStore.addLog(auditRunId, {
+    id: generateId('log_'),
+    message: `✓ Backfill complete — ${added} module${added === 1 ? '' : 's'} analyzed.`,
+    level: 'success',
+    createdAt: new Date().toISOString(),
+  });
+
+  return { added, slugs: missingSlugs };
 }

@@ -12,6 +12,8 @@ import { AdPreviewPanel } from './AdPreviewPanel';
 import { TONE_OPTIONS } from './utils';
 import { aiApi, googleAdsApi } from '../../services/api';
 import type { Finding } from '../../types';
+import type { GoogleAdsCampaign } from '../../types/connect';
+import { resolveDisplayHost, resolveBusinessName } from '../../utils/business-identity';
 import type {
   CurrentAdData,
   OptimizedAdContent,
@@ -34,6 +36,7 @@ interface AIOptimizationModalProps {
   goal?: string;
   monthlySpend?: number;
   userId?: string;
+  initialCampaignId?: string;
 }
 
 export function AIOptimizationModal({
@@ -48,6 +51,7 @@ export function AIOptimizationModal({
   goal,
   monthlySpend,
   userId,
+  initialCampaignId,
 }: AIOptimizationModalProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -74,31 +78,49 @@ export function AIOptimizationModal({
   const [publishedId, setPublishedId] = useState<string | null>(null);
   const [rollbackAvailable, setRollbackAvailable] = useState(false);
   const [rollingBack, setRollingBack] = useState(false);
+  const [customPrompt, setCustomPrompt] = useState('');
+  const [selectedCampaignId, setSelectedCampaignId] = useState<string>('');
+  const [campaigns, setCampaigns] = useState<GoogleAdsCampaign[]>([]);
+  const [campaignsLoading, setCampaignsLoading] = useState(false);
+  const [activeTone, setActiveTone] = useState<OptimizationTone>('default');
+  const [regenerating, setRegenerating] = useState(false);
+
+  const businessName = resolveBusinessName(accountName, websiteUrl);
 
   const runOptimization = useCallback(async (
     tone?: OptimizationTone,
-    variation?: OptimizationVariation
+    variation?: OptimizationVariation,
+    promptOverride?: string,
+    isRegenerate = false
   ) => {
-    setLoading(true);
+    if (isRegenerate) setRegenerating(true);
+    else setLoading(true);
     setError(null);
-    setPublishResult(null);
-    setPublishedId(null);
-    setRollbackAvailable(false);
+    if (!isRegenerate) {
+      setPublishResult(null);
+      setPublishedId(null);
+      setRollbackAvailable(false);
+    }
+    const resolvedTone = tone ?? activeTone;
+    if (tone) setActiveTone(tone);
+    const prompt = promptOverride ?? customPrompt;
     try {
       const { data } = await aiApi.optimizeAd({
         auditId,
         findingId: finding.id,
-        tone,
+        tone: resolvedTone,
         variation,
+        customPrompt: prompt.trim() || undefined,
         findingSnapshot: finding,
         auditFindingsSnapshot: auditFindings,
         accountContext: {
-          accountName,
+          accountName: businessName,
           goal,
           monthlySpend,
           googleAdsCustomerId,
           websiteUrl,
           userId,
+          campaignId: selectedCampaignId || undefined,
         },
       });
       setOptimizationId(data.optimizationId);
@@ -124,12 +146,27 @@ export function AIOptimizationModal({
       setError(message);
     } finally {
       setLoading(false);
+      setRegenerating(false);
     }
-  }, [auditId, finding, auditFindings, accountName, goal, monthlySpend, googleAdsCustomerId, websiteUrl, userId]);
+  }, [auditId, finding, auditFindings, businessName, goal, monthlySpend, googleAdsCustomerId, websiteUrl, userId, customPrompt, selectedCampaignId, activeTone]);
 
   useEffect(() => {
-    if (open) void runOptimization();
-    else {
+    if (!open || !googleAdsCustomerId) {
+      setCampaigns([]);
+      return;
+    }
+    setCampaignsLoading(true);
+    void googleAdsApi.campaigns(googleAdsCustomerId)
+      .then(({ data }) => setCampaigns(data.campaigns ?? []))
+      .catch(() => setCampaigns([]))
+      .finally(() => setCampaignsLoading(false));
+  }, [open, googleAdsCustomerId]);
+
+  useEffect(() => {
+    if (open) {
+      setSelectedCampaignId(initialCampaignId ?? '');
+      void runOptimization();
+    } else {
       setOptimizationId(null);
       setOriginalAd(null);
       setOptimized(null);
@@ -137,8 +174,12 @@ export function AIOptimizationModal({
       setPublishResult(null);
       setEditMode(false);
       setShowPublishConfirm(false);
+      setCustomPrompt('');
+      setSelectedCampaignId('');
+      setActiveTone('default');
     }
-  }, [open, runOptimization]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once when modal opens
+  }, [open]);
 
   const handlePublish = async () => {
     if (!optimizationId) return;
@@ -189,9 +230,16 @@ export function AIOptimizationModal({
     }
   };
 
-  const displayUrl = websiteUrl
-    ? websiteUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')
-    : `${accountName.toLowerCase().replace(/\s+/g, '')}.com`;
+  const displayUrl = resolveDisplayHost(websiteUrl, businessName);
+  const isBusy = loading || regenerating;
+
+  const handleToneClick = (toneId: OptimizationTone) => {
+    const variation: OptimizationVariation | undefined =
+      toneId === 'shorter' ? 'shorter'
+        : toneId === 'aggressive' ? 'aggressive-cta'
+          : 'regenerate';
+    void runOptimization(toneId, variation, undefined, true);
+  };
 
   if (!open) return null;
 
@@ -234,10 +282,10 @@ export function AIOptimizationModal({
         </div>
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto">
-          {loading && <AIThinkingLoader />}
+        <div className="flex-1 overflow-y-auto relative">
+          {loading && !optimized && <AIThinkingLoader />}
 
-          {error && !loading && (
+          {error && !loading && !optimized && (
             <div className="max-w-2xl mx-auto p-8">
               <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-5 flex gap-3">
                 <AlertTriangle className="text-red-400 shrink-0" size={22} />
@@ -252,13 +300,23 @@ export function AIOptimizationModal({
           )}
 
           {!loading && optimized && originalAd && (
-            <div className="max-w-7xl mx-auto p-6 space-y-6">
+            <div className="max-w-7xl mx-auto p-6 space-y-6 relative">
+              {regenerating && (
+                <div className="absolute inset-0 z-10 bg-navy/70 backdrop-blur-sm rounded-xl flex items-center justify-center">
+                  <div className="flex items-center gap-3 text-orange">
+                    <RefreshCw size={20} className="animate-spin" />
+                    <span className="text-sm font-medium">Regenerating ad copy…</span>
+                  </div>
+                </div>
+              )}
               {/* Intelligence bar */}
               {intelligenceSummary && (
                 <div className="flex flex-wrap gap-3 items-center bg-panel border border-border rounded-xl p-4">
                   <Brain className="text-orange shrink-0" size={18} />
                   <span className="text-muted text-xs">
-                    Analyzed <strong className="text-white">{intelligenceSummary.findingsAnalyzed}</strong> findings
+                    Brand: <strong className="text-white">{businessName}</strong>
+                    {websiteUrl && <> · <span className="text-teal">{displayUrl}</span></>}
+                    {' · '}Analyzed <strong className="text-white">{intelligenceSummary.findingsAnalyzed}</strong> findings
                     · {intelligenceSummary.campaignsLoaded} campaigns
                     · {intelligenceSummary.keywordsLoaded} keywords
                     · {intelligenceSummary.searchTermsLoaded} search terms
@@ -268,22 +326,103 @@ export function AIOptimizationModal({
                 </div>
               )}
 
+              {/* Campaign scope + custom AI prompt */}
+              <div className="grid lg:grid-cols-2 gap-4">
+                <div className="bg-panel border border-border rounded-xl p-4 space-y-2">
+                  <label htmlFor="campaign-select" className="text-muted text-xs uppercase tracking-wider block">
+                    Campaign scope (whole account audit)
+                  </label>
+                  <select
+                    id="campaign-select"
+                    value={selectedCampaignId}
+                    onChange={(e) => setSelectedCampaignId(e.target.value)}
+                    disabled={campaignsLoading || isBusy}
+                    className="w-full bg-navy border border-border rounded-lg px-3 py-2 text-sm text-white focus:border-orange/40 outline-none"
+                  >
+                    <option value="">All campaigns (account-wide)</option>
+                    {campaigns.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} ({c.status})
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-muted text-[10px]">
+                    {campaignsLoading
+                      ? 'Loading campaigns from Google Ads…'
+                      : campaigns.length
+                        ? `${campaigns.length} campaign${campaigns.length === 1 ? '' : 's'} found — select one to optimize, or keep account-wide.`
+                        : 'No campaigns in this account — AI will propose a new campaign strategy.'}
+                  </p>
+                  {selectedCampaignId && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={isBusy}
+                      onClick={() => void runOptimization('default', 'regenerate', undefined, true)}
+                    >
+                      <RefreshCw size={14} /> Optimize selected campaign
+                    </Button>
+                  )}
+                </div>
+
+                <div className="bg-panel border border-purple-400/20 rounded-xl p-4 space-y-2">
+                  <label htmlFor="custom-prompt" className="text-purple-300 text-xs uppercase tracking-wider block flex items-center gap-1.5">
+                    <Sparkles size={12} /> Custom AI instructions
+                  </label>
+                  <textarea
+                    id="custom-prompt"
+                    value={customPrompt}
+                    onChange={(e) => setCustomPrompt(e.target.value)}
+                    placeholder="e.g. Focus on emergency plumbing services in Sydney. Use a friendly tone. Mention 24/7 availability and free quotes."
+                    rows={3}
+                    className="w-full bg-navy border border-border rounded-lg px-3 py-2 text-xs text-white placeholder:text-muted focus:border-purple-400/40 outline-none resize-none"
+                  />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={isBusy || !customPrompt.trim()}
+                    onClick={() => void runOptimization(activeTone, 'regenerate', customPrompt, true)}
+                  >
+                    <Sparkles size={14} /> Apply custom instructions
+                  </Button>
+                </div>
+              </div>
+
               {/* Tone controls */}
               <div className="flex flex-wrap gap-2">
                 {TONE_OPTIONS.map((t) => (
                   <button
                     key={t.id}
                     type="button"
-                    onClick={() => void runOptimization(t.id, t.id === 'shorter' ? 'shorter' : undefined)}
-                    className="px-3 py-1.5 rounded-full text-xs font-medium border border-border bg-navy text-muted hover:text-white hover:border-orange/40"
+                    disabled={isBusy}
+                    onClick={() => handleToneClick(t.id)}
+                    className={clsx(
+                      'px-3 py-1.5 rounded-full text-xs font-medium border transition-colors disabled:opacity-50',
+                      activeTone === t.id
+                        ? 'border-orange/50 bg-orange/15 text-orange'
+                        : 'border-border bg-navy text-muted hover:text-white hover:border-orange/40'
+                    )}
                   >
                     {t.label}
                   </button>
                 ))}
-                <button type="button" onClick={() => void runOptimization('default', 'regenerate')} className="px-3 py-1.5 rounded-full text-xs font-medium border border-orange/30 bg-orange/10 text-orange flex items-center gap-1">
-                  <RefreshCw size={12} /> Regenerate
+                <button
+                  type="button"
+                  disabled={isBusy}
+                  onClick={() => void runOptimization(activeTone, 'regenerate', undefined, true)}
+                  className="px-3 py-1.5 rounded-full text-xs font-medium border border-orange/30 bg-orange/10 text-orange flex items-center gap-1 disabled:opacity-50"
+                >
+                  <RefreshCw size={12} className={regenerating ? 'animate-spin' : ''} /> Regenerate
                 </button>
-                <button type="button" onClick={() => setEditMode((e) => !e)} className={clsx('px-3 py-1.5 rounded-full text-xs font-medium border flex items-center gap-1', editMode ? 'border-teal/40 text-teal bg-teal/10' : 'border-border text-muted')}>
+                <button
+                  type="button"
+                  disabled={isBusy}
+                  onClick={() => setEditMode((e) => !e)}
+                  className={clsx(
+                    'px-3 py-1.5 rounded-full text-xs font-medium border flex items-center gap-1 disabled:opacity-50',
+                    editMode ? 'border-teal/40 text-teal bg-teal/10' : 'border-border text-muted hover:text-white'
+                  )}
+                >
                   <Edit3 size={12} /> Edit Manually
                 </button>
               </div>
@@ -410,10 +549,10 @@ export function AIOptimizationModal({
             <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
               <Button variant="ghost" onClick={onClose}>Cancel</Button>
               <div className="flex gap-3">
-                <Button variant="secondary" onClick={() => void runOptimization('default', 'regenerate')}>
-                  <RefreshCw size={16} /> Regenerate
+                <Button variant="secondary" disabled={isBusy} onClick={() => void runOptimization(activeTone, 'regenerate', undefined, true)}>
+                  <RefreshCw size={16} className={regenerating ? 'animate-spin' : ''} /> Regenerate
                 </Button>
-                <Button onClick={() => setShowPublishConfirm(true)} className="bg-gradient-to-r from-orange to-orange-2 glow-orange">
+                <Button disabled={isBusy} onClick={() => setShowPublishConfirm(true)} className="bg-gradient-to-r from-orange to-orange-2 glow-orange">
                   <Send size={16} /> Approve & Publish
                 </Button>
               </div>

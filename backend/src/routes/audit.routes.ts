@@ -2,17 +2,32 @@ import { Router, Response } from 'express';
 import { authMiddleware, optionalAuth, AuthRequest } from '../middleware/auth.js';
 import {
   startAudit,
+  startCampaignAudit,
   getAuditStatus,
   getAuditReport,
   getAuditLogs,
   getAuditHealth,
   createSharedReport,
   getSharedReport,
+  backfillAuditModules,
+  backfillAuditModulesDemo,
+  listUserAudits,
 } from '../services/audit.service.js';
 import type { AuditRun } from '../types/index.js';
 import { handleOptimizeAd } from '../controllers/optimize-ad.controller.js';
 
 const router = Router();
+
+router.get('/list', authMiddleware, async (req: AuthRequest, res: Response) => {
+  try {
+    const { audits, userEmail } = await listUserAudits(req.authUser!.userId, req.authUser!.email);
+    res.json({ audits, userEmail });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to load audits';
+    const status = message.includes('authorized') || message.includes('not found') ? 403 : 500;
+    res.status(status).json({ error: message });
+  }
+});
 
 router.post('/start', authMiddleware, async (req: AuthRequest, res: Response) => {
   try {
@@ -20,6 +35,27 @@ router.post('/start', authMiddleware, async (req: AuthRequest, res: Response) =>
     res.status(201).json({ audit: sanitizeAudit(audit) });
   } catch (err) {
     res.status(500).json({ error: 'Failed to start audit' });
+  }
+});
+
+router.post('/start-campaign', authMiddleware, async (req: AuthRequest, res: Response) => {
+  try {
+    const { parentAuditId, campaignId, campaignName } = req.body as {
+      parentAuditId?: string;
+      campaignId?: string;
+      campaignName?: string;
+    };
+    if (!parentAuditId || !campaignId || !campaignName) {
+      return res.status(400).json({ error: 'parentAuditId, campaignId, and campaignName are required' });
+    }
+    const audit = await startCampaignAudit(req.authUser!.userId, parentAuditId, {
+      id: campaignId,
+      name: campaignName,
+    });
+    res.status(201).json({ audit: sanitizeAudit(audit), auditId: audit.id });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to start campaign audit';
+    res.status(message.includes('not found') ? 404 : 500).json({ error: message });
   }
 });
 
@@ -76,10 +112,41 @@ router.post('/share-demo', async (req, res) => {
 });
 
 router.post('/share', authMiddleware, async (req: AuthRequest, res: Response) => {
-  const { auditRunId } = req.body;
-  if (!auditRunId) return res.status(400).json({ error: 'auditRunId required' });
-  const report = await createSharedReport(auditRunId, req.authUser!.userId);
-  res.json({ report, url: `/shared/${report.token}` });
+  try {
+    const { auditRunId } = req.body;
+    if (!auditRunId) return res.status(400).json({ error: 'auditRunId required' });
+    const report = await createSharedReport(auditRunId, req.authUser!.userId);
+    res.json({ report, url: `/shared/${report.token}` });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Failed to create share link';
+    const status = message.includes('not found') ? 404 : message.includes('authorized') ? 403 : 500;
+    res.status(status).json({ error: message });
+  }
+});
+
+router.post('/:id/backfill-demo', async (req, res) => {
+  try {
+    const audit = await getAuditStatus(req.params.id);
+    if (!audit) return res.status(404).json({ error: 'Audit not found' });
+    const result = await backfillAuditModulesDemo(req.params.id);
+    const updated = await getAuditReport(req.params.id);
+    res.json({ ...result, audit: sanitizeAudit(updated) });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Backfill failed';
+    res.status(500).json({ error: message });
+  }
+});
+
+router.post('/:id/backfill-modules', authMiddleware, async (req: AuthRequest, res: Response) => {
+  try {
+    const result = await backfillAuditModules(req.params.id, req.authUser!.userId);
+    const audit = await getAuditReport(req.params.id);
+    res.json({ ...result, audit: sanitizeAudit(audit) });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Backfill failed';
+    const status = message.includes('not found') ? 404 : message.includes('authorized') ? 403 : 500;
+    res.status(status).json({ error: message });
+  }
 });
 
 router.get('/shared/:token', async (req, res) => {
@@ -96,11 +163,17 @@ router.get('/pdf/:id', async (req, res) => {
     const audit = await getAuditReport(req.params.id);
     if (!audit) return res.status(404).json({ error: 'Audit not found' });
     const { generatePdf } = await import('../services/pdf.service.js');
-    const pdf = await generatePdf(audit);
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="adaudit-${audit.accountName.replace(/\s+/g, '-')}.pdf"`);
-    res.send(pdf);
-  } catch {
+    const { buffer, isPdf } = await generatePdf(audit);
+    const safeName = audit.accountName.replace(/[^\w\s-]/g, '').replace(/\s+/g, '-');
+    const inline = req.query.inline === '1' || req.query.view === 'inline' || !isPdf;
+    res.setHeader('Content-Type', isPdf ? 'application/pdf' : 'text/html; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `${inline ? 'inline' : 'attachment'}; filename="adaudit-${safeName}.${isPdf ? 'pdf' : 'html'}"`
+    );
+    res.send(buffer);
+  } catch (err) {
+    console.error('PDF generation failed:', err);
     res.status(500).json({ error: 'PDF generation failed' });
   }
 });
