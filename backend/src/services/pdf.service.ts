@@ -105,11 +105,13 @@ function renderStringList(title: string, items: string[], max = 15): string {
     </div>`;
 }
 
-function renderAdCopyColumn(title: string, ad: { headlines?: string[]; descriptions?: string[]; displayPath1?: string; displayPath2?: string }, accent: string): string {
+function renderAdCopyColumn(title: string, ad: { headlines?: string[]; descriptions?: string[]; displayPath1?: string; displayPath2?: string }, variant: 'current' | 'optimized'): string {
   const headlines = asStringList(ad.headlines);
   const descriptions = asStringList(ad.descriptions);
+  const accent = variant === 'current' ? '#dc2626' : '#0d9488';
+  const variantClass = variant === 'current' ? 'opt-ad-col current' : 'opt-ad-col optimized';
   return `
-    <div class="opt-ad-col" style="border-color:${accent}">
+    <div class="${variantClass}" style="border-color:${accent}">
       <h4 style="color:${accent}">${escapeHtml(title)}</h4>
       ${ad.displayPath1 ? `<p class="opt-path">Display path: ${escapeHtml([ad.displayPath1, ad.displayPath2].filter(Boolean).join(' / '))}</p>` : ''}
       <p class="opt-subtitle">Headlines (${headlines.length})</p>
@@ -203,10 +205,13 @@ function renderOptimizationBlock(
     </div>`;
 
   const perf = optimized.performanceEstimates;
+  const perfLabel = perf?.label && perf.label.length > 80
+    ? `${perf.label.slice(0, 77)}…`
+    : perf?.label;
   const perfHtml = perf
     ? `
       <div class="opt-perf">
-        <p class="opt-subtitle">AI Estimated Performance (${escapeHtml(perf.label)})</p>
+        <p class="opt-subtitle">AI Estimated Performance${perfLabel ? ` — ${escapeHtml(perfLabel)}` : ''}</p>
         <table class="opt-perf-table">
           <thead><tr><th>Metric</th><th>Current</th><th>Estimated</th></tr></thead>
           <tbody>
@@ -251,13 +256,13 @@ function renderOptimizationBlock(
       ${impactHtml}
       ${perfHtml}
       <div class="opt-ad-compare">
-        ${renderAdCopyColumn('Current Ad', original, '#FF6B6B')}
+        ${renderAdCopyColumn('Current Ad', original, 'current')}
         ${renderAdCopyColumn('AI Optimized Ad', {
           headlines: optimized.headlines,
           descriptions: optimized.descriptions,
           displayPath1: optimized.displayPaths?.path1 ?? original.displayPath1,
           displayPath2: optimized.displayPaths?.path2 ?? original.displayPath2,
-        }, '#00C9A7')}
+        }, 'optimized')}
       </div>
       ${renderStringList('CTA suggestions', asStringList(optimized.ctaSuggestions))}
       ${renderStringList('Keyword suggestions', asStringList(optimized.keywordSuggestions))}
@@ -372,23 +377,46 @@ export function buildReportHtml(audit: AuditRun, optimizations: AuditReportOptim
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
   <title>AdAudit Pro — ${escapeHtml(title)}</title>
   <style>
+    :root {
+      --bg: #ffffff;
+      --bg-subtle: #f8f9fb;
+      --bg-card: #ffffff;
+      --border: #e2e8f0;
+      --border-strong: #cbd5e1;
+      --text: #1e293b;
+      --text-muted: #64748b;
+      --text-light: #94a3b8;
+      --heading: #0f172a;
+      --accent: #ea580c;
+      --accent-soft: #fff7ed;
+      --teal: #0d9488;
+      --teal-soft: #f0fdfa;
+      --red: #dc2626;
+      --orange: #ea580c;
+      --amber: #d97706;
+      --green: #059669;
+    }
     * { box-sizing: border-box; }
     body {
-      font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-      background: #07090F;
-      color: #C0CCDB;
+      font-family: 'Segoe UI', system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
       margin: 0;
       padding: 0;
-      line-height: 1.5;
+      line-height: 1.6;
+      font-size: 14px;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
     }
     .toolbar {
       position: sticky;
       top: 0;
       z-index: 10;
-      background: #0B1220;
-      border-bottom: 1px solid #1E2D48;
+      background: var(--heading);
+      color: #fff;
       padding: 12px 24px;
       display: flex;
       justify-content: space-between;
@@ -396,160 +424,210 @@ export function buildReportHtml(audit: AuditRun, optimizations: AuditReportOptim
       gap: 12px;
     }
     .toolbar button {
-      background: #FF6B2B;
+      background: var(--accent);
       color: #fff;
       border: none;
-      border-radius: 8px;
+      border-radius: 6px;
       padding: 8px 16px;
       font-weight: 600;
       cursor: pointer;
+      font-size: 13px;
     }
-    .wrap { max-width: 960px; margin: 0 auto; padding: 32px 24px 64px; }
-    h1 { color: #fff; font-size: 28px; margin: 0 0 8px; }
-    h2 { color: #fff; font-size: 20px; margin: 32px 0 12px; border-bottom: 1px solid #1E2D48; padding-bottom: 8px; }
-    h3 { margin: 0 0 12px; font-size: 16px; }
-    h4 { color: #fff; margin: 0 0 8px; font-size: 15px; }
-    .accent { color: #FF6B2B; }
+    .wrap { max-width: 900px; margin: 0 auto; padding: 40px 32px 64px; }
+    .report-header {
+      border-bottom: 3px solid var(--accent);
+      padding-bottom: 24px;
+      margin-bottom: 32px;
+    }
+    .brand { font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); margin-bottom: 8px; }
+    h1 { color: var(--heading); font-size: 26px; margin: 0 0 8px; font-weight: 700; line-height: 1.25; }
+    h1 .accent { color: var(--accent); }
+    h2 {
+      color: var(--heading);
+      font-size: 18px;
+      font-weight: 700;
+      margin: 36px 0 16px;
+      padding-bottom: 8px;
+      border-bottom: 2px solid var(--border);
+      page-break-after: avoid;
+    }
+    h3 { color: var(--heading); margin: 0 0 12px; font-size: 15px; font-weight: 600; }
+    h4 { color: var(--heading); margin: 0 0 8px; font-size: 14px; font-weight: 600; }
     .badge {
       display: inline-block;
-      background: rgba(255,107,43,0.15);
-      color: #FF6B2B;
-      border: 1px solid rgba(255,107,43,0.35);
-      border-radius: 999px;
-      padding: 4px 12px;
-      font-size: 12px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      border: 1px solid #fed7aa;
+      border-radius: 4px;
+      padding: 3px 10px;
+      font-size: 11px;
       font-weight: 600;
-      margin-right: 8px;
+      margin-right: 6px;
+      margin-bottom: 4px;
     }
-    .badge.teal {
-      background: rgba(0,201,167,0.12);
-      color: #00C9A7;
-      border-color: rgba(0,201,167,0.35);
-    }
-    .meta-line { color: #6B7D96; font-size: 13px; margin-bottom: 24px; }
+    .badge.teal { background: var(--teal-soft); color: var(--teal); border-color: #99f6e4; }
+    .meta-line { color: var(--text-muted); font-size: 13px; margin-bottom: 0; }
     .metrics {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
       gap: 12px;
-      margin: 24px 0;
+      margin: 28px 0;
     }
     .metric {
-      background: #141C2E;
-      border: 1px solid #1E2D48;
-      border-radius: 12px;
-      padding: 16px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px 12px;
       text-align: center;
     }
-    .metric-value { font-size: 24px; font-weight: 700; color: #fff; }
-    .metric-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #6B7D96; margin-top: 4px; }
-    .summary { background: #141C2E; border: 1px solid #1E2D48; border-radius: 12px; padding: 20px; }
-    .summary p { margin: 0 0 12px; }
+    .metric-value { font-size: 22px; font-weight: 700; color: var(--heading); }
+    .metric-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-top: 4px; font-weight: 600; }
+    .summary {
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--accent);
+      border-radius: 8px;
+      padding: 20px 24px;
+      color: var(--text);
+    }
+    .summary p { margin: 0 0 12px; color: var(--text); line-height: 1.7; }
     .summary p:last-child { margin-bottom: 0; }
     .health-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-      gap: 12px;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 10px;
     }
     .health-card {
-      background: #141C2E;
-      border: 1px solid #1E2D48;
-      border-radius: 12px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
       padding: 14px;
     }
-    .health-label { font-size: 12px; color: #6B7D96; margin-bottom: 6px; }
-    .health-score { font-size: 22px; font-weight: 700; color: #fff; margin-bottom: 8px; }
-    .health-bar { height: 6px; background: #0B1220; border-radius: 999px; overflow: hidden; }
-    .health-bar span { display: block; height: 100%; background: linear-gradient(90deg, #FF6B2B, #00C9A7); }
-    .module-section { margin-top: 28px; page-break-inside: avoid; }
-    .module-sub { color: #6B7D96; font-size: 13px; margin: -4px 0 16px; }
+    .health-label { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+    .health-score { font-size: 24px; font-weight: 700; color: var(--heading); margin-bottom: 8px; }
+    .health-bar { height: 5px; background: var(--border); border-radius: 999px; overflow: hidden; }
+    .health-bar span { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--teal)); }
+    .module-section { margin-top: 8px; page-break-inside: avoid; }
+    .module-sub { color: var(--text-muted); font-size: 12px; margin: -8px 0 14px; }
     .finding {
-      background: #141C2E;
-      border: 1px solid #1E2D48;
-      border-radius: 12px;
-      padding: 16px;
-      margin-bottom: 12px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px 18px;
+      margin-bottom: 10px;
       page-break-inside: avoid;
     }
-    .finding-head { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 12px; font-weight: 700; }
-    .impact { color: #00C9A7; }
-    .desc { margin: 0 0 8px; font-size: 13px; }
-    .rec { margin: 0 0 8px; font-size: 13px; color: #8FE8D8; font-style: italic; }
-    .meta { display: flex; gap: 12px; font-size: 11px; color: #6B7D96; }
-    .roadmap {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 12px;
-    }
+    .finding-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+    .impact { color: var(--teal); font-weight: 700; }
+    .desc { margin: 0 0 8px; font-size: 13px; color: var(--text); line-height: 1.6; }
+    .rec { margin: 0 0 8px; font-size: 13px; color: #0f766e; line-height: 1.6; }
+    .rec strong { color: #0d9488; }
+    .meta { display: flex; gap: 12px; font-size: 11px; color: var(--text-muted); margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+    .roadmap { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
     .roadmap-col {
-      background: #141C2E;
-      border: 1px solid #1E2D48;
-      border-radius: 12px;
-      padding: 16px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-top: 3px solid;
+      border-radius: 8px;
+      padding: 14px;
     }
     .roadmap-card {
       display: flex;
       gap: 10px;
-      background: #0B1220;
-      border: 1px solid #1E2D48;
-      border-radius: 8px;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 6px;
       padding: 10px;
       margin-bottom: 8px;
     }
-    .roadmap-num { color: #6B7D96; font-weight: 700; font-size: 12px; min-width: 18px; }
-    .roadmap-title { color: #fff; font-size: 12px; font-weight: 600; margin: 0 0 4px; }
-    .roadmap-desc { color: #6B7D96; font-size: 11px; margin: 0 0 6px; }
-    .roadmap-tags { display: flex; flex-wrap: wrap; gap: 6px; font-size: 10px; color: #8FA3BE; }
-    .muted { color: #6B7D96; font-size: 13px; }
+    .roadmap-num { color: var(--text-light); font-weight: 700; font-size: 12px; min-width: 18px; }
+    .roadmap-title { color: var(--heading); font-size: 12px; font-weight: 600; margin: 0 0 4px; }
+    .roadmap-desc { color: var(--text-muted); font-size: 11px; margin: 0 0 6px; line-height: 1.5; }
+    .roadmap-tags { display: flex; flex-wrap: wrap; gap: 6px; font-size: 10px; color: var(--text-muted); }
+    .muted { color: var(--text-muted); font-size: 13px; line-height: 1.6; }
     .optimization-block {
-      background: #141C2E;
-      border: 1px solid rgba(255,107,43,0.35);
-      border-radius: 12px;
-      padding: 20px;
-      margin-bottom: 20px;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--accent);
+      border-radius: 8px;
+      padding: 24px;
+      margin-bottom: 24px;
       page-break-inside: avoid;
+      box-shadow: 0 1px 3px rgba(15,23,42,0.06);
     }
-    .opt-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
-    .opt-date { color: #6B7D96; font-size: 11px; }
-    .optimization-block h3 { color: #fff; margin: 0 0 6px; font-size: 17px; }
-    .opt-campaign { color: #8FA3BE; font-size: 12px; margin: 0 0 10px; }
-    .opt-summary { font-size: 13px; margin: 0 0 16px; line-height: 1.6; }
-    .opt-impact-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; }
-    .opt-impact-card { background: #0B1220; border: 1px solid #1E2D48; border-radius: 8px; padding: 12px; text-align: center; }
-    .opt-impact-card span { display: block; font-size: 10px; text-transform: uppercase; color: #6B7D96; margin-bottom: 4px; }
-    .opt-impact-card strong { color: #00C9A7; font-size: 16px; }
-    .opt-ad-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px 0; }
-    .opt-ad-col { background: #0B1220; border: 1px solid; border-radius: 10px; padding: 14px; }
-    .opt-ad-col h4 { margin: 0 0 10px; font-size: 14px; }
-    .opt-path { font-size: 11px; color: #6B7D96; margin: 0 0 8px; }
-    .opt-subtitle { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #FF6B2B; margin: 12px 0 6px; font-weight: 600; }
-    .opt-headlines, .opt-descriptions { margin: 0 0 8px; padding-left: 18px; font-size: 12px; }
-    .opt-headlines li, .opt-descriptions li { margin-bottom: 4px; }
-    .opt-list-block ul { margin: 4px 0 0; padding-left: 18px; font-size: 12px; }
-    .opt-list-block li { margin-bottom: 3px; }
-    .opt-reasoning, .opt-strategy, .opt-perf { margin-top: 14px; padding-top: 12px; border-top: 1px solid #1E2D48; }
-    .opt-reason-row { margin-bottom: 10px; }
-    .opt-reason-label { display: block; font-size: 10px; text-transform: uppercase; color: #FF6B2B; margin-bottom: 2px; }
-    .opt-reason-row p { margin: 0; font-size: 12px; }
-    .opt-perf-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
-    .opt-perf-table th, .opt-perf-table td { border: 1px solid #1E2D48; padding: 6px 8px; text-align: left; }
-    .opt-perf-table th { color: #6B7D96; font-weight: 600; }
-    .opt-perf-table td.est { color: #00C9A7; font-weight: 600; }
-    .footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid #1E2D48; font-size: 11px; color: #6B7D96; }
+    .opt-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+    .opt-date { color: var(--text-muted); font-size: 11px; }
+    .optimization-block h3 { color: var(--heading); margin: 0 0 4px; font-size: 16px; }
+    .opt-campaign { color: var(--text-muted); font-size: 12px; margin: 0 0 12px; font-weight: 500; }
+    .opt-summary { font-size: 13px; margin: 0 0 18px; line-height: 1.7; color: var(--text); }
+    .opt-impact-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 18px; }
+    .opt-impact-card {
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+      text-align: center;
+    }
+    .opt-impact-card span { display: block; font-size: 10px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px; font-weight: 600; letter-spacing: 0.04em; }
+    .opt-impact-card strong { color: var(--teal); font-size: 15px; font-weight: 700; }
+    .opt-ad-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 18px 0; }
+    .opt-ad-col {
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .opt-ad-col.current { border-left: 3px solid #dc2626; }
+    .opt-ad-col.optimized { border-left: 3px solid #0d9488; }
+    .opt-ad-col h4 { margin: 0 0 10px; font-size: 13px; font-weight: 700; }
+    .opt-path { font-size: 11px; color: var(--text-muted); margin: 0 0 8px; }
+    .opt-subtitle {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--accent);
+      margin: 14px 0 6px;
+      font-weight: 700;
+    }
+    .opt-headlines, .opt-descriptions { margin: 0 0 10px; padding-left: 20px; font-size: 12px; color: var(--text); }
+    .opt-headlines li, .opt-descriptions li { margin-bottom: 5px; line-height: 1.5; color: var(--text); }
+    .opt-list-block { margin-bottom: 12px; }
+    .opt-list-block ul { margin: 4px 0 0; padding-left: 20px; font-size: 12px; color: var(--text); }
+    .opt-list-block li { margin-bottom: 4px; line-height: 1.5; color: var(--text); }
+    .opt-reasoning, .opt-strategy, .opt-perf {
+      margin-top: 18px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+    }
+    .opt-reason-row { margin-bottom: 12px; }
+    .opt-reason-label { display: block; font-size: 10px; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; font-weight: 700; letter-spacing: 0.06em; }
+    .opt-reason-row p { margin: 0; font-size: 13px; color: var(--text); line-height: 1.6; }
+    .opt-strategy p, .opt-adgroup p { font-size: 13px; color: var(--text); margin: 0 0 6px; }
+    .opt-perf-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
+    .opt-perf-table th, .opt-perf-table td {
+      border: 1px solid var(--border);
+      padding: 8px 10px;
+      text-align: left;
+      color: var(--text);
+    }
+    .opt-perf-table th { background: var(--bg-subtle); color: var(--heading); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .opt-perf-table td.est { color: var(--teal); font-weight: 700; }
+    .opt-perf-table tbody tr:nth-child(even) { background: #fafbfc; }
+    .footer {
+      margin-top: 48px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--text-muted);
+      text-align: center;
+    }
     @media (max-width: 800px) {
-      .metrics, .roadmap { grid-template-columns: 1fr 1fr; }
+      .metrics, .roadmap, .opt-ad-compare, .opt-impact-grid { grid-template-columns: 1fr; }
     }
     @media print {
-      body { background: #fff; color: #111; }
-      .toolbar { display: none; }
-      .wrap { max-width: none; padding: 0; }
-      h1, h2, h4, .metric-value, .health-score, .roadmap-title { color: #111; }
-      .finding, .metric, .summary, .health-card, .roadmap-col, .roadmap-card {
-        background: #fff;
-        border-color: #ddd;
-        break-inside: avoid;
-      }
-      .desc, .meta-line, .muted, .module-sub, .meta { color: #444; }
-      .rec { color: #0d6e5f; }
+      .toolbar { display: none !important; }
+      .wrap { padding: 0; max-width: none; }
+      .optimization-block, .finding { break-inside: avoid; }
     }
   </style>
 </head>
@@ -559,19 +637,24 @@ export function buildReportHtml(audit: AuditRun, optimizations: AuditReportOptim
     <button type="button" onclick="window.print()">Print / Save as PDF</button>
   </div>
   <div class="wrap">
-    <span class="badge">${scope === 'campaign' ? 'Campaign Audit' : 'Account Audit'}</span>
-    <span class="badge teal">Claude AI Analysis</span>
-    <h1><span class="accent">${escapeHtml(title)}</span></h1>
-    <p class="meta-line">
-      ${scope === 'campaign' ? `Account: ${escapeHtml(accountLabel)} • ` : ''}
-      Generated ${escapeHtml(generatedAt)} • ${audit.dataWindowDays}-day window • Engine v${escapeHtml(audit.engineVersion)}
-      ${audit.goal ? ` • Goal: ${escapeHtml(audit.goal)}` : ''}
-    </p>
+    <header class="report-header">
+      <div class="brand">AdAudit Pro</div>
+      <div style="margin-bottom:12px">
+        <span class="badge">${scope === 'campaign' ? 'Campaign Audit' : 'Account Audit'}</span>
+        <span class="badge teal">Claude AI Analysis</span>
+      </div>
+      <h1><span class="accent">${escapeHtml(title)}</span></h1>
+      <p class="meta-line">
+        ${scope === 'campaign' ? `Account: ${escapeHtml(accountLabel)} · ` : ''}
+        Generated ${escapeHtml(generatedAt)} · ${audit.dataWindowDays}-day data window · Engine v${escapeHtml(audit.engineVersion)}
+        ${audit.goal ? ` · Goal: ${escapeHtml(audit.goal)}` : ''}
+      </p>
+    </header>
 
     <div class="metrics">
-      <div class="metric"><div class="metric-value" style="color:#FF6B2B">${validFindings.length}</div><div class="metric-label">Findings</div></div>
-      <div class="metric"><div class="metric-value" style="color:#00C9A7">${formatMoney(totalImpact)}</div><div class="metric-label">Monthly Impact</div></div>
-      <div class="metric"><div class="metric-value" style="color:#00C9A7">${formatMoney(totalImpact * 12)}</div><div class="metric-label">Annual Opportunity</div></div>
+      <div class="metric"><div class="metric-value" style="color:var(--accent)">${validFindings.length}</div><div class="metric-label">Findings</div></div>
+      <div class="metric"><div class="metric-value" style="color:var(--teal)">${formatMoney(totalImpact)}</div><div class="metric-label">Monthly Impact</div></div>
+      <div class="metric"><div class="metric-value" style="color:var(--teal)">${formatMoney(totalImpact * 12)}</div><div class="metric-label">Annual Opportunity</div></div>
       <div class="metric"><div class="metric-value">${healthScore}/100</div><div class="metric-label">Health Score</div></div>
     </div>
 
@@ -617,11 +700,13 @@ async function tryRenderPdf(html: string): Promise<Buffer | null> {
       );
       try {
         const page = await browser.newPage();
-        await page.setContent(html, { waitUntil: 'domcontentloaded' });
+        await page.emulateMediaType('screen');
+        await page.setContent(html, { waitUntil: 'load' });
         const pdf = await page.pdf({
           format: 'A4',
           printBackground: true,
-          margin: { top: '14mm', bottom: '14mm', left: '12mm', right: '12mm' },
+          preferCSSPageSize: false,
+          margin: { top: '16mm', bottom: '16mm', left: '14mm', right: '14mm' },
         });
         return Buffer.from(pdf);
       } finally {
