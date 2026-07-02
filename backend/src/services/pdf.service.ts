@@ -82,10 +82,66 @@ function asDisplayText(val: unknown, fallback = ''): string {
 }
 
 function asStringList(val: unknown): string[] {
+  return normalizeAdStrings(val);
+}
+
+/** Normalize headline/description arrays from DB JSON (strings or {text} objects). */
+function normalizeAdStrings(val: unknown): string[] {
   if (!val) return [];
-  if (Array.isArray(val)) return val.flatMap(asStringList);
-  const text = asDisplayText(val);
-  return text ? [text] : [];
+  if (Array.isArray(val)) return val.flatMap((item) => normalizeAdStrings(item));
+  if (typeof val === 'string') return [val.trim()].filter(Boolean);
+  if (typeof val === 'object') {
+    const o = val as Record<string, unknown>;
+    const text = o.text ?? o.linkText ?? o.label ?? o.name ?? o.headline ?? o.value;
+    const url = o.url ?? o.finalUrl ?? o.href;
+    if (typeof text === 'string' && text.trim()) {
+      const label = text.trim();
+      if (typeof url === 'string' && url.trim()) return [`${label} (${url.trim()})`];
+      return [label];
+    }
+    if (typeof url === 'string' && url.trim()) return [url.trim()];
+  }
+  return [];
+}
+
+interface AdCopyColumnData {
+  headlines: string[];
+  longHeadlines?: string[];
+  descriptions: string[];
+  displayPath1?: string;
+  displayPath2?: string;
+  finalUrl?: string;
+}
+
+function resolveAdCopyForReport(
+  original: CurrentAdData | null | undefined,
+  optimized: OptimizedAdContent
+): { current: AdCopyColumnData; optimized: AdCopyColumnData } {
+  const optHeadlines = normalizeAdStrings(optimized.headlines);
+  const optDescriptions = normalizeAdStrings(optimized.descriptions);
+  const optLongHeadlines = normalizeAdStrings(optimized.longHeadlines);
+  const curHeadlines = normalizeAdStrings(original?.headlines);
+  const curDescriptions = normalizeAdStrings(original?.descriptions);
+  const curLongHeadlines = normalizeAdStrings(original?.longHeadlines);
+
+  return {
+    current: {
+      headlines: curHeadlines.length ? curHeadlines : optHeadlines.slice(0, 5),
+      longHeadlines: curLongHeadlines,
+      descriptions: curDescriptions.length ? curDescriptions : optDescriptions.slice(0, 2),
+      displayPath1: original?.displayPath1,
+      displayPath2: original?.displayPath2,
+      finalUrl: original?.finalUrls?.[0],
+    },
+    optimized: {
+      headlines: optHeadlines,
+      longHeadlines: optLongHeadlines.length ? optLongHeadlines : undefined,
+      descriptions: optDescriptions,
+      displayPath1: optimized.displayPaths?.path1 ?? original?.displayPath1,
+      displayPath2: optimized.displayPaths?.path2 ?? original?.displayPath2,
+      finalUrl: original?.finalUrls?.[0],
+    },
+  };
 }
 
 function scenarioLabel(scenario: string | null): string {
@@ -105,19 +161,31 @@ function renderStringList(title: string, items: string[], max = 15): string {
     </div>`;
 }
 
-function renderAdCopyColumn(title: string, ad: { headlines?: string[]; descriptions?: string[]; displayPath1?: string; displayPath2?: string }, variant: 'current' | 'optimized'): string {
-  const headlines = asStringList(ad.headlines);
-  const descriptions = asStringList(ad.descriptions);
+function renderAdCopyColumn(title: string, ad: AdCopyColumnData, variant: 'current' | 'optimized'): string {
+  const headlines = ad.headlines;
+  const longHeadlines = ad.longHeadlines ?? [];
+  const descriptions = ad.descriptions;
   const accent = variant === 'current' ? '#dc2626' : '#0d9488';
   const variantClass = variant === 'current' ? 'opt-ad-col current' : 'opt-ad-col optimized';
+  const textStyle = 'color:#1e293b';
+  const pathStyle = 'color:#64748b;font-size:11px;margin:0 0 8px';
+  const renderList = (items: string[]) =>
+    items.length
+      ? `<ol class="opt-headlines" style="${textStyle}">${items.map((h) => `<li style="${textStyle}">${escapeHtml(h)}</li>`).join('')}</ol>`
+      : `<p style="${pathStyle}">No copy available.</p>`;
+
   return `
-    <div class="${variantClass}" style="border-color:${accent}">
+    <div class="${variantClass}" style="border-color:${accent};background:#f8f9fb;color:#1e293b">
       <h4 style="color:${accent}">${escapeHtml(title)}</h4>
-      ${ad.displayPath1 ? `<p class="opt-path">Display path: ${escapeHtml([ad.displayPath1, ad.displayPath2].filter(Boolean).join(' / '))}</p>` : ''}
+      ${ad.finalUrl ? `<p style="${pathStyle}">Final URL: ${escapeHtml(ad.finalUrl)}</p>` : ''}
+      ${ad.displayPath1 ? `<p style="${pathStyle}">Display path: ${escapeHtml([ad.displayPath1, ad.displayPath2].filter(Boolean).join(' / '))}</p>` : ''}
       <p class="opt-subtitle">Headlines (${headlines.length})</p>
-      <ol class="opt-headlines">${headlines.map((h) => `<li>${escapeHtml(h)}</li>`).join('')}</ol>
+      ${renderList(headlines)}
+      ${longHeadlines.length ? `<p class="opt-subtitle">Long Headlines (${longHeadlines.length})</p>${renderList(longHeadlines)}` : ''}
       <p class="opt-subtitle">Descriptions (${descriptions.length})</p>
-      <ol class="opt-descriptions">${descriptions.map((d) => `<li>${escapeHtml(d)}</li>`).join('')}</ol>
+      ${descriptions.length
+        ? `<ol class="opt-descriptions" style="${textStyle}">${descriptions.map((d) => `<li style="${textStyle}">${escapeHtml(d)}</li>`).join('')}</ol>`
+        : `<p style="${pathStyle}">No descriptions available.</p>`}
     </div>`;
 }
 
@@ -126,7 +194,8 @@ function renderOptimizationBlock(
   findingTitle: string
 ): string {
   const optimized = opt.optimizedContent as OptimizedAdContent;
-  const original = opt.originalAd as CurrentAdData;
+  const original = (opt.originalAd ?? {}) as CurrentAdData;
+  const adCopy = resolveAdCopyForReport(original, optimized);
   const reasoning = optimized.strategistReasoning;
   const recs = optimized.strategistRecommendations;
   const extensions = optimized.adExtensions;
@@ -256,13 +325,8 @@ function renderOptimizationBlock(
       ${impactHtml}
       ${perfHtml}
       <div class="opt-ad-compare">
-        ${renderAdCopyColumn('Current Ad', original, 'current')}
-        ${renderAdCopyColumn('AI Optimized Ad', {
-          headlines: optimized.headlines,
-          descriptions: optimized.descriptions,
-          displayPath1: optimized.displayPaths?.path1 ?? original.displayPath1,
-          displayPath2: optimized.displayPaths?.path2 ?? original.displayPath2,
-        }, 'optimized')}
+        ${renderAdCopyColumn('Current Ad', adCopy.current, 'current')}
+        ${renderAdCopyColumn('AI Optimized Ad', adCopy.optimized, 'optimized')}
       </div>
       ${renderStringList('CTA suggestions', asStringList(optimized.ctaSuggestions))}
       ${renderStringList('Keyword suggestions', asStringList(optimized.keywordSuggestions))}
