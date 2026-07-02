@@ -95,7 +95,7 @@ async function startServer() {
   await connectDatabase();
   await importLegacyUsersIfEmpty();
 
-  app.listen(env.port, '0.0.0.0', () => {
+  const server = app.listen(env.port, '0.0.0.0', () => {
     console.log(`🚀 AdAudit Pro API running on port ${env.port}`);
     console.log(`   Environment: ${env.nodeEnv}`);
     console.log(`   Mock data: ${env.useMockData ? 'enabled' : 'disabled'}`);
@@ -117,6 +117,9 @@ async function startServer() {
     }
     throw err;
   });
+
+  server.requestTimeout = 300_000;
+  server.headersTimeout = 310_000;
 }
 
 startServer().catch((err) => {

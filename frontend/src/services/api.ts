@@ -281,22 +281,69 @@ export const aiApi = {
       };
     };
   }) => {
-    try {
-      return await api.post<import('../types/optimization').OptimizeAdResponse>(
-        '/ai/optimize-ad',
-        payload,
-        { timeout: 300_000 }
-      );
-    } catch (err) {
-      if (axios.isAxiosError(err) && err.response?.status === 404) {
-        return api.post<import('../types/optimization').OptimizeAdResponse>(
-          '/audit/optimize-ad',
-          payload,
-          { timeout: 300_000 }
-        );
+    type OptimizeAdResponse = import('../types/optimization').OptimizeAdResponse;
+
+    const pollOptimizeAdJob = async (jobId: string): Promise<OptimizeAdResponse> => {
+      const statusPaths = [
+        `/ai/optimize-ad/status/${jobId}`,
+        `/audit/optimize-ad/status/${jobId}`,
+      ];
+      const maxAttempts = 90;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 1500 : 2000));
+        for (const path of statusPaths) {
+          try {
+            const { data } = await api.get<{
+              status: 'processing' | 'completed' | 'failed';
+              result?: OptimizeAdResponse;
+              error?: string;
+            }>(path, {
+              params: payload.accountContext?.userId ? { userId: payload.accountContext.userId } : undefined,
+              timeout: 20_000,
+              validateStatus: (status) => status < 500 || status === 500,
+            });
+            if (data.status === 'completed' && data.result) return data.result;
+            if (data.status === 'failed') {
+              throw new Error(data.error ?? 'Optimization failed');
+            }
+            break;
+          } catch (err) {
+            if (axios.isAxiosError(err) && err.response?.status === 404) continue;
+            if (axios.isAxiosError(err) && err.response?.status === 500) {
+              const apiError = (err.response.data as { error?: string })?.error;
+              throw new Error(apiError ?? 'Optimization failed');
+            }
+            if (attempt === maxAttempts - 1) throw err;
+          }
+        }
       }
-      throw err;
+      throw new Error('Optimization timed out — the AI is still working. Try again in a moment.');
+    };
+
+    const postPaths = ['/ai/optimize-ad', '/audit/optimize-ad'];
+    let lastErr: unknown;
+    for (const path of postPaths) {
+      try {
+        const res = await api.post<OptimizeAdResponse | { jobId: string; status: string }>(
+          path,
+          payload,
+          {
+            timeout: 45_000,
+            validateStatus: (status) => status === 200 || status === 202,
+          }
+        );
+        if (res.status === 202 && res.data && 'jobId' in res.data) {
+          const result = await pollOptimizeAdJob(res.data.jobId);
+          return { data: result };
+        }
+        return res as { data: OptimizeAdResponse };
+      } catch (err) {
+        lastErr = err;
+        if (axios.isAxiosError(err) && err.response?.status === 404) continue;
+        throw err;
+      }
     }
+    throw lastErr;
   },
 };
 

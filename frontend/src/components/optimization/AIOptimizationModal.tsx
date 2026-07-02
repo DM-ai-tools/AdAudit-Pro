@@ -318,11 +318,13 @@ export function AIOptimizationModal({
       let message = 'Failed to generate optimizations';
       if (axios.isAxiosError(err)) {
         if (err.code === 'ECONNABORTED') {
-          message = 'Optimization timed out — the server is still analyzing a large account. Try again or pick a single campaign.';
+          message = 'Optimization timed out — please try again.';
         } else if (err.code === 'ECONNRESET' || err.message?.includes('Network Error')) {
           message = isRegenerate
             ? 'Connection lost while regenerating. Your previous results are still shown — wait a moment and try Regenerate again.'
-            : 'Connection lost — the server may still be working. Wait a moment and try again.';
+            : 'Connection lost — please try Make It Better again.';
+        } else if (err.response?.status === 502) {
+          message = 'Server gateway error — optimization may still be running. Wait a moment and try again.';
         }
         const apiError = (err.response?.data as { error?: string })?.error;
         if (err.response?.status === 404 && apiError === 'Not found') {

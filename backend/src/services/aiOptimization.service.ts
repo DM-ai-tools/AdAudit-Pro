@@ -1,4 +1,5 @@
 import { createClaudeMessage } from '../ai/anthropic-client.js';
+import { env } from '../config/env.js';
 import type { OptimizationTone } from '../ai/prompts/optimize-ad.prompt.js';
 import {
   buildFullOptimizeAdPrompt,
@@ -157,6 +158,39 @@ export interface OptimizeAdRequest {
     industry?: string;
     userId?: string;
     campaignId?: string;
+    campaignName?: string;
+    campaignType?: string;
+    campaignStatus?: string;
+    biddingStrategyType?: string;
+    hasExistingAds?: boolean;
+    adCount?: number;
+    findingCategory?: string;
+    findingTitle?: string;
+    primaryAdSnapshot?: {
+      headlines?: string[];
+      descriptions?: string[];
+      finalUrls?: string[];
+      displayPath1?: string;
+      displayPath2?: string;
+      adStrength?: string;
+      ctr?: number;
+      conversions?: number;
+      impressions?: number;
+      clicks?: number;
+      adGroupName?: string;
+      resourceName?: string;
+    };
+    campaignMetrics?: {
+      impressions?: number;
+      clicks?: number;
+      ctr?: number;
+      avgCpc?: number;
+      conversions?: number;
+      conversionRate?: number;
+      costPerConversion?: number;
+      cost?: number;
+      budgetDaily?: number;
+    };
   };
 }
 
@@ -546,6 +580,12 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
   console.log(`[optimizeAd] start audit=${request.auditId} finding=${request.findingId} campaign=${request.accountContext?.campaignId ?? 'all'}${request.regenerateOnly ? ' (regenerate-only)' : ''}`);
 
   let intelligence: AuditIntelligence;
+  const useLightweight =
+    request.regenerateOnly ||
+    env.isProduction ||
+    Boolean(request.accountContext?.primaryAdSnapshot) ||
+    Boolean(request.accountContext?.campaignId);
+
   if (request.regenerateOnly) {
     const cached = await prisma.aIOptimization.findFirst({
       where: {
@@ -581,8 +621,9 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
       campaignId: request.accountContext?.campaignId,
       accountContext: request.accountContext,
       auditFindingsSnapshot: request.auditFindingsSnapshot ?? stored?.findings,
+      lightweight: useLightweight,
     });
-    console.log(`[optimizeAd] intelligence ready in ${Date.now() - startedAt}ms (source=${intelligence.dataSource})`);
+    console.log(`[optimizeAd] intelligence ready in ${Date.now() - startedAt}ms (source=${intelligence.dataSource}${useLightweight ? ', lightweight' : ''})`);
   }
 
   const originalAd = intelligenceToCurrentAd(intelligence, finding);
@@ -597,7 +638,7 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
 
   const claudeStart = Date.now();
   const response = await createClaudeMessage({
-    max_tokens: 8192,
+    max_tokens: 6144,
     messages: [
       {
         role: 'user',
@@ -624,7 +665,7 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
     optimized = parseClaudeJson(block.text, brand, baseline, intelligence);
   } catch (firstErr) {
     const retry = await createClaudeMessage({
-      max_tokens: 8192,
+      max_tokens: 6144,
       messages: [
         {
           role: 'user',

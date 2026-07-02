@@ -14,7 +14,7 @@ import {
   listUserAudits,
 } from '../services/audit.service.js';
 import type { AuditRun } from '../types/index.js';
-import { handleOptimizeAd } from '../controllers/optimize-ad.controller.js';
+import { handleOptimizeAd, handleOptimizeAdStatus } from '../controllers/optimize-ad.controller.js';
 
 const router = Router();
 
@@ -181,6 +181,10 @@ router.get('/pdf/:id', async (req, res) => {
 /** Alias for /api/ai/optimize-ad — works even if ai router is not mounted */
 router.post('/optimize-ad', optionalAuth, (req: AuthRequest, res: Response) => {
   void handleOptimizeAd(req, res);
+});
+
+router.get('/optimize-ad/status/:jobId', optionalAuth, (req: AuthRequest, res: Response) => {
+  void handleOptimizeAdStatus(req, res);
 });
 
 function sanitizeAudit(audit: AuditRun | null, shared = false) {
