@@ -51,7 +51,9 @@ Structure:
 3. Priority actions paragraph — top 3 immediate fixes ranked by ROI
 4. ${isCampaign ? 'Campaign-specific' : 'Strategic'} outlook paragraph — 30-90 day improvement potential
 
-Write in professional consulting tone. Include specific dollar figures and entity names from the findings.`,
+Write in professional consulting tone. Include specific dollar figures and entity names from the findings.
+
+IMPORTANT: Use plain prose paragraphs only. Do not use markdown syntax (no # headings, no **bold**, no bullet lists). Separate paragraphs with blank lines.`,
       }],
     }, key);
 

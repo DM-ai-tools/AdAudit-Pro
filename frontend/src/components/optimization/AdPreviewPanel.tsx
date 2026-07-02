@@ -2,6 +2,7 @@ import { useState } from 'react';
 import clsx from 'clsx';
 import { ChevronLeft, ChevronRight, Link2, Phone, MapPin } from 'lucide-react';
 import type { PreviewDevice } from '../../types/optimization';
+import { normalizeRenderableStrings } from './utils';
 
 interface AdPreviewPanelProps {
   headlines: string[];
@@ -33,6 +34,12 @@ export function AdPreviewPanel({
   const [headlineIdx, setHeadlineIdx] = useState(0);
   const [descIdx, setDescIdx] = useState(0);
 
+  const safeHeadlines = normalizeRenderableStrings(headlines);
+  const safeDescriptions = normalizeRenderableStrings(descriptions);
+  const safeSitelinks = normalizeRenderableStrings(sitelinks);
+  const safeCallouts = normalizeRenderableStrings(callouts);
+  const safeSnippets = normalizeRenderableStrings(structuredSnippets);
+
   const cleanUrl = displayUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
   const path1 = displayPaths?.path1;
   const path2 = displayPaths?.path2;
@@ -40,8 +47,8 @@ export function AdPreviewPanel({
     ? `${cleanUrl}${path2 ? ` › ${path1} › ${path2}` : ` › ${path1}`}`
     : cleanUrl;
 
-  const headline = headlines[headlineIdx] ?? headlines[0] ?? 'Your Headline Here';
-  const description = descriptions[descIdx] ?? descriptions[0] ?? 'Your ad description will appear here.';
+  const headline = safeHeadlines[headlineIdx] ?? safeHeadlines[0] ?? 'Your Headline Here';
+  const description = safeDescriptions[descIdx] ?? safeDescriptions[0] ?? 'Your ad description will appear here.';
 
   return (
     <div className="space-y-4">
@@ -102,23 +109,23 @@ export function AdPreviewPanel({
         </div>
 
         {/* Ad extensions preview */}
-        {(sitelinks.length > 0 || callouts.length > 0) && (
+        {(safeSitelinks.length > 0 || safeCallouts.length > 0) && (
           <div className="border-t border-border/60 px-3 py-2.5 space-y-2 bg-panel/30">
-            {sitelinks.length > 0 && (
+            {safeSitelinks.length > 0 && (
               <div className="flex flex-wrap gap-x-3 gap-y-1">
-                {sitelinks.slice(0, 4).map((link, i) => (
+                {safeSitelinks.slice(0, 4).map((link, i) => (
                   <span key={i} className="text-[11px] text-blue-400/90">{link}</span>
                 ))}
               </div>
             )}
-            {callouts.length > 0 && (
+            {safeCallouts.length > 0 && (
               <p className="text-[10px] text-muted leading-relaxed">
-                {callouts.slice(0, 4).join(' · ')}
+                {safeCallouts.slice(0, 4).join(' · ')}
               </p>
             )}
-            {structuredSnippets.length > 0 && (
+            {safeSnippets.length > 0 && (
               <p className="text-[10px] text-muted">
-                {structuredSnippets.slice(0, 5).join(', ')}
+                {safeSnippets.slice(0, 5).join(', ')}
               </p>
             )}
           </div>
@@ -126,11 +133,11 @@ export function AdPreviewPanel({
       </div>
 
       {/* RSA headline / description rotator */}
-      {headlines.length > 1 && (
+      {safeHeadlines.length > 1 && (
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-[10px] text-muted uppercase tracking-wide">
-              Headline {headlineIdx + 1} of {headlines.length}
+              Headline {headlineIdx + 1} of {safeHeadlines.length}
             </span>
             <div className="flex gap-1">
               <button
@@ -144,15 +151,15 @@ export function AdPreviewPanel({
               <button
                 type="button"
                 className="p-1 rounded border border-border text-muted hover:text-white disabled:opacity-30"
-                disabled={headlineIdx >= headlines.length - 1}
-                onClick={() => setHeadlineIdx((i) => Math.min(headlines.length - 1, i + 1))}
+                disabled={headlineIdx >= safeHeadlines.length - 1}
+                onClick={() => setHeadlineIdx((i) => Math.min(safeHeadlines.length - 1, i + 1))}
               >
                 <ChevronRight size={14} />
               </button>
             </div>
           </div>
           <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
-            {headlines.map((h, i) => (
+            {safeHeadlines.map((h, i) => (
               <button
                 key={i}
                 type="button"
@@ -171,11 +178,11 @@ export function AdPreviewPanel({
         </div>
       )}
 
-      {descriptions.length > 1 && (
+      {safeDescriptions.length > 1 && (
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-[10px] text-muted uppercase tracking-wide">
-              Description {descIdx + 1} of {descriptions.length}
+              Description {descIdx + 1} of {safeDescriptions.length}
             </span>
             <div className="flex gap-1">
               <button
@@ -189,15 +196,15 @@ export function AdPreviewPanel({
               <button
                 type="button"
                 className="p-1 rounded border border-border text-muted hover:text-white disabled:opacity-30"
-                disabled={descIdx >= descriptions.length - 1}
-                onClick={() => setDescIdx((i) => Math.min(descriptions.length - 1, i + 1))}
+                disabled={descIdx >= safeDescriptions.length - 1}
+                onClick={() => setDescIdx((i) => Math.min(safeDescriptions.length - 1, i + 1))}
               >
                 <ChevronRight size={14} />
               </button>
             </div>
           </div>
           <div className="space-y-1">
-            {descriptions.map((d, i) => (
+            {safeDescriptions.map((d, i) => (
               <button
                 key={i}
                 type="button"

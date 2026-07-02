@@ -7,6 +7,8 @@ import {
   isFailureFinding,
   reportTitle,
 } from '../utils/report-findings.js';
+import type { AuditReportOptimization } from './aiOptimization.service.js';
+import type { OptimizedAdContent, CurrentAdData } from './aiOptimization.service.js';
 
 const CHROME_CANDIDATES = [
   process.env.PUPPETEER_EXECUTABLE_PATH,
@@ -41,7 +43,15 @@ function severityColor(severity: string): string {
   return map[severity] || '#C0CCDB';
 }
 
-function renderFinding(f: Finding): string {
+function renderFinding(f: Finding, optimization?: AuditReportOptimization): string {
+  const optSnippet = optimization
+    ? `<p class="rec"><strong>Make It Better (AI):</strong> ${escapeHtml(
+        asDisplayText(
+          (optimization.optimizedContent as OptimizedAdContent).improvementReasoning,
+          optimization.improvementReasoning ?? ''
+        )
+      )} <em>— Full optimized ad copy is in the Make It Better section below.</em></p>`
+    : '';
   return `
     <article class="finding">
       <div class="finding-head">
@@ -51,11 +61,239 @@ function renderFinding(f: Finding): string {
       <h4>${escapeHtml(f.title)}</h4>
       <p class="desc">${escapeHtml(f.description)}</p>
       ${f.recommendation ? `<p class="rec"><strong>Recommendation:</strong> ${escapeHtml(f.recommendation)}</p>` : ''}
+      ${optSnippet}
       <div class="meta">
         <span>${escapeHtml(f.category.replace(/_/g, ' '))}</span>
         <span>Confidence ${f.confidence}%</span>
       </div>
     </article>`;
+}
+
+function asDisplayText(val: unknown, fallback = ''): string {
+  if (val == null) return fallback;
+  if (typeof val === 'string') return val.trim() || fallback;
+  if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+  if (typeof val === 'object') {
+    const o = val as Record<string, unknown>;
+    const text = o.text ?? o.linkText ?? o.label ?? o.name ?? o.headline ?? o.value;
+    if (typeof text === 'string' && text.trim()) return text.trim();
+  }
+  return fallback;
+}
+
+function asStringList(val: unknown): string[] {
+  if (!val) return [];
+  if (Array.isArray(val)) return val.flatMap(asStringList);
+  const text = asDisplayText(val);
+  return text ? [text] : [];
+}
+
+function scenarioLabel(scenario: string | null): string {
+  if (scenario === 'REPLACE_EXISTING') return 'Optimize Existing Ads';
+  if (scenario === 'CREATE_ADS') return 'Create Ads In Campaign';
+  if (scenario === 'CREATE_STRATEGY') return 'New Campaign Strategy';
+  return 'AI Optimization';
+}
+
+function renderStringList(title: string, items: string[], max = 15): string {
+  const list = items.filter(Boolean).slice(0, max);
+  if (!list.length) return '';
+  return `
+    <div class="opt-list-block">
+      <p class="opt-subtitle">${escapeHtml(title)}</p>
+      <ul>${list.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>
+    </div>`;
+}
+
+function renderAdCopyColumn(title: string, ad: { headlines?: string[]; descriptions?: string[]; displayPath1?: string; displayPath2?: string }, accent: string): string {
+  const headlines = asStringList(ad.headlines);
+  const descriptions = asStringList(ad.descriptions);
+  return `
+    <div class="opt-ad-col" style="border-color:${accent}">
+      <h4 style="color:${accent}">${escapeHtml(title)}</h4>
+      ${ad.displayPath1 ? `<p class="opt-path">Display path: ${escapeHtml([ad.displayPath1, ad.displayPath2].filter(Boolean).join(' / '))}</p>` : ''}
+      <p class="opt-subtitle">Headlines (${headlines.length})</p>
+      <ol class="opt-headlines">${headlines.map((h) => `<li>${escapeHtml(h)}</li>`).join('')}</ol>
+      <p class="opt-subtitle">Descriptions (${descriptions.length})</p>
+      <ol class="opt-descriptions">${descriptions.map((d) => `<li>${escapeHtml(d)}</li>`).join('')}</ol>
+    </div>`;
+}
+
+function renderOptimizationBlock(
+  opt: AuditReportOptimization,
+  findingTitle: string
+): string {
+  const optimized = opt.optimizedContent as OptimizedAdContent;
+  const original = opt.originalAd as CurrentAdData;
+  const reasoning = optimized.strategistReasoning;
+  const recs = optimized.strategistRecommendations;
+  const extensions = optimized.adExtensions;
+  const strategy = optimized.campaignStrategy;
+
+  const reasoningHtml = reasoning
+    ? `
+      <div class="opt-reasoning">
+        <p class="opt-subtitle">Why This Ad Is Better</p>
+        ${[
+          { label: 'Headlines', text: reasoning.headlineChanges },
+          { label: 'Descriptions', text: reasoning.descriptionChanges },
+          { label: 'Keyword relevance', text: reasoning.keywordRelevance },
+          { label: 'Quality Score', text: reasoning.qualityScore },
+          { label: 'Conversion potential', text: reasoning.conversionPotential },
+        ]
+          .filter((s) => asDisplayText(s.text))
+          .map(
+            (s) => `
+          <div class="opt-reason-row">
+            <span class="opt-reason-label">${escapeHtml(s.label)}</span>
+            <p>${escapeHtml(asDisplayText(s.text))}</p>
+          </div>`
+          )
+          .join('')}
+        ${renderStringList('Audit findings addressed', asStringList(reasoning.auditFindingsAddressed))}
+        ${renderStringList('Competitor insights used', asStringList(reasoning.competitorInsightsUsed))}
+      </div>`
+    : '';
+
+  const recsHtml = recs
+    ? [
+        renderStringList('Recommended keywords', asStringList(recs.keywords)),
+        renderStringList('Negative keywords', asStringList(recs.negativeKeywords)),
+        renderStringList('Ad extensions', asStringList(recs.extensions)),
+        renderStringList('Landing page', asStringList(recs.landingPage)),
+        renderStringList('Budget', asStringList(recs.budget)),
+        renderStringList('Bidding', asStringList(recs.bidding)),
+        renderStringList('Audience', asStringList(recs.audience)),
+      ].join('')
+    : '';
+
+  const extensionsHtml = extensions
+    ? [
+        renderStringList('Sitelinks', asStringList(extensions.sitelinks)),
+        renderStringList('Callouts', asStringList(extensions.callouts)),
+        renderStringList('Structured snippets', asStringList(extensions.structuredSnippets)),
+      ].join('')
+    : '';
+
+  const strategyHtml = strategy
+    ? `
+      <div class="opt-strategy">
+        <p class="opt-subtitle">Campaign Strategy</p>
+        ${strategy.campaignName ? `<p><strong>Campaign:</strong> ${escapeHtml(strategy.campaignName)}</p>` : ''}
+        ${strategy.dailyBudget != null ? `<p><strong>Daily budget:</strong> ${formatMoney(strategy.dailyBudget)}</p>` : ''}
+        ${(strategy.adGroups ?? [])
+          .map(
+            (ag) => `
+          <div class="opt-adgroup">
+            <p><strong>Ad group:</strong> ${escapeHtml(ag.name)}</p>
+            ${renderStringList('Keywords', asStringList(ag.keywords), 12)}
+          </div>`
+          )
+          .join('')}
+        ${renderStringList('Negative keywords', asStringList(strategy.negativeKeywords))}
+        ${renderStringList('Competitor insights', asStringList(strategy.competitorInsights))}
+      </div>`
+    : '';
+
+  const impactHtml = `
+    <div class="opt-impact-grid">
+      <div class="opt-impact-card"><span>CTR</span><strong>${escapeHtml(optimized.predictedImpact?.ctrIncrease ?? '—')}</strong></div>
+      <div class="opt-impact-card"><span>Conversions</span><strong>${escapeHtml(optimized.predictedImpact?.conversionImprovement ?? '—')}</strong></div>
+      <div class="opt-impact-card"><span>Quality Score</span><strong>${escapeHtml(optimized.predictedImpact?.qualityScoreIncrease ?? '—')}</strong></div>
+    </div>`;
+
+  const perf = optimized.performanceEstimates;
+  const perfHtml = perf
+    ? `
+      <div class="opt-perf">
+        <p class="opt-subtitle">AI Estimated Performance (${escapeHtml(perf.label)})</p>
+        <table class="opt-perf-table">
+          <thead><tr><th>Metric</th><th>Current</th><th>Estimated</th></tr></thead>
+          <tbody>
+            ${[
+              ['CTR', perf.current.ctr, perf.estimated.ctr],
+              ['Quality Score', perf.current.qualityScore, perf.estimated.qualityScore],
+              ['Conversion Rate', perf.current.conversionRate, perf.estimated.conversionRate],
+              ['CPA', perf.current.cpa, perf.estimated.cpa],
+              ['ROAS', perf.current.roas, perf.estimated.roas],
+            ]
+              .filter(([, cur, est]) => cur || est)
+              .map(
+                ([label, cur, est]) =>
+                  `<tr><td>${escapeHtml(String(label))}</td><td>${escapeHtml(cur ?? '—')}</td><td class="est">${escapeHtml(est ?? '—')}</td></tr>`
+              )
+              .join('')}
+          </tbody>
+        </table>
+      </div>`
+    : '';
+
+  const campaignLabel =
+    original.campaignName ??
+    strategy?.campaignName ??
+    (opt.campaignId ? `Campaign ${opt.campaignId}` : 'Account-wide');
+
+  return `
+    <article class="optimization-block">
+      <div class="opt-head">
+        <div>
+          <span class="badge teal">Make It Better</span>
+          <span class="badge">${escapeHtml(scenarioLabel(opt.scenario))}</span>
+          ${opt.tone ? `<span class="badge">${escapeHtml(opt.tone)} tone</span>` : ''}
+        </div>
+        <span class="opt-date">${escapeHtml(new Date(opt.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }))}</span>
+      </div>
+      <h3>${escapeHtml(findingTitle)}</h3>
+      <p class="opt-campaign">${escapeHtml(campaignLabel)}</p>
+      <p class="opt-summary">${escapeHtml(
+        asDisplayText(optimized.improvementReasoning, opt.improvementReasoning ?? 'AI-generated ad optimization.')
+      )}</p>
+      ${impactHtml}
+      ${perfHtml}
+      <div class="opt-ad-compare">
+        ${renderAdCopyColumn('Current Ad', original, '#FF6B6B')}
+        ${renderAdCopyColumn('AI Optimized Ad', {
+          headlines: optimized.headlines,
+          descriptions: optimized.descriptions,
+          displayPath1: optimized.displayPaths?.path1 ?? original.displayPath1,
+          displayPath2: optimized.displayPaths?.path2 ?? original.displayPath2,
+        }, '#00C9A7')}
+      </div>
+      ${renderStringList('CTA suggestions', asStringList(optimized.ctaSuggestions))}
+      ${renderStringList('Keyword suggestions', asStringList(optimized.keywordSuggestions))}
+      ${extensionsHtml}
+      ${reasoningHtml}
+      ${recsHtml}
+      ${strategyHtml}
+    </article>`;
+}
+
+function renderOptimizationsSection(
+  audit: AuditRun,
+  optimizations: AuditReportOptimization[]
+): string {
+  if (!optimizations.length) {
+    return `
+      <h2>Make It Better — AI Ad Optimizations</h2>
+      <p class="muted">No Make It Better optimizations have been generated for this audit yet. Run optimizations from the dashboard and download the report again to include AI ad copy.</p>`;
+  }
+
+  const findingTitleById = new Map(audit.findings.map((f) => [f.id, f.title]));
+
+  const blocks = optimizations
+    .map((opt) => {
+      const title =
+        findingTitleById.get(opt.findingId) ??
+        opt.originalAd.campaignName ??
+        `Optimization ${opt.findingId}`;
+      return renderOptimizationBlock(opt, title);
+    })
+    .join('');
+
+  return `
+    <h2>Make It Better — AI Ad Optimizations</h2>
+    <p class="module-sub">${optimizations.length} Claude-generated optimization${optimizations.length === 1 ? '' : 's'} included in this report</p>
+    ${blocks}`;
 }
 
 function renderRoadmapColumn(title: string, color: string, items: RoadmapItem[]): string {
@@ -82,7 +320,7 @@ function renderRoadmapColumn(title: string, color: string, items: RoadmapItem[])
     </div>`;
 }
 
-export function buildReportHtml(audit: AuditRun): string {
+export function buildReportHtml(audit: AuditRun, optimizations: AuditReportOptimization[] = []): string {
   const validFindings = audit.findings.filter((f) => !isFailureFinding(f));
   const totalImpact = validFindings.reduce((s, f) => s + f.impactMonthly, 0);
   const healthScore = audit.healthScores.length
@@ -111,13 +349,17 @@ export function buildReportHtml(audit: AuditRun): string {
         </div>`).join('')
     : '<p class="muted">Health scores were not generated for this audit.</p>';
 
+  const optimizationByFinding = new Map(
+    optimizations.map((o) => [o.findingId, o] as const)
+  );
+
   const moduleGroups = groupFindingsByModule(audit.findings);
   const modulesHtml = moduleGroups.length
     ? moduleGroups.map((group) => `
         <section class="module-section">
           <h2>${escapeHtml(group.name)}</h2>
           <p class="module-sub">${group.findings.length} Claude finding${group.findings.length === 1 ? '' : 's'}</p>
-          ${group.findings.map(renderFinding).join('')}
+          ${group.findings.map((f) => renderFinding(f, optimizationByFinding.get(f.id))).join('')}
         </section>`).join('')
     : '<p class="muted">No findings available for this audit.</p>';
 
@@ -258,6 +500,40 @@ export function buildReportHtml(audit: AuditRun): string {
     .roadmap-desc { color: #6B7D96; font-size: 11px; margin: 0 0 6px; }
     .roadmap-tags { display: flex; flex-wrap: wrap; gap: 6px; font-size: 10px; color: #8FA3BE; }
     .muted { color: #6B7D96; font-size: 13px; }
+    .optimization-block {
+      background: #141C2E;
+      border: 1px solid rgba(255,107,43,0.35);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+      page-break-inside: avoid;
+    }
+    .opt-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+    .opt-date { color: #6B7D96; font-size: 11px; }
+    .optimization-block h3 { color: #fff; margin: 0 0 6px; font-size: 17px; }
+    .opt-campaign { color: #8FA3BE; font-size: 12px; margin: 0 0 10px; }
+    .opt-summary { font-size: 13px; margin: 0 0 16px; line-height: 1.6; }
+    .opt-impact-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; }
+    .opt-impact-card { background: #0B1220; border: 1px solid #1E2D48; border-radius: 8px; padding: 12px; text-align: center; }
+    .opt-impact-card span { display: block; font-size: 10px; text-transform: uppercase; color: #6B7D96; margin-bottom: 4px; }
+    .opt-impact-card strong { color: #00C9A7; font-size: 16px; }
+    .opt-ad-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px 0; }
+    .opt-ad-col { background: #0B1220; border: 1px solid; border-radius: 10px; padding: 14px; }
+    .opt-ad-col h4 { margin: 0 0 10px; font-size: 14px; }
+    .opt-path { font-size: 11px; color: #6B7D96; margin: 0 0 8px; }
+    .opt-subtitle { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #FF6B2B; margin: 12px 0 6px; font-weight: 600; }
+    .opt-headlines, .opt-descriptions { margin: 0 0 8px; padding-left: 18px; font-size: 12px; }
+    .opt-headlines li, .opt-descriptions li { margin-bottom: 4px; }
+    .opt-list-block ul { margin: 4px 0 0; padding-left: 18px; font-size: 12px; }
+    .opt-list-block li { margin-bottom: 3px; }
+    .opt-reasoning, .opt-strategy, .opt-perf { margin-top: 14px; padding-top: 12px; border-top: 1px solid #1E2D48; }
+    .opt-reason-row { margin-bottom: 10px; }
+    .opt-reason-label { display: block; font-size: 10px; text-transform: uppercase; color: #FF6B2B; margin-bottom: 2px; }
+    .opt-reason-row p { margin: 0; font-size: 12px; }
+    .opt-perf-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+    .opt-perf-table th, .opt-perf-table td { border: 1px solid #1E2D48; padding: 6px 8px; text-align: left; }
+    .opt-perf-table th { color: #6B7D96; font-weight: 600; }
+    .opt-perf-table td.est { color: #00C9A7; font-weight: 600; }
     .footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid #1E2D48; font-size: 11px; color: #6B7D96; }
     @media (max-width: 800px) {
       .metrics, .roadmap { grid-template-columns: 1fr 1fr; }
@@ -308,6 +584,8 @@ export function buildReportHtml(audit: AuditRun): string {
     <h2>Module Findings (Claude)</h2>
     ${modulesHtml}
 
+    ${renderOptimizationsSection(audit, optimizations)}
+
     <h2>30 / 60 / 90-Day Growth Roadmap</h2>
     <div class="roadmap">
       ${renderRoadmapColumn('30-Day Sprint', '#FF6B6B', roadmap30)}
@@ -318,6 +596,7 @@ export function buildReportHtml(audit: AuditRun): string {
     <div class="footer">
       Generated by AdAudit Pro • ${escapeHtml(env.clientUrl || 'https://adaudit.pro')}
       • ${validFindings.length} findings across ${moduleGroups.length} modules
+      ${optimizations.length ? ` • ${optimizations.length} Make It Better optimization${optimizations.length === 1 ? '' : 's'}` : ''}
     </div>
   </div>
 </body>
@@ -367,7 +646,9 @@ async function tryRenderPdf(html: string): Promise<Buffer | null> {
 }
 
 export async function generatePdf(audit: AuditRun): Promise<{ buffer: Buffer; isPdf: boolean }> {
-  const html = buildReportHtml(audit);
+  const { getOptimizationsForAuditReport } = await import('./aiOptimization.service.js');
+  const optimizations = await getOptimizationsForAuditReport(audit.id);
+  const html = buildReportHtml(audit, optimizations);
   const pdf = await tryRenderPdf(html);
   if (pdf) return { buffer: pdf, isPdf: true };
   return { buffer: Buffer.from(html, 'utf-8'), isPdf: false };

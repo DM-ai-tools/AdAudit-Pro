@@ -15,7 +15,7 @@ interface CampaignAuditsSectionProps {
   auditScope?: 'account' | 'campaign';
   parentAuditId?: string;
   campaignName?: string;
-  onOptimizeCampaign?: (finding: Finding, campaignId: string) => void;
+  onOptimizeCampaign?: (finding: Finding, campaign: GoogleAdsCampaign) => void;
 }
 
 function formatGoogleAdsCustomerId(id: string): string {
@@ -214,15 +214,19 @@ export function CampaignAuditsSection({
                   id: `camp-opt-${campaign.id}`,
                   severity: 'HIGH',
                   title: `Optimize campaign: ${campaign.name}`,
-                  description: `AI optimization scoped to ${campaign.name} (${campaign.type}, ${campaign.status}).`,
-                  recommendation: 'Generate improved ad copy and strategy for this campaign.',
+                  description: campaign.adCount > 0
+                    ? `AI optimization for ${campaign.name} (${campaign.type}, ${campaign.status}) — improve existing ads.`
+                    : `AI recommendations for ${campaign.name} (${campaign.type}, ${campaign.status}) — no responsive search ads found; generate new copy and strategy.`,
+                  recommendation: campaign.adCount > 0
+                    ? 'Generate improved ad copy and extensions for this campaign.'
+                    : 'Generate new ad copy, asset recommendations, and campaign strategy for this campaign.',
                   confidence: 85,
                   impactMonthly: 0,
                   category: 'AD_COPY',
                   dimension: 'Ad Copy Review',
                   status: 'OPEN',
                 },
-                campaign.id
+                campaign
               ) : undefined}
             />
           ))}

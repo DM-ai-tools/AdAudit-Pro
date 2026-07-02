@@ -49,8 +49,10 @@ app.get('/api/health', async (_req, res) => {
       database = false;
     }
   }
-  res.json({
-    status: database ? 'ok' : 'degraded',
+  const status = database ? 'ok' : 'degraded';
+  const httpStatus = env.isProduction && env.databaseUrl && !database ? 503 : 200;
+  res.status(httpStatus).json({
+    status,
     mock: env.useMockData,
     database,
     version: '1.0.0',

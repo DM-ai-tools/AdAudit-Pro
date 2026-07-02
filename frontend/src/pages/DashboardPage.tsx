@@ -28,11 +28,13 @@ import {
 import { useAuditReport } from '../hooks/useAuditPolling';
 import { auditApi } from '../services/api';
 import type { Finding } from '../types';
+import type { GoogleAdsCampaign } from '../types/connect';
 import { AIOptimizationModal, MakeItBetterButton, isOptimizableFinding } from '../components/optimization';
 import { CampaignAuditsSection } from '../components/dashboard/CampaignAuditsSection';
 import { AccountPerformanceStats } from '../components/dashboard/AccountPerformanceStats';
 import { PreviousAuditsList } from '../components/dashboard/PreviousAuditsList';
 import { usePreviousAudits } from '../hooks/usePreviousAudits';
+import { ClaudeText } from '../components/ui/ClaudeText';
 import { useAuthStore } from '../store';
 
 const MODULE_NAV_ICONS: Record<string, typeof FileText> = {
@@ -79,7 +81,7 @@ const baseNavItems: Array<{
 
 export default function DashboardPage() {
   const { auditId } = useParams<{ auditId: string }>();
-  const { audit, loading, backfilling } = useAuditReport(auditId);
+  const { audit, loading, error: reportError, backfilling, backfillProgress, backfillError } = useAuditReport(auditId);
   const authUser = useAuthStore((s) => s.user);
   const { audits: previousAudits, userEmail: previousAuditsEmail, loading: previousAuditsLoading, error: previousAuditsError } = usePreviousAudits(!!authUser);
   const [activeSection, setActiveSection] = useState('executive');
@@ -93,12 +95,48 @@ export default function DashboardPage() {
   const [pdfError, setPdfError] = useState<string | null>(null);
   const [optimizeFinding, setOptimizeFinding] = useState<Finding | null>(null);
   const [optimizeCampaignId, setOptimizeCampaignId] = useState<string | undefined>();
+  const [optimizeInitialCampaign, setOptimizeInitialCampaign] = useState<GoogleAdsCampaign | null>(null);
+  const [optimizeSnapshot, setOptimizeSnapshot] = useState<{
+    auditId: string;
+    auditFindings: Finding[];
+    accountName: string;
+    googleAdsCustomerId?: string;
+    websiteUrl?: string;
+    goal?: string;
+    monthlySpend?: number;
+    userId?: string;
+  } | null>(null);
   const mainRef = useRef<HTMLDivElement>(null);
 
   const validFindings = useMemo(
     () => (audit?.findings ?? []).filter((f) => !isFailureFinding(f)),
     [audit]
   );
+
+  const openOptimization = useCallback((finding: Finding, campaign?: GoogleAdsCampaign) => {
+    if (!auditId || !audit) return;
+    const snapshotFindings = (audit.findings ?? []).filter((f) => !isFailureFinding(f));
+    setOptimizeSnapshot({
+      auditId,
+      auditFindings: snapshotFindings,
+      accountName: audit.accountName,
+      googleAdsCustomerId: audit.googleAdsCustomerId,
+      websiteUrl: audit.websiteUrl,
+      goal: audit.goal,
+      monthlySpend: audit.monthlySpend,
+      userId: audit.userId ?? authUser?.id,
+    });
+    setOptimizeCampaignId(campaign?.id);
+    setOptimizeInitialCampaign(campaign ?? null);
+    setOptimizeFinding(finding);
+  }, [auditId, audit, authUser?.id]);
+
+  const closeOptimization = useCallback(() => {
+    setOptimizeFinding(null);
+    setOptimizeCampaignId(undefined);
+    setOptimizeInitialCampaign(null);
+    setOptimizeSnapshot(null);
+  }, []);
 
   const filteredFindings = useMemo(
     () => filterFindings(validFindings, {
@@ -206,16 +244,51 @@ export default function DashboardPage() {
     }
   };
 
-  if (loading || !audit) {
+  if (loading && !audit && !optimizeSnapshot) {
     return (
       <div className="min-h-screen bg-bg flex items-center justify-center">
         <div className="text-center space-y-3">
           <div className="skeleton w-64 h-8 rounded mx-auto" />
-          {backfilling && (
-            <p className="text-muted text-sm">Generating missing module findings with Claude...</p>
-          )}
+          <p className="text-muted text-sm">Loading audit report…</p>
         </div>
       </div>
+    );
+  }
+
+  if (!audit && !optimizeSnapshot) {
+    return (
+      <div className="min-h-screen bg-bg flex items-center justify-center p-8">
+        <div className="text-center max-w-md space-y-4">
+          <AlertTriangle className="text-orange mx-auto" size={32} />
+          <p className="text-red-300 text-sm">{reportError ?? 'Audit not found.'}</p>
+          <Link to="/connect-account"><Button size="sm">Start new audit</Button></Link>
+        </div>
+      </div>
+    );
+  }
+
+  if (!audit) {
+    return (
+      <>
+        {optimizeFinding && optimizeSnapshot && (
+          <AIOptimizationModal
+            open
+            onClose={closeOptimization}
+            auditId={optimizeSnapshot.auditId}
+            finding={optimizeFinding}
+            auditFindings={optimizeSnapshot.auditFindings}
+            accountName={optimizeSnapshot.accountName}
+            googleAdsCustomerId={optimizeSnapshot.googleAdsCustomerId}
+            websiteUrl={optimizeSnapshot.websiteUrl}
+            goal={optimizeSnapshot.goal}
+            monthlySpend={optimizeSnapshot.monthlySpend}
+            userId={optimizeSnapshot.userId}
+            initialCampaignId={optimizeCampaignId}
+            initialCampaign={optimizeInitialCampaign}
+            lockCampaignScope={!!optimizeInitialCampaign}
+          />
+        )}
+      </>
     );
   }
 
@@ -338,8 +411,14 @@ export default function DashboardPage() {
 
         <div className="px-8 py-6 space-y-8 max-w-5xl">
           {backfilling && (
-            <div className="bg-orange/10 border border-orange/30 rounded-xl p-4 text-sm text-orange">
-              Generating missing module findings with Claude (Quality Score, Bidding, Audiences, etc.)...
+            <div className="bg-orange/10 border border-orange/30 rounded-xl p-4 text-sm text-orange flex items-center gap-3">
+              <Sparkles size={18} className="shrink-0 animate-pulse" />
+              <span>{backfillProgress ?? 'Generating missing module findings with Claude…'}</span>
+            </div>
+          )}
+          {backfillError && (
+            <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-sm text-red-300">
+              Module backfill failed: {backfillError}
             </div>
           )}
           {failureFindings.length > 0 && (
@@ -354,11 +433,10 @@ export default function DashboardPage() {
               <h2 className="text-white font-bold text-xl">Executive Summary</h2>
               <Badge variant="orange">AI Generated</Badge>
             </div>
-            <div className="text-body text-sm leading-relaxed space-y-4 mb-6">
-              {(audit.executiveSummary || 'Executive summary will appear when the audit completes.').split('\n\n').map((p, i) => (
-                <p key={i}>{p}</p>
-              ))}
-            </div>
+            <ClaudeText
+              text={audit.executiveSummary || 'Executive summary will appear when the audit completes.'}
+              className="mb-6"
+            />
 
             {audit.googleAdsCustomerId && audit.status === 'COMPLETED' && (
               <div className="mb-6">
@@ -414,10 +492,7 @@ export default function DashboardPage() {
               auditScope={audit.auditScope}
               parentAuditId={audit.parentAuditId}
               campaignName={audit.campaignName}
-              onOptimizeCampaign={(finding, campaignId) => {
-                setOptimizeCampaignId(campaignId);
-                setOptimizeFinding(finding);
-              }}
+              onOptimizeCampaign={(finding, campaignId) => openOptimization(finding, campaignId)}
             />
           )}
 
@@ -523,7 +598,7 @@ export default function DashboardPage() {
                     key={finding.id}
                     finding={finding}
                     index={i}
-                    onMakeItBetter={isOptimizableFinding(finding) ? () => setOptimizeFinding(finding) : undefined}
+                    onMakeItBetter={isOptimizableFinding(finding) ? () => openOptimization(finding) : undefined}
                   />
                 ))
               )}
@@ -557,23 +632,22 @@ export default function DashboardPage() {
         </div>
       </main>
 
-      {optimizeFinding && auditId && audit && (
+      {optimizeFinding && optimizeSnapshot && (
         <AIOptimizationModal
           open={!!optimizeFinding}
-          onClose={() => {
-            setOptimizeFinding(null);
-            setOptimizeCampaignId(undefined);
-          }}
-          auditId={auditId}
+          onClose={closeOptimization}
+          auditId={optimizeSnapshot.auditId}
           finding={optimizeFinding}
-          auditFindings={validFindings}
-          accountName={audit.accountName}
-          googleAdsCustomerId={audit.googleAdsCustomerId}
-          websiteUrl={audit.websiteUrl}
-          goal={audit.goal}
-          monthlySpend={audit.monthlySpend}
-          userId={audit.userId}
+          auditFindings={optimizeSnapshot.auditFindings}
+          accountName={optimizeSnapshot.accountName}
+          googleAdsCustomerId={optimizeSnapshot.googleAdsCustomerId}
+          websiteUrl={optimizeSnapshot.websiteUrl}
+          goal={optimizeSnapshot.goal}
+          monthlySpend={optimizeSnapshot.monthlySpend}
+          userId={optimizeSnapshot.userId}
           initialCampaignId={optimizeCampaignId}
+          initialCampaign={optimizeInitialCampaign}
+          lockCampaignScope={!!optimizeInitialCampaign}
         />
       )}
     </div>

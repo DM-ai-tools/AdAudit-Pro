@@ -413,8 +413,9 @@ function findingMatchesModuleSlug(finding: Finding, slug: string): boolean {
   return false;
 }
 
-function slugsMissingFindings(findings: Finding[]): string[] {
-  return ALL_AUDIT_MODULE_IDS.filter((slug) => !findings.some((f) => findingMatchesModuleSlug(f, slug)));
+function slugsMissingFindings(findings: Finding[], scopeSlugs?: string[]): string[] {
+  const slugs = scopeSlugs?.length ? scopeSlugs : ALL_AUDIT_MODULE_IDS;
+  return slugs.filter((slug) => !findings.some((f) => findingMatchesModuleSlug(f, slug)));
 }
 
 export async function backfillMissingModules(
@@ -424,7 +425,8 @@ export async function backfillMissingModules(
   const audit = await auditStore.getAudit(auditRunId);
   if (!audit) throw new Error('Audit not found');
 
-  const missingSlugs = slugsMissingFindings(audit.findings);
+  const scopeSlugs = (audit.modules ?? []).map((m) => m.slug).filter(Boolean);
+  const missingSlugs = slugsMissingFindings(audit.findings, scopeSlugs.length ? scopeSlugs : undefined);
   if (!missingSlugs.length) return { added: 0, slugs: [] };
 
   const user = await getMe(userId);

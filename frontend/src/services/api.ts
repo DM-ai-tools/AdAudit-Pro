@@ -222,6 +222,8 @@ export const googleAdsApi = {
   }) => api.post<import('../types/optimization').PublishAdResponse>('/google-ads/publish-ad', payload),
   rollbackAd: (publishedId: string) =>
     api.post<import('../types/optimization').RollbackAdResponse>('/google-ads/rollback-ad', { publishedId }),
+  publishStatus: (publishedId: string) =>
+    api.get<import('../types/optimization').PublishStatusResponse>(`/google-ads/publish-status/${publishedId}`),
   adPreview: (optimizationId: string, device: 'mobile' | 'desktop' = 'mobile', variant: 'original' | 'optimized' = 'optimized') =>
     api.get(`/google-ads/ad-preview/${optimizationId}?device=${device}&variant=${variant}`),
 };
@@ -233,6 +235,7 @@ export const aiApi = {
     tone?: import('../types/optimization').OptimizationTone;
     variation?: import('../types/optimization').OptimizationVariation;
     customPrompt?: string;
+    regenerateOnly?: boolean;
     findingSnapshot?: import('../types').Finding;
     auditFindingsSnapshot?: import('../types').Finding[];
     accountContext?: {
@@ -243,18 +246,53 @@ export const aiApi = {
       websiteUrl?: string;
       userId?: string;
       campaignId?: string;
+      campaignName?: string;
+      campaignType?: string;
+      campaignStatus?: string;
+      biddingStrategyType?: string;
+      hasExistingAds?: boolean;
+      adCount?: number;
+      findingCategory?: string;
+      findingTitle?: string;
+      primaryAdSnapshot?: {
+        headlines?: string[];
+        descriptions?: string[];
+        finalUrls?: string[];
+        displayPath1?: string;
+        displayPath2?: string;
+        adStrength?: string;
+        ctr?: number;
+        conversions?: number;
+        impressions?: number;
+        clicks?: number;
+        adGroupName?: string;
+        resourceName?: string;
+      };
+      campaignMetrics?: {
+        impressions?: number;
+        clicks?: number;
+        ctr?: number;
+        avgCpc?: number;
+        conversions?: number;
+        conversionRate?: number;
+        costPerConversion?: number;
+        cost?: number;
+        budgetDaily?: number;
+      };
     };
   }) => {
     try {
       return await api.post<import('../types/optimization').OptimizeAdResponse>(
         '/ai/optimize-ad',
-        payload
+        payload,
+        { timeout: 300_000 }
       );
     } catch (err) {
       if (axios.isAxiosError(err) && err.response?.status === 404) {
         return api.post<import('../types/optimization').OptimizeAdResponse>(
           '/audit/optimize-ad',
-          payload
+          payload,
+          { timeout: 300_000 }
         );
       }
       throw err;

@@ -1,15 +1,18 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   X, Sparkles, RefreshCw, TrendingUp, AlertTriangle,
-  ChevronRight, Zap, Send, RotateCcw, Edit3, Brain,
+  Zap, Send, RotateCcw, Edit3, Brain,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { Button } from '../ui/Button';
 import { AIThinkingLoader } from './AIThinkingLoader';
 import { AdPreviewPanel } from './AdPreviewPanel';
-import { TONE_OPTIONS } from './utils';
+import { StrategistEnhancementPanels } from './StrategistEnhancementPanels';
+import { TONE_OPTIONS, normalizeRenderableStrings, asDisplayText } from './utils';
+import { OptimizationErrorBoundary } from './OptimizationErrorBoundary';
+import { PublishWorkflow } from './PublishWorkflow';
 import { aiApi, googleAdsApi } from '../../services/api';
 import type { Finding } from '../../types';
 import type { GoogleAdsCampaign } from '../../types/connect';
@@ -22,7 +25,117 @@ import type {
   OptimizationScenario,
   PreviewDevice,
   IntelligenceSummary,
+  AnalysisSources,
+  CampaignPerformanceSummary,
+  OptimizeAdResponse,
+  PublishAdResponse,
 } from '../../types/optimization';
+
+function buildCampaignAccountContext(campaign?: GoogleAdsCampaign | null) {
+  if (!campaign) return {};
+  const hasAds = campaign.adCount > 0 || campaign.ads.length > 0;
+  const primaryAd = campaign.ads?.length
+    ? [...campaign.ads].sort((a, b) => b.impressions - a.impressions)[0]
+    : undefined;
+  return {
+    campaignName: campaign.name,
+    campaignType: campaign.type,
+    campaignStatus: campaign.status,
+    biddingStrategyType: campaign.biddingStrategyType,
+    hasExistingAds: hasAds,
+    adCount: campaign.adCount,
+    campaignMetrics: {
+      impressions: campaign.impressions,
+      clicks: campaign.clicks,
+      ctr: campaign.ctr,
+      avgCpc: campaign.avgCpc,
+      conversions: campaign.conversions,
+      conversionRate: campaign.conversionRate,
+      costPerConversion: campaign.costPerConversion,
+      cost: campaign.cost,
+      budgetDaily: campaign.budgetDaily,
+    },
+    primaryAdSnapshot: primaryAd
+      ? {
+          headlines: primaryAd.headlines,
+          descriptions: primaryAd.descriptions,
+          finalUrls: primaryAd.finalUrls,
+          displayPath1: primaryAd.displayPath1,
+          displayPath2: primaryAd.displayPath2,
+          adStrength: primaryAd.adStrength,
+          ctr: primaryAd.ctr,
+          conversions: primaryAd.conversions,
+          impressions: primaryAd.impressions,
+          clicks: primaryAd.clicks,
+          adGroupName: primaryAd.adGroupName,
+          resourceName: primaryAd.resourceName,
+        }
+      : undefined,
+  };
+}
+
+function normalizeOptimizedContent(data: OptimizeAdResponse['optimized']): OptimizedAdContent {
+  const strategistReasoning = data.strategistReasoning
+    ? {
+        headlineChanges: asDisplayText(data.strategistReasoning.headlineChanges),
+        descriptionChanges: asDisplayText(data.strategistReasoning.descriptionChanges),
+        keywordRelevance: asDisplayText(data.strategistReasoning.keywordRelevance),
+        qualityScore: asDisplayText(data.strategistReasoning.qualityScore),
+        conversionPotential: asDisplayText(data.strategistReasoning.conversionPotential),
+        auditFindingsAddressed: normalizeRenderableStrings(data.strategistReasoning.auditFindingsAddressed),
+        competitorInsightsUsed: normalizeRenderableStrings(data.strategistReasoning.competitorInsightsUsed),
+      }
+    : data.strategistReasoning;
+
+  const strategistRecommendations = data.strategistRecommendations
+    ? {
+        keywords: normalizeRenderableStrings(data.strategistRecommendations.keywords),
+        negativeKeywords: normalizeRenderableStrings(data.strategistRecommendations.negativeKeywords),
+        extensions: normalizeRenderableStrings(data.strategistRecommendations.extensions),
+        landingPage: normalizeRenderableStrings(data.strategistRecommendations.landingPage),
+        budget: normalizeRenderableStrings(data.strategistRecommendations.budget),
+        bidding: normalizeRenderableStrings(data.strategistRecommendations.bidding),
+        audience: normalizeRenderableStrings(data.strategistRecommendations.audience),
+      }
+    : data.strategistRecommendations;
+
+  return {
+    ...data,
+    headlines: normalizeRenderableStrings(data.headlines),
+    descriptions: normalizeRenderableStrings(data.descriptions),
+    ctaSuggestions: normalizeRenderableStrings(data.ctaSuggestions),
+    keywordSuggestions: normalizeRenderableStrings(data.keywordSuggestions),
+    improvementReasoning: asDisplayText(data.improvementReasoning, 'Optimization complete.'),
+    predictedImpact: {
+      ctrIncrease: asDisplayText(data.predictedImpact?.ctrIncrease, '—'),
+      qualityScoreIncrease: asDisplayText(data.predictedImpact?.qualityScoreIncrease, '—'),
+      conversionImprovement: asDisplayText(data.predictedImpact?.conversionImprovement, '—'),
+    },
+    adExtensions: data.adExtensions
+      ? {
+          sitelinks: normalizeRenderableStrings(data.adExtensions.sitelinks),
+          callouts: normalizeRenderableStrings(data.adExtensions.callouts),
+          structuredSnippets: normalizeRenderableStrings(data.adExtensions.structuredSnippets),
+        }
+      : data.adExtensions,
+    strategistReasoning,
+    strategistRecommendations,
+    campaignStrategy: data.campaignStrategy
+      ? {
+          ...data.campaignStrategy,
+          campaignName: data.campaignStrategy.campaignName
+            ? asDisplayText(data.campaignStrategy.campaignName)
+            : undefined,
+          adGroups: (data.campaignStrategy.adGroups ?? []).map((ag) => ({
+            name: asDisplayText(ag.name, 'Ad group'),
+            keywords: normalizeRenderableStrings(ag.keywords),
+          })),
+          negativeKeywords: normalizeRenderableStrings(data.campaignStrategy.negativeKeywords),
+          competitorInsights: normalizeRenderableStrings(data.campaignStrategy.competitorInsights),
+        }
+      : undefined,
+  };
+}
 
 interface AIOptimizationModalProps {
   open: boolean;
@@ -37,6 +150,8 @@ interface AIOptimizationModalProps {
   monthlySpend?: number;
   userId?: string;
   initialCampaignId?: string;
+  initialCampaign?: GoogleAdsCampaign | null;
+  lockCampaignScope?: boolean;
 }
 
 export function AIOptimizationModal({
@@ -52,18 +167,14 @@ export function AIOptimizationModal({
   monthlySpend,
   userId,
   initialCampaignId,
+  initialCampaign = null,
+  lockCampaignScope = false,
 }: AIOptimizationModalProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [optimizationId, setOptimizationId] = useState<string | null>(null);
   const [scenario, setScenario] = useState<OptimizationScenario>('CREATE_ADS');
 
-  const scenarioLabel =
-    scenario === 'REPLACE_EXISTING'
-      ? 'Optimize Existing Ads'
-      : scenario === 'CREATE_ADS'
-        ? 'Create Ads In Campaign'
-        : 'New Campaign Strategy';
   const [dataSource, setDataSource] = useState<'live' | 'audit_only'>('audit_only');
   const [intelligenceSummary, setIntelligenceSummary] = useState<IntelligenceSummary | null>(null);
   const [originalAd, setOriginalAd] = useState<CurrentAdData | null>(null);
@@ -73,8 +184,9 @@ export function AIOptimizationModal({
   const [editMode, setEditMode] = useState(false);
   const [previewDevice, setPreviewDevice] = useState<PreviewDevice>('mobile');
   const [showPublishConfirm, setShowPublishConfirm] = useState(false);
+  const [publishResultData, setPublishResultData] = useState<PublishAdResponse | null>(null);
+  const [publishError, setPublishError] = useState<string | null>(null);
   const [publishing, setPublishing] = useState(false);
-  const [publishResult, setPublishResult] = useState<string | null>(null);
   const [publishedId, setPublishedId] = useState<string | null>(null);
   const [rollbackAvailable, setRollbackAvailable] = useState(false);
   const [rollingBack, setRollingBack] = useState(false);
@@ -84,33 +196,105 @@ export function AIOptimizationModal({
   const [campaignsLoading, setCampaignsLoading] = useState(false);
   const [activeTone, setActiveTone] = useState<OptimizationTone>('default');
   const [regenerating, setRegenerating] = useState(false);
+  const [campaignSwitching, setCampaignSwitching] = useState(false);
+  const [analysisSources, setAnalysisSources] = useState<AnalysisSources | undefined>();
+  const [campaignPerformance, setCampaignPerformance] = useState<CampaignPerformanceSummary | null | undefined>();
+  const [auditHealthScore, setAuditHealthScore] = useState<number | undefined>();
+  const optimizationCache = useRef<Map<string, OptimizeAdResponse>>(new Map());
+  const requestGeneration = useRef(0);
+  const requestInFlight = useRef(false);
 
   const businessName = resolveBusinessName(accountName, websiteUrl);
+
+  const resolveCampaignKey = useCallback(
+    (override?: string) => override ?? initialCampaignId ?? selectedCampaignId ?? '',
+    [initialCampaignId, selectedCampaignId]
+  );
+
+  const resolveCampaignMeta = useCallback(
+    (campaignKey: string) =>
+      campaigns.find((c) => c.id === campaignKey)
+        ?? (initialCampaign?.id === campaignKey ? initialCampaign : null),
+    [campaigns, initialCampaign]
+  );
+
+  const applyOptimizationResponse = useCallback((data: OptimizeAdResponse) => {
+    if (!data?.optimizationId || !data?.optimized?.headlines?.length) {
+      throw new Error('AI returned an incomplete response. Click Try Again.');
+    }
+    const normalizedOptimized = normalizeOptimizedContent(data.optimized);
+    if (!normalizedOptimized.headlines.length) {
+      throw new Error('AI returned an incomplete response. Click Try Again.');
+    }
+    const safeOriginal: CurrentAdData = data.originalAd?.headlines?.length
+      ? {
+          ...data.originalAd,
+          headlines: normalizeRenderableStrings(data.originalAd.headlines),
+          descriptions: normalizeRenderableStrings(data.originalAd.descriptions),
+        }
+      : {
+          headlines: normalizedOptimized.headlines.slice(0, 5),
+          descriptions: normalizedOptimized.descriptions?.slice(0, 2) ?? [''],
+          qualityScore: 0,
+          ctr: 0,
+          conversions: 0,
+          adStrength: 'POOR',
+        };
+    setOptimizationId(data.optimizationId);
+    setScenario(data.scenario);
+    setDataSource(data.dataSource);
+    setIntelligenceSummary(data.intelligenceSummary);
+    setOriginalAd(safeOriginal);
+    setOptimized(normalizedOptimized);
+    setEditedHeadlines([...normalizedOptimized.headlines]);
+    setEditedDescriptions([...(normalizedOptimized.descriptions ?? [])]);
+    setAnalysisSources(data.analysisSources);
+    setCampaignPerformance(data.campaignPerformance);
+    setAuditHealthScore(data.auditHealthScore);
+    setError(null);
+  }, []);
 
   const runOptimization = useCallback(async (
     tone?: OptimizationTone,
     variation?: OptimizationVariation,
     promptOverride?: string,
-    isRegenerate = false
+    isRegenerate = false,
+    campaignIdOverride?: string
   ) => {
-    if (isRegenerate) setRegenerating(true);
-    else setLoading(true);
-    setError(null);
+    if (requestInFlight.current) return;
+
+    const campaignKey = resolveCampaignKey(campaignIdOverride);
+    if (isRegenerate) {
+      setRegenerating(true);
+      optimizationCache.current.delete(campaignKey);
+    } else if (optimizationCache.current.has(campaignKey) && !promptOverride) {
+      applyOptimizationResponse(optimizationCache.current.get(campaignKey)!);
+      return;
+    } else if (campaignKey && !isRegenerate && optimized) {
+      setCampaignSwitching(true);
+    } else {
+      setLoading(true);
+    }
     if (!isRegenerate) {
-      setPublishResult(null);
+      setPublishResultData(null);
+      setPublishError(null);
       setPublishedId(null);
       setRollbackAvailable(false);
     }
     const resolvedTone = tone ?? activeTone;
     if (tone) setActiveTone(tone);
     const prompt = promptOverride ?? customPrompt;
+    const generation = ++requestGeneration.current;
+    requestInFlight.current = true;
     try {
+      const campaignMeta = resolveCampaignMeta(campaignKey);
       const { data } = await aiApi.optimizeAd({
         auditId,
         findingId: finding.id,
         tone: resolvedTone,
         variation,
         customPrompt: prompt.trim() || undefined,
+        regenerateOnly: isRegenerate,
         findingSnapshot: finding,
         auditFindingsSnapshot: auditFindings,
         accountContext: {
@@ -120,35 +304,46 @@ export function AIOptimizationModal({
           googleAdsCustomerId,
           websiteUrl,
           userId,
-          campaignId: selectedCampaignId || undefined,
+          campaignId: campaignKey || undefined,
+          findingCategory: finding.category,
+          findingTitle: finding.title,
+          ...buildCampaignAccountContext(campaignMeta),
         },
       });
-      setOptimizationId(data.optimizationId);
-      setScenario(data.scenario);
-      setDataSource(data.dataSource);
-      setIntelligenceSummary(data.intelligenceSummary);
-      setOriginalAd(data.originalAd);
-      setOptimized(data.optimized);
-      setEditedHeadlines([...data.optimized.headlines]);
-      setEditedDescriptions([...data.optimized.descriptions]);
+      if (generation !== requestGeneration.current) return;
+      optimizationCache.current.set(campaignKey, data);
+      applyOptimizationResponse(data);
     } catch (err) {
+      if (generation !== requestGeneration.current) return;
       let message = 'Failed to generate optimizations';
       if (axios.isAxiosError(err)) {
+        if (err.code === 'ECONNABORTED') {
+          message = 'Optimization timed out — the server is still analyzing a large account. Try again or pick a single campaign.';
+        } else if (err.code === 'ECONNRESET' || err.message?.includes('Network Error')) {
+          message = isRegenerate
+            ? 'Connection lost while regenerating. Your previous results are still shown — wait a moment and try Regenerate again.'
+            : 'Connection lost — the server may still be working. Wait a moment and try again.';
+        }
         const apiError = (err.response?.data as { error?: string })?.error;
         if (err.response?.status === 404 && apiError === 'Not found') {
           message = 'AI API unavailable — restart backend with npm run dev.';
         } else if (err.response?.status === 401) {
           message = 'Sign in with Google to optimize and publish ads.';
-        } else {
-          message = apiError ?? err.message;
+        } else if (apiError) {
+          message = apiError;
+        } else if (!err.code) {
+          message = err.message;
         }
       }
       setError(message);
     } finally {
+      requestInFlight.current = false;
+      if (generation !== requestGeneration.current) return;
       setLoading(false);
       setRegenerating(false);
+      setCampaignSwitching(false);
     }
-  }, [auditId, finding, auditFindings, businessName, goal, monthlySpend, googleAdsCustomerId, websiteUrl, userId, customPrompt, selectedCampaignId, activeTone]);
+  }, [auditId, finding, auditFindings, businessName, goal, monthlySpend, googleAdsCustomerId, websiteUrl, userId, customPrompt, activeTone, applyOptimizationResponse, resolveCampaignKey, resolveCampaignMeta, optimized]);
 
   useEffect(() => {
     if (!open || !googleAdsCustomerId) {
@@ -163,27 +358,71 @@ export function AIOptimizationModal({
   }, [open, googleAdsCustomerId]);
 
   useEffect(() => {
-    if (open) {
-      setSelectedCampaignId(initialCampaignId ?? '');
-      void runOptimization();
-    } else {
+    if (!open) {
+      optimizationCache.current.clear();
       setOptimizationId(null);
       setOriginalAd(null);
       setOptimized(null);
       setError(null);
-      setPublishResult(null);
+      setPublishResultData(null);
+      setPublishError(null);
       setEditMode(false);
       setShowPublishConfirm(false);
       setCustomPrompt('');
       setSelectedCampaignId('');
       setActiveTone('default');
+      setAnalysisSources(undefined);
+      setCampaignPerformance(undefined);
+      setAuditHealthScore(undefined);
+      setCampaignSwitching(false);
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once when modal opens
-  }, [open]);
+    setSelectedCampaignId(initialCampaignId ?? '');
+  }, [open, initialCampaignId]);
+
+  useEffect(() => {
+    if (!open || !googleAdsCustomerId || campaignsLoading) return;
+    if (initialCampaignId || lockCampaignScope) return;
+    if (campaigns.length > 0 && !selectedCampaignId) {
+      const pick = campaigns.find((c) => c.status === 'ENABLED')?.id ?? campaigns[0]?.id;
+      if (pick) setSelectedCampaignId(pick);
+    }
+  }, [open, campaignsLoading, campaigns, initialCampaignId, lockCampaignScope, selectedCampaignId, googleAdsCustomerId]);
+
+  const initialOptimizeDone = useRef(false);
+  useEffect(() => {
+    if (!open) {
+      initialOptimizeDone.current = false;
+      return;
+    }
+    if (campaignsLoading && !initialCampaignId && !initialCampaign) return;
+    const targetCampaignId = initialCampaignId ?? selectedCampaignId;
+    if (googleAdsCustomerId && campaigns.length > 0 && !targetCampaignId && !lockCampaignScope) return;
+    if (initialOptimizeDone.current) return;
+    initialOptimizeDone.current = true;
+    void runOptimization(undefined, undefined, undefined, false, targetCampaignId || undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- initial load when modal opens
+  }, [open, campaignsLoading, selectedCampaignId, initialCampaignId, lockCampaignScope, googleAdsCustomerId, campaigns.length]);
+
+  const handleCampaignChange = (campaignId: string) => {
+    if (campaignId === selectedCampaignId || isBusy) return;
+    setSelectedCampaignId(campaignId);
+    setPublishResultData(null);
+    setPublishError(null);
+    setPublishedId(null);
+    setRollbackAvailable(false);
+    const cached = optimizationCache.current.get(campaignId);
+    if (cached) {
+      applyOptimizationResponse(cached);
+      return;
+    }
+    void runOptimization(undefined, undefined, undefined, false, campaignId);
+  };
 
   const handlePublish = async () => {
     if (!optimizationId) return;
     setPublishing(true);
+    setPublishError(null);
     setError(null);
     try {
       const { data } = await googleAdsApi.publishAd({
@@ -197,16 +436,15 @@ export function AIOptimizationModal({
           finalUrl: originalAd?.finalUrls?.[0] ?? websiteUrl,
         },
       });
-      setPublishResult(data.message);
+      setPublishResultData(data);
       setPublishedId(data.publishedId);
       setRollbackAvailable(!!data.rollbackAvailable);
-      setShowPublishConfirm(false);
     } catch (err) {
-      setError(
-        axios.isAxiosError(err)
-          ? (err.response?.data as { error?: string })?.error ?? 'Publish failed'
-          : 'Publish failed'
-      );
+      const message = axios.isAxiosError(err)
+        ? (err.response?.data as { error?: string })?.error ?? 'Publish failed'
+        : 'Publish failed';
+      setPublishError(message);
+      setError(message);
     } finally {
       setPublishing(false);
     }
@@ -217,28 +455,56 @@ export function AIOptimizationModal({
     setRollingBack(true);
     try {
       const { data } = await googleAdsApi.rollbackAd(publishedId);
-      setPublishResult(data.message);
+      setPublishResultData((prev) => prev ? {
+        ...prev,
+        message: data.message,
+        rollbackAvailable: false,
+      } : prev);
       setRollbackAvailable(false);
     } catch (err) {
-      setError(
-        axios.isAxiosError(err)
-          ? (err.response?.data as { error?: string })?.error ?? 'Rollback failed'
-          : 'Rollback failed'
-      );
+      const message = axios.isAxiosError(err)
+        ? (err.response?.data as { error?: string })?.error ?? 'Rollback failed'
+        : 'Rollback failed';
+      setPublishError(message);
+      setError(message);
     } finally {
       setRollingBack(false);
     }
   };
 
+  const openPublishWorkflow = () => {
+    setPublishResultData(null);
+    setPublishError(null);
+    setShowPublishConfirm(true);
+  };
+
+  const closePublishWorkflow = () => {
+    setShowPublishConfirm(false);
+    if (!publishing) {
+      setPublishError(null);
+    }
+  };
+
   const displayUrl = resolveDisplayHost(websiteUrl, businessName);
-  const isBusy = loading || regenerating;
+  const isBusy = loading || regenerating || campaignSwitching;
+  const selectedCampaign = campaigns.find((c) => c.id === selectedCampaignId) ?? initialCampaign;
+  const activeCampaignType = initialCampaign?.type ?? selectedCampaign?.type ?? '';
+  const isPmaxScope = /PERFORMANCE_MAX/i.test(activeCampaignType);
+  const scenarioLabel =
+    scenario === 'REPLACE_EXISTING'
+      ? 'Optimize Existing Ads'
+      : scenario === 'CREATE_ADS'
+        ? isPmaxScope
+          ? 'Create PMax Assets'
+          : 'Create Ads In Campaign'
+        : 'New Campaign Strategy';
 
   const handleToneClick = (toneId: OptimizationTone) => {
     const variation: OptimizationVariation | undefined =
       toneId === 'shorter' ? 'shorter'
         : toneId === 'aggressive' ? 'aggressive-cta'
           : 'regenerate';
-    void runOptimization(toneId, variation, undefined, true);
+    void runOptimization(toneId, variation, undefined, true, resolveCampaignKey());
   };
 
   if (!open) return null;
@@ -249,7 +515,7 @@ export function AIOptimizationModal({
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        className="fixed inset-0 z-[100] bg-navy/95 backdrop-blur-md flex flex-col"
+        className="fixed inset-0 z-[100] bg-navy/95 backdrop-blur-md flex flex-col min-h-0"
       >
         {/* Header */}
         <div className="shrink-0 border-b border-orange/20 bg-gradient-to-r from-orange/10 via-purple-500/5 to-teal/10 px-6 py-4">
@@ -259,8 +525,8 @@ export function AIOptimizationModal({
                 <Sparkles className="text-orange" size={22} />
               </div>
               <div>
-                <h2 className="text-white font-bold text-xl">AI Ad Generator</h2>
-                <p className="text-muted text-sm">One-Click Google Ads Publishing · Powered by Claude</p>
+                <h2 className="text-white font-bold text-xl">AI Campaign Optimizer</h2>
+                <p className="text-muted text-sm">Make It Better · Google Ads Strategist powered by Claude</p>
               </div>
               {scenario && !loading && (
                 <span className={clsx(
@@ -282,10 +548,10 @@ export function AIOptimizationModal({
         </div>
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto relative">
-          {loading && !optimized && <AIThinkingLoader />}
+        <div className="flex-1 overflow-y-auto relative min-h-0">
+          {(loading || campaignsLoading || isBusy) && !optimized && <AIThinkingLoader />}
 
-          {error && !loading && !optimized && (
+          {error && !optimized && !isBusy && (
             <div className="max-w-2xl mx-auto p-8">
               <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-5 flex gap-3">
                 <AlertTriangle className="text-red-400 shrink-0" size={22} />
@@ -299,8 +565,32 @@ export function AIOptimizationModal({
             </div>
           )}
 
-          {!loading && optimized && originalAd && (
+          {!loading && !campaignsLoading && !isBusy && !optimized && !error && (
+            <div className="max-w-2xl mx-auto p-8 text-center">
+              <p className="text-muted text-sm mb-4">No optimization results yet.</p>
+              <Button variant="outline" size="sm" onClick={() => void runOptimization()}>
+                <RefreshCw size={14} /> Generate optimization
+              </Button>
+            </div>
+          )}
+
+          {optimized && (
+            <OptimizationErrorBoundary onReset={() => void runOptimization(activeTone, 'regenerate', undefined, true, resolveCampaignKey())}>
             <div className="max-w-7xl mx-auto p-6 space-y-6 relative">
+              {error && (
+                <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 flex gap-2 text-red-300 text-sm">
+                  <AlertTriangle size={18} className="shrink-0 mt-0.5" />
+                  <span>{error}</span>
+                </div>
+              )}
+              {campaignSwitching && (
+                <div className="absolute inset-0 z-10 bg-navy/70 backdrop-blur-sm rounded-xl flex items-center justify-center">
+                  <div className="flex items-center gap-3 text-orange">
+                    <RefreshCw size={20} className="animate-spin" />
+                    <span className="text-sm font-medium">Analyzing campaign…</span>
+                  </div>
+                </div>
+              )}
               {regenerating && (
                 <div className="absolute inset-0 z-10 bg-navy/70 backdrop-blur-sm rounded-xl flex items-center justify-center">
                   <div className="flex items-center gap-3 text-orange">
@@ -321,21 +611,37 @@ export function AIOptimizationModal({
                     · {intelligenceSummary.keywordsLoaded} keywords
                     · {intelligenceSummary.searchTermsLoaded} search terms
                     · {intelligenceSummary.adsFound} ads
+                    · {intelligenceSummary.devicesLoaded ?? 0} device
+                    · {intelligenceSummary.audiencesLoaded ?? 0} audiences
                     · <span className={dataSource === 'live' ? 'text-teal' : 'text-orange'}>{dataSource === 'live' ? 'Live Google Ads data' : 'Audit data'}</span>
                   </span>
                 </div>
               )}
 
+              <StrategistEnhancementPanels
+                analysisSources={analysisSources}
+                optimized={optimized}
+                campaignPerformance={campaignPerformance}
+                selectedCampaign={selectedCampaign}
+                auditHealthScore={auditHealthScore}
+              />
+
               {/* Campaign scope + custom AI prompt */}
               <div className="grid lg:grid-cols-2 gap-4">
                 <div className="bg-panel border border-border rounded-xl p-4 space-y-2">
                   <label htmlFor="campaign-select" className="text-muted text-xs uppercase tracking-wider block">
-                    Campaign scope (whole account audit)
+                    {lockCampaignScope ? 'Optimizing this campaign' : 'Campaign scope (whole account audit)'}
                   </label>
+                  {lockCampaignScope && selectedCampaign ? (
+                    <div className="w-full bg-navy border border-orange/30 rounded-lg px-3 py-2 text-sm text-white">
+                      {selectedCampaign.name}
+                      <span className="text-muted text-xs ml-2">({selectedCampaign.status})</span>
+                    </div>
+                  ) : (
                   <select
                     id="campaign-select"
                     value={selectedCampaignId}
-                    onChange={(e) => setSelectedCampaignId(e.target.value)}
+                    onChange={(e) => handleCampaignChange(e.target.value)}
                     disabled={campaignsLoading || isBusy}
                     className="w-full bg-navy border border-border rounded-lg px-3 py-2 text-sm text-white focus:border-orange/40 outline-none"
                   >
@@ -346,8 +652,15 @@ export function AIOptimizationModal({
                       </option>
                     ))}
                   </select>
+                  )}
                   <p className="text-muted text-[10px]">
-                    {campaignsLoading
+                    {lockCampaignScope && selectedCampaign
+                      ? selectedCampaign.adCount > 0
+                        ? `Improving ads for ${selectedCampaign.name}.`
+                        : isPmaxScope
+                          ? `No responsive search ads in this Performance Max campaign — AI will recommend asset group copy and strategy.`
+                          : `No ads in this campaign yet — AI will recommend new ad copy and structure.`
+                      : campaignsLoading
                       ? 'Loading campaigns from Google Ads…'
                       : campaigns.length
                         ? `${campaigns.length} campaign${campaigns.length === 1 ? '' : 's'} found — select one to optimize, or keep account-wide.`
@@ -358,9 +671,9 @@ export function AIOptimizationModal({
                       variant="outline"
                       size="sm"
                       disabled={isBusy}
-                      onClick={() => void runOptimization('default', 'regenerate', undefined, true)}
+                      onClick={() => void runOptimization('default', 'regenerate', undefined, true, resolveCampaignKey())}
                     >
-                      <RefreshCw size={14} /> Optimize selected campaign
+                      <RefreshCw size={14} /> Regenerate for campaign
                     </Button>
                   )}
                 </div>
@@ -381,7 +694,7 @@ export function AIOptimizationModal({
                     variant="secondary"
                     size="sm"
                     disabled={isBusy || !customPrompt.trim()}
-                    onClick={() => void runOptimization(activeTone, 'regenerate', customPrompt, true)}
+                    onClick={() => void runOptimization(activeTone, 'regenerate', customPrompt, true, resolveCampaignKey())}
                   >
                     <Sparkles size={14} /> Apply custom instructions
                   </Button>
@@ -409,7 +722,7 @@ export function AIOptimizationModal({
                 <button
                   type="button"
                   disabled={isBusy}
-                  onClick={() => void runOptimization(activeTone, 'regenerate', undefined, true)}
+                  onClick={() => void runOptimization(activeTone, 'regenerate', undefined, true, resolveCampaignKey())}
                   className="px-3 py-1.5 rounded-full text-xs font-medium border border-orange/30 bg-orange/10 text-orange flex items-center gap-1 disabled:opacity-50"
                 >
                   <RefreshCw size={12} className={regenerating ? 'animate-spin' : ''} /> Regenerate
@@ -427,12 +740,13 @@ export function AIOptimizationModal({
                 </button>
               </div>
 
-              {/* Predicted impact */}
+              {/* Predicted impact summary cards */}
               <div className="grid sm:grid-cols-3 gap-3">
+                <p className="sm:col-span-3 text-[10px] uppercase tracking-wider text-muted">AI Estimated Impact</p>
                 {[
-                  { label: 'CTR', value: optimized.predictedImpact.ctrIncrease, icon: TrendingUp, color: 'text-teal' },
-                  { label: 'Conversions', value: optimized.predictedImpact.conversionImprovement, icon: Zap, color: 'text-orange' },
-                  { label: 'Quality Score', value: optimized.predictedImpact.qualityScoreIncrease, icon: Sparkles, color: 'text-purple-400' },
+                  { label: 'CTR', value: optimized.predictedImpact?.ctrIncrease ?? '—', icon: TrendingUp, color: 'text-teal' },
+                  { label: 'Conversions', value: optimized.predictedImpact?.conversionImprovement ?? '—', icon: Zap, color: 'text-orange' },
+                  { label: 'Quality Score', value: optimized.predictedImpact?.qualityScoreIncrease ?? '—', icon: Sparkles, color: 'text-purple-400' },
                 ].map((m) => (
                   <div key={m.label} className="bg-panel border border-border rounded-xl p-4 text-center">
                     <m.icon className={`${m.color} mx-auto mb-2`} size={18} />
@@ -447,23 +761,31 @@ export function AIOptimizationModal({
                 <div className="bg-panel border border-red-500/20 rounded-2xl p-5 space-y-4">
                   <h3 className="text-white font-semibold flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full bg-red-400" />
-                    {scenario === 'CREATE_STRATEGY' ? 'No Campaign Yet' : scenario === 'CREATE_ADS' ? 'Campaign — No Ads' : 'Current Ad'}
+                    {scenario === 'REPLACE_EXISTING'
+                      ? 'Current Ad'
+                      : scenario === 'CREATE_STRATEGY'
+                      ? 'No Campaign Yet'
+                      : scenario === 'CREATE_ADS'
+                        ? isPmaxScope
+                          ? 'No PMax Assets Yet'
+                          : 'Campaign — No Ads'
+                        : 'Current Ad'}
                   </h3>
                   <AdPreviewPanel
-                    headlines={originalAd.headlines}
-                    descriptions={originalAd.descriptions}
+                    headlines={originalAd?.headlines ?? optimized.headlines.slice(0, 5)}
+                    descriptions={originalAd?.descriptions ?? optimized.descriptions.slice(0, 2)}
                     displayUrl={displayUrl}
-                    displayPaths={{ path1: originalAd.displayPath1, path2: originalAd.displayPath2 }}
+                    displayPaths={{ path1: originalAd?.displayPath1, path2: originalAd?.displayPath2 }}
                     device={previewDevice}
                     onDeviceChange={setPreviewDevice}
                     variant="current"
-                    finalUrl={originalAd.finalUrls?.[0] ?? websiteUrl}
+                    finalUrl={originalAd?.finalUrls?.[0] ?? websiteUrl}
                   />
                   <div className="grid grid-cols-3 gap-2 text-center text-xs">
                     {[
-                      { l: 'CTR', v: originalAd.ctr != null ? `${originalAd.ctr}%` : '—' },
-                      { l: 'QS', v: originalAd.qualityScore ?? '—' },
-                      { l: 'Strength', v: originalAd.adStrength ?? '—' },
+                      { l: 'CTR', v: originalAd?.ctr != null ? `${originalAd.ctr}%` : '—' },
+                      { l: 'QS', v: originalAd?.qualityScore ?? '—' },
+                      { l: 'Strength', v: originalAd?.adStrength ?? '—' },
                     ].map((m) => (
                       <div key={m.l} className="bg-navy rounded-lg p-2 border border-border">
                         <div className="text-muted text-[10px]">{m.l}</div>
@@ -500,7 +822,7 @@ export function AIOptimizationModal({
                       {optimized.campaignStrategy.campaignName && (
                         <p className="text-white text-sm font-medium">{optimized.campaignStrategy.campaignName}</p>
                       )}
-                      {optimized.campaignStrategy.adGroups?.map((ag, i) => (
+                      {(optimized.campaignStrategy?.adGroups ?? []).map((ag, i) => (
                         <div key={i} className="text-xs text-muted">
                           <span className="text-white">{ag.name}</span>
                           {ag.keywords?.length ? `: ${ag.keywords.slice(0, 6).join(', ')}` : ''}
@@ -529,9 +851,9 @@ export function AIOptimizationModal({
                 </div>
               )}
 
-              {publishResult && (
+              {publishResultData && !showPublishConfirm && (
                 <div className="bg-teal/10 border border-teal/30 rounded-xl p-4 text-teal text-sm flex items-center justify-between gap-4">
-                  <span>{publishResult}</span>
+                  <span>{publishResultData.message}</span>
                   {rollbackAvailable && publishedId && (
                     <Button variant="outline" size="sm" loading={rollingBack} onClick={() => void handleRollback()}>
                       <RotateCcw size={14} /> Rollback
@@ -540,19 +862,20 @@ export function AIOptimizationModal({
                 </div>
               )}
             </div>
+            </OptimizationErrorBoundary>
           )}
         </div>
 
         {/* Footer actions */}
-        {!loading && optimized && (
+        {!isBusy && optimized && (
           <div className="shrink-0 border-t border-border bg-panel px-6 py-4">
             <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
               <Button variant="ghost" onClick={onClose}>Cancel</Button>
               <div className="flex gap-3">
-                <Button variant="secondary" disabled={isBusy} onClick={() => void runOptimization(activeTone, 'regenerate', undefined, true)}>
+                <Button variant="secondary" disabled={isBusy} onClick={() => void runOptimization(activeTone, 'regenerate', undefined, true, resolveCampaignKey())}>
                   <RefreshCw size={16} className={regenerating ? 'animate-spin' : ''} /> Regenerate
                 </Button>
-                <Button disabled={isBusy} onClick={() => setShowPublishConfirm(true)} className="bg-gradient-to-r from-orange to-orange-2 glow-orange">
+                <Button disabled={isBusy} onClick={openPublishWorkflow} className="bg-gradient-to-r from-orange to-orange-2 glow-orange">
                   <Send size={16} /> Approve & Publish
                 </Button>
               </div>
@@ -560,31 +883,21 @@ export function AIOptimizationModal({
           </div>
         )}
 
-        {/* Confirm publish */}
-        <AnimatePresence>
-          {showPublishConfirm && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/70 flex items-center justify-center p-4 z-[110]">
-              <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="bg-panel border border-orange/30 rounded-2xl p-6 max-w-md w-full glow-orange">
-                <AlertTriangle className="text-orange mb-3" size={24} />
-                <h3 className="text-white font-bold text-lg mb-2">Confirm Publish</h3>
-                <p className="text-muted text-sm mb-2">
-                  You are about to publish changes to your Google Ads account.
-                </p>
-                <p className="text-muted text-xs mb-6">
-                  {scenario === 'REPLACE_EXISTING'
-                    ? 'The existing ad will be paused. A new optimized ad will be created (paused until you enable it).'
-                    : 'A new Responsive Search Ad will be created in your account (paused until you enable it).'}
-                </p>
-                <div className="flex gap-3 justify-end">
-                  <Button variant="ghost" onClick={() => setShowPublishConfirm(false)} disabled={publishing}>Cancel</Button>
-                  <Button loading={publishing} onClick={() => void handlePublish()}>
-                    Confirm Publish <ChevronRight size={16} />
-                  </Button>
-                </div>
-              </motion.div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+        <PublishWorkflow
+          open={showPublishConfirm}
+          scenario={scenario}
+          campaignName={selectedCampaign?.name ?? originalAd?.campaignName ?? campaignPerformance?.campaignName}
+          accountName={businessName}
+          publishing={publishing}
+          publishResult={publishResultData}
+          publishError={publishError}
+          rollbackAvailable={rollbackAvailable}
+          rollingBack={rollingBack}
+          onConfirm={() => void handlePublish()}
+          onCancel={closePublishWorkflow}
+          onClose={closePublishWorkflow}
+          onRollback={() => void handleRollback()}
+        />
       </motion.div>
     </AnimatePresence>
   );

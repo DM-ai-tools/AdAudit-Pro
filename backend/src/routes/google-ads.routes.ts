@@ -15,6 +15,8 @@ import {
   publishOptimizedAd,
   rollbackPublishedAd,
   validatePublishContent,
+  validatePublishingPermissions,
+  getPublishStatus,
 } from '../services/googleAdsPublishing.service.js';
 import { buildAdPreview } from '../services/adPreview.service.js';
 import { getOptimizationForPreview } from '../services/aiOptimization.service.js';
@@ -190,7 +192,10 @@ router.get('/status', authMiddleware, async (req: AuthRequest, res: Response) =>
   });
 });
 
-router.post('/publish-ad', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.post('/publish-ad', authMiddleware, handlePublishAd);
+router.post('/publish', authMiddleware, handlePublishAd);
+
+async function handlePublishAd(req: AuthRequest, res: Response): Promise<void> {
   try {
     const { optimizationId, googleAdsCustomerId, adGroupAdResourceName, content } = req.body as {
       optimizationId?: string;
@@ -206,14 +211,21 @@ router.post('/publish-ad', authMiddleware, async (req: AuthRequest, res: Respons
     };
 
     if (!optimizationId || !googleAdsCustomerId || !content) {
-      return res.status(400).json({
+      res.status(400).json({
         error: 'optimizationId, googleAdsCustomerId, and content are required',
       });
+      return;
     }
 
     const validationError = validatePublishContent(content);
     if (validationError) {
-      return res.status(400).json({ error: validationError });
+      res.status(400).json({ error: validationError });
+      return;
+    }
+
+    const permCheck = await validatePublishingPermissions(req.authUser!.userId, googleAdsCustomerId);
+    if (!permCheck.canPublish && googleAdsCustomerId !== '0000000000') {
+      // Still allow simulated publish path inside service
     }
 
     const result = await publishOptimizedAd({
@@ -229,23 +241,51 @@ router.post('/publish-ad', authMiddleware, async (req: AuthRequest, res: Respons
     console.error('publish-ad failed:', err);
     const message = err instanceof Error ? err.message : 'Failed to publish ad';
     if (message.includes('not found')) {
-      return res.status(404).json({ error: message });
+      res.status(404).json({ error: message });
+      return;
+    }
+    if (message.includes('refresh') || message.includes('Reconnect')) {
+      res.status(401).json({ error: message });
+      return;
     }
     res.status(500).json({ error: message });
   }
-});
+}
 
-router.post('/rollback-ad', authMiddleware, async (req: AuthRequest, res: Response) => {
+router.post('/rollback-ad', authMiddleware, handleRollbackAd);
+router.post('/rollback', authMiddleware, handleRollbackAd);
+
+async function handleRollbackAd(req: AuthRequest, res: Response): Promise<void> {
   try {
     const { publishedId } = req.body as { publishedId?: string };
-    if (!publishedId) return res.status(400).json({ error: 'publishedId is required' });
+    if (!publishedId) {
+      res.status(400).json({ error: 'publishedId is required' });
+      return;
+    }
 
     const result = await rollbackPublishedAd(req.authUser!.userId, publishedId);
-    if (!result.success) return res.status(400).json({ error: result.message });
+    if (!result.success) {
+      res.status(400).json({ error: result.message });
+      return;
+    }
     res.json(result);
   } catch (err) {
     console.error('rollback-ad failed:', err);
     res.status(500).json({ error: 'Rollback failed' });
+  }
+}
+
+router.get('/publish-status/:id', authMiddleware, async (req: AuthRequest, res: Response) => {
+  try {
+    const status = await getPublishStatus(req.authUser!.userId, req.params.id);
+    if (!status) {
+      res.status(404).json({ error: 'Publish record not found' });
+      return;
+    }
+    res.json(status);
+  } catch (err) {
+    console.error('publish-status failed:', err);
+    res.status(500).json({ error: 'Failed to load publish status' });
   }
 });
 

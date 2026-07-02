@@ -33,5 +33,11 @@ Thumbs.db
 # Puppeteer
 .cache/
 
+# Legacy local data (may contain OAuth tokens)
 backend/.data/
+
+# Local overrides (secrets)
 docker-compose.override.yml
+
+# Agent / IDE artifacts
+agent-transcripts/

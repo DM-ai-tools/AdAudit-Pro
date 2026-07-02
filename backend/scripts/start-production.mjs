@@ -23,6 +23,9 @@ async function main() {
       console.error('✗ Failed to sync database schema');
       process.exit(1);
     }
+  } else if (process.env.NODE_ENV === 'production') {
+    console.error('✗ DATABASE_URL is required in production');
+    process.exit(1);
   } else {
     console.warn('⚠ DATABASE_URL not set — skipping schema sync');
   }

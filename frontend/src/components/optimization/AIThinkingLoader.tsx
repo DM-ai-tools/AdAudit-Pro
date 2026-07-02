@@ -43,7 +43,7 @@ export function AIThinkingLoader() {
       </AnimatePresence>
 
       <p className="text-muted text-sm text-center max-w-sm">
-        Claude is analyzing your ad performance, audit findings, and conversion goals to generate publishable copy.
+        Claude is analyzing your ad performance, audit findings, and conversion goals. This usually takes 1–2 minutes.
       </p>
 
       <div className="flex gap-1.5 mt-6">

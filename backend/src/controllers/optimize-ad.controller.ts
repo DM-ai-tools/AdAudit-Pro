@@ -24,6 +24,7 @@ export async function handleOptimizeAd(req: AuthRequest, res: Response): Promise
       tone,
       variation,
       customPrompt,
+      regenerateOnly,
       findingSnapshot,
       auditFindingsSnapshot,
       accountContext,
@@ -33,6 +34,7 @@ export async function handleOptimizeAd(req: AuthRequest, res: Response): Promise
       tone?: OptimizationTone;
       variation?: 'regenerate' | 'shorter' | 'more-variations' | 'aggressive-cta';
       customPrompt?: string;
+      regenerateOnly?: boolean;
       findingSnapshot?: Finding;
       auditFindingsSnapshot?: Finding[];
       accountContext?: {
@@ -73,6 +75,7 @@ export async function handleOptimizeAd(req: AuthRequest, res: Response): Promise
       tone,
       variation,
       customPrompt,
+      regenerateOnly,
       findingSnapshot,
       auditFindingsSnapshot,
       accountContext,
