@@ -245,6 +245,10 @@ export const aiApi = {
       googleAdsCustomerId?: string;
       websiteUrl?: string;
       userId?: string;
+      industry?: string;
+      location?: string;
+      competitorUrls?: string[];
+      productsServices?: string[];
       campaignId?: string;
       campaignName?: string;
       campaignType?: string;

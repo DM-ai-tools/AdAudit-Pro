@@ -63,19 +63,25 @@ function formatCompetitorIntel(intelligence: AuditIntelligence): string {
   const c = intelligence.competitorAnalysis;
   if (!c) return 'Competitor analysis unavailable.';
   return JSON.stringify({
+    source: c.source,
     competitors: c.competitors?.slice(0, 4).map((x) => ({
       name: x.name,
       url: x.url,
-      headlines: x.headlines?.slice(0, 5),
+      headlines: x.headlines?.slice(0, 8),
       offers: x.offers,
       services: x.services,
       ctas: x.ctas,
+      keywords: x.keywords?.slice(0, 12),
+      keyMessages: x.keyMessages,
+      valuePropositions: x.valuePropositions,
       positioning: x.positioning,
     })),
+    insights: c.insights,
     keywordOpportunities: c.keywordOpportunities,
     messagingOpportunities: c.messagingOpportunities,
     missingOffers: c.missingOffers,
     competitiveAdvantages: c.competitiveAdvantages,
+    missingFromYourAds: c.missingFromYourAds,
   }, null, 0);
 }
 
@@ -163,8 +169,15 @@ ${trimJson(intelligence.landingPages)}
 WEBSITE ANALYSIS
 ${formatWebsiteIntel(intelligence)}
 
-COMPETITOR INTELLIGENCE
+COMPETITOR INTELLIGENCE (use aggressively — do NOT produce generic headline rewrites)
 ${formatCompetitorIntel(intelligence)}
+
+COMPETITIVE DIFFERENTIATION REQUIREMENTS
+- Benchmark every headline and description against competitor key messages, offers, and CTAs above
+- Steal high-performing competitor angles but differentiate with the client's unique offers/USPs
+- Incorporate competitor keyword opportunities into headlines, descriptions, and recommendedKeywords
+- Close offer gaps competitors promote that the client also provides but does not advertise
+- Ads must feel strategically different from both the client's current ad AND competitor messaging
 
 ${scenario === 'REPLACE_EXISTING' ? `EXISTING AD
 - Headlines: ${JSON.stringify(currentAd.headlines)}
@@ -204,8 +217,23 @@ Return ONLY valid JSON (no markdown):
     "qualityScore": "why QS may improve",
     "conversionPotential": "why conversions may improve",
     "auditFindingsAddressed": ["finding 1 addressed", "finding 2"],
-    "competitorInsightsUsed": ["insight 1", "insight 2"]
+    "competitorInsightsUsed": ["specific competitor insight applied to ad copy"],
+    "competitiveOutperformance": {
+      "messagingImprovements": "how messaging beats competitors",
+      "keywordImprovements": "keyword gaps closed vs competitors",
+      "offerImprovements": "offer/CTA improvements vs competitors",
+      "conversionImprovements": "why conversions should improve vs competitive set"
+    }
   },
+  "competitorInsights": [
+    {
+      "name": "Competitor Name",
+      "keyMessages": ["message 1"],
+      "offers": ["offer 1"],
+      "keywordOpportunities": ["keyword 1"]
+    }
+  ],
+  "missingCompetitorAdvantages": ["advantage competitors use that your ads lack"],
   "recommendedKeywords": ["5-10 keywords"],
   "negativeKeywordSuggestions": ["5-15 negatives"],
   "recommendedExtensions": ["extension recommendations"],

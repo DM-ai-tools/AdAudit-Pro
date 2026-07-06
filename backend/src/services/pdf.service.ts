@@ -189,6 +189,54 @@ function renderAdCopyColumn(title: string, ad: AdCopyColumnData, variant: 'curre
     </div>`;
 }
 
+function renderCompetitorInsightsHtml(optimized: OptimizedAdContent): string {
+  const insights = optimized.competitorInsights ?? [];
+  const missing = asStringList(optimized.missingCompetitorAdvantages);
+  const outperform = optimized.strategistReasoning?.competitiveOutperformance;
+
+  const cards = insights
+    .map(
+      (c) => `
+    <div class="opt-competitor-card">
+      <h4 style="color:#7c3aed">${escapeHtml(c.name)}</h4>
+      ${c.url ? `<p class="opt-path">Website: ${escapeHtml(c.url)}</p>` : ''}
+      ${renderStringList('Key messages', asStringList(c.keyMessages), 5)}
+      ${renderStringList('Offers', asStringList(c.offers), 5)}
+      ${renderStringList('Keyword opportunities', asStringList(c.keywordOpportunities), 8)}
+    </div>`
+    )
+    .join('');
+
+  const outperformHtml = outperform
+    ? `
+      <div class="opt-reasoning">
+        <p class="opt-subtitle">Why This Ad Will Outperform Competitors</p>
+        ${[
+          { label: 'Messaging', text: outperform.messagingImprovements },
+          { label: 'Keywords', text: outperform.keywordImprovements },
+          { label: 'Offers', text: outperform.offerImprovements },
+          { label: 'Conversions', text: outperform.conversionImprovements },
+        ]
+          .filter((s) => asDisplayText(s.text))
+          .map(
+            (s) => `
+          <div class="opt-reason-row">
+            <span class="opt-reason-label">${escapeHtml(s.label)}</span>
+            <p>${escapeHtml(asDisplayText(s.text))}</p>
+          </div>`
+          )
+          .join('')}
+      </div>`
+    : '';
+
+  if (!cards && !missing.length && !outperformHtml) return '';
+
+  return `
+    ${cards ? `<div class="opt-competitor-section"><p class="opt-subtitle">Competitor Insights</p><div class="opt-competitor-grid">${cards}</div></div>` : ''}
+    ${outperformHtml}
+    ${missing.length ? `<div class="opt-missing-advantages"><p class="opt-subtitle">Competitor Advantages Missing From Your Ads</p><ul class="opt-list-block">${missing.map((m) => `<li style="color:#1e293b">${escapeHtml(m)}</li>`).join('')}</ul></div>` : ''}`;
+}
+
 function renderOptimizationBlock(
   opt: AuditReportOptimization,
   findingTitle: string
@@ -331,6 +379,7 @@ function renderOptimizationBlock(
       ${renderStringList('CTA suggestions', asStringList(optimized.ctaSuggestions))}
       ${renderStringList('Keyword suggestions', asStringList(optimized.keywordSuggestions))}
       ${extensionsHtml}
+      ${renderCompetitorInsightsHtml(optimized)}
       ${reasoningHtml}
       ${recsHtml}
       ${strategyHtml}
@@ -658,6 +707,22 @@ export function buildReportHtml(audit: AuditRun, optimizations: AuditReportOptim
     .opt-list-block { margin-bottom: 12px; }
     .opt-list-block ul { margin: 4px 0 0; padding-left: 20px; font-size: 12px; color: var(--text); }
     .opt-list-block li { margin-bottom: 4px; line-height: 1.5; color: var(--text); }
+    .opt-competitor-section { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+    .opt-competitor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+    .opt-competitor-card {
+      background: #faf5ff;
+      border: 1px solid #e9d5ff;
+      border-radius: 8px;
+      padding: 14px;
+    }
+    .opt-competitor-card h4 { margin: 0 0 8px; font-size: 13px; }
+    .opt-missing-advantages {
+      margin-top: 16px;
+      padding: 14px;
+      background: #fff7ed;
+      border: 1px solid #fed7aa;
+      border-radius: 8px;
+    }
     .opt-reasoning, .opt-strategy, .opt-perf {
       margin-top: 18px;
       padding-top: 16px;
@@ -686,7 +751,7 @@ export function buildReportHtml(audit: AuditRun, optimizations: AuditReportOptim
       text-align: center;
     }
     @media (max-width: 800px) {
-      .metrics, .roadmap, .opt-ad-compare, .opt-impact-grid { grid-template-columns: 1fr; }
+      .metrics, .roadmap, .opt-ad-compare, .opt-impact-grid, .opt-competitor-grid { grid-template-columns: 1fr; }
     }
     @media print {
       .toolbar { display: none !important; }

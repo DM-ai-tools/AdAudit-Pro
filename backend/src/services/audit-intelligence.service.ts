@@ -358,6 +358,9 @@ export async function gatherAuditIntelligence(options: {
     googleAdsCustomerId?: string;
     websiteUrl?: string;
     industry?: string;
+    location?: string;
+    competitorUrls?: string[];
+    productsServices?: string[];
     campaignId?: string;
     campaignName?: string;
     campaignType?: string;
@@ -571,29 +574,32 @@ export async function gatherAuditIntelligence(options: {
     } : null,
     'website-analysis'
   );
-  const competitorAnalysis = options.lightweight
-    ? {
-        competitors: [],
-        keywordOpportunities: [],
-        messagingOpportunities: [],
-        missingOffers: [],
-        competitiveAdvantages: [],
-        source: 'unavailable' as const,
-      }
-    : await withTimeoutFallback(
+  const competitorAnalysis = await withTimeoutFallback(
     analyzeCompetitors({
       businessName: business.name,
       websiteUrl,
       industry: options.accountContext?.industry,
+      location:
+        options.accountContext?.location ??
+        websiteAnalysis?.locations?.[0],
+      productsServices: [
+        ...(options.accountContext?.productsServices ?? []),
+        ...(websiteAnalysis?.services ?? []),
+        ...(websiteAnalysis?.headings?.slice(0, 6) ?? []),
+      ],
+      competitorUrls: options.accountContext?.competitorUrls,
       websiteIntel: websiteAnalysis,
+      lightweight: options.lightweight,
     }),
-    20_000,
+    options.lightweight ? 28_000 : 40_000,
     {
       competitors: [],
+      insights: [],
       keywordOpportunities: [],
       messagingOpportunities: [],
       missingOffers: [],
       competitiveAdvantages: [],
+      missingFromYourAds: [],
       source: 'unavailable' as const,
     },
     'competitor-analysis'

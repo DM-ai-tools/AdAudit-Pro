@@ -50,6 +50,40 @@ export interface PerformanceEstimates {
   estimated: PerformanceMetrics;
 }
 
+export interface CompetitiveOutperformance {
+  messagingImprovements: string;
+  keywordImprovements: string;
+  offerImprovements: string;
+  conversionImprovements: string;
+}
+
+export interface CompetitorInsightCard {
+  name: string;
+  url?: string;
+  keyMessages: string[];
+  offers: string[];
+  keywordOpportunities: string[];
+}
+
+export interface CompetitorIntelligenceData {
+  competitors: Array<{
+    name: string;
+    url: string;
+    fetched: boolean;
+    headlines: string[];
+    offers: string[];
+    keyMessages: string[];
+    valuePropositions: string[];
+    positioning?: string;
+  }>;
+  insights: CompetitorInsightCard[];
+  keywordOpportunities: string[];
+  messagingOpportunities: string[];
+  missingOffers: string[];
+  missingFromYourAds: string[];
+  source: string;
+}
+
 export interface StrategistReasoning {
   headlineChanges: string;
   descriptionChanges: string;
@@ -58,6 +92,7 @@ export interface StrategistReasoning {
   conversionPotential: string;
   auditFindingsAddressed: string[];
   competitorInsightsUsed: string[];
+  competitiveOutperformance?: CompetitiveOutperformance;
 }
 
 export interface AccountImpact {
@@ -142,6 +177,8 @@ export interface OptimizedAdContent {
   accountImpact?: AccountImpact;
   strategistReasoning?: StrategistReasoning;
   strategistRecommendations?: StrategistRecommendations;
+  competitorInsights?: CompetitorInsightCard[];
+  missingCompetitorAdvantages?: string[];
   keywordImprovements?: string[];
   negativeKeywordSuggestions?: string[];
   landingPageRecommendations?: string[];
@@ -173,6 +210,7 @@ export interface OptimizeAdResponse {
   analysisSources?: AnalysisSources;
   campaignPerformance?: CampaignPerformanceSummary | null;
   auditHealthScore?: number;
+  competitorAnalysis?: CompetitorIntelligenceData | null;
 }
 
 export type PublishStepStatus = 'pending' | 'running' | 'complete' | 'failed' | 'skipped';

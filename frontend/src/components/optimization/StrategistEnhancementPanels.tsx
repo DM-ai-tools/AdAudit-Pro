@@ -2,8 +2,10 @@ import { ArrowRight, Check, X as XIcon } from 'lucide-react';
 import clsx from 'clsx';
 import type { GoogleAdsCampaign } from '../../types/connect';
 import { normalizeRenderableStrings, asDisplayText } from './utils';
+import { CompetitorIntelligencePanels } from './CompetitorIntelligencePanels';
 import type {
   AnalysisSources,
+  CompetitorIntelligenceData,
   OptimizedAdContent,
   CampaignPerformanceSummary,
   PerformanceEstimates,
@@ -12,6 +14,7 @@ import type {
 interface StrategistEnhancementPanelsProps {
   analysisSources?: AnalysisSources;
   optimized: OptimizedAdContent;
+  competitorAnalysis?: CompetitorIntelligenceData | null;
   campaignPerformance?: CampaignPerformanceSummary | null;
   selectedCampaign?: GoogleAdsCampaign | null;
   auditHealthScore?: number;
@@ -77,6 +80,7 @@ export function CampaignMetricsStrip({
 export function StrategistEnhancementPanels({
   analysisSources,
   optimized,
+  competitorAnalysis,
   campaignPerformance,
   selectedCampaign,
   auditHealthScore,
@@ -203,6 +207,11 @@ export function StrategistEnhancementPanels({
           ) : null}
         </div>
       )}
+
+      <CompetitorIntelligencePanels
+        competitorAnalysis={competitorAnalysis}
+        optimized={optimized}
+      />
 
       {recs && (
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-3">

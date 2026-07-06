@@ -29,6 +29,7 @@ import type {
   CampaignPerformanceSummary,
   OptimizeAdResponse,
   PublishAdResponse,
+  CompetitorIntelligenceData,
 } from '../../types/optimization';
 
 function buildCampaignAccountContext(campaign?: GoogleAdsCampaign | null) {
@@ -84,6 +85,14 @@ function normalizeOptimizedContent(data: OptimizeAdResponse['optimized']): Optim
         conversionPotential: asDisplayText(data.strategistReasoning.conversionPotential),
         auditFindingsAddressed: normalizeRenderableStrings(data.strategistReasoning.auditFindingsAddressed),
         competitorInsightsUsed: normalizeRenderableStrings(data.strategistReasoning.competitorInsightsUsed),
+        competitiveOutperformance: data.strategistReasoning.competitiveOutperformance
+          ? {
+              messagingImprovements: asDisplayText(data.strategistReasoning.competitiveOutperformance.messagingImprovements),
+              keywordImprovements: asDisplayText(data.strategistReasoning.competitiveOutperformance.keywordImprovements),
+              offerImprovements: asDisplayText(data.strategistReasoning.competitiveOutperformance.offerImprovements),
+              conversionImprovements: asDisplayText(data.strategistReasoning.competitiveOutperformance.conversionImprovements),
+            }
+          : undefined,
       }
     : data.strategistReasoning;
 
@@ -120,6 +129,14 @@ function normalizeOptimizedContent(data: OptimizeAdResponse['optimized']): Optim
       : data.adExtensions,
     strategistReasoning,
     strategistRecommendations,
+    competitorInsights: data.competitorInsights?.map((c) => ({
+      name: asDisplayText(c.name, 'Competitor'),
+      url: c.url,
+      keyMessages: normalizeRenderableStrings(c.keyMessages),
+      offers: normalizeRenderableStrings(c.offers),
+      keywordOpportunities: normalizeRenderableStrings(c.keywordOpportunities),
+    })),
+    missingCompetitorAdvantages: normalizeRenderableStrings(data.missingCompetitorAdvantages),
     campaignStrategy: data.campaignStrategy
       ? {
           ...data.campaignStrategy,
@@ -149,6 +166,8 @@ interface AIOptimizationModalProps {
   goal?: string;
   monthlySpend?: number;
   userId?: string;
+  industry?: string;
+  competitorUrls?: string[];
   initialCampaignId?: string;
   initialCampaign?: GoogleAdsCampaign | null;
   lockCampaignScope?: boolean;
@@ -166,6 +185,8 @@ export function AIOptimizationModal({
   goal,
   monthlySpend,
   userId,
+  industry,
+  competitorUrls,
   initialCampaignId,
   initialCampaign = null,
   lockCampaignScope = false,
@@ -200,6 +221,7 @@ export function AIOptimizationModal({
   const [analysisSources, setAnalysisSources] = useState<AnalysisSources | undefined>();
   const [campaignPerformance, setCampaignPerformance] = useState<CampaignPerformanceSummary | null | undefined>();
   const [auditHealthScore, setAuditHealthScore] = useState<number | undefined>();
+  const [competitorAnalysis, setCompetitorAnalysis] = useState<CompetitorIntelligenceData | null>(null);
   const optimizationCache = useRef<Map<string, OptimizeAdResponse>>(new Map());
   const requestGeneration = useRef(0);
   const requestInFlight = useRef(false);
@@ -251,6 +273,7 @@ export function AIOptimizationModal({
     setAnalysisSources(data.analysisSources);
     setCampaignPerformance(data.campaignPerformance);
     setAuditHealthScore(data.auditHealthScore);
+    setCompetitorAnalysis(data.competitorAnalysis ?? null);
     setError(null);
   }, []);
 
@@ -304,6 +327,8 @@ export function AIOptimizationModal({
           googleAdsCustomerId,
           websiteUrl,
           userId,
+          industry,
+          competitorUrls: competitorUrls?.filter(Boolean),
           campaignId: campaignKey || undefined,
           findingCategory: finding.category,
           findingTitle: finding.title,
@@ -345,7 +370,7 @@ export function AIOptimizationModal({
       setRegenerating(false);
       setCampaignSwitching(false);
     }
-  }, [auditId, finding, auditFindings, businessName, goal, monthlySpend, googleAdsCustomerId, websiteUrl, userId, customPrompt, activeTone, applyOptimizationResponse, resolveCampaignKey, resolveCampaignMeta, optimized]);
+  }, [auditId, finding, auditFindings, businessName, goal, monthlySpend, googleAdsCustomerId, websiteUrl, userId, industry, competitorUrls, customPrompt, activeTone, applyOptimizationResponse, resolveCampaignKey, resolveCampaignMeta, optimized]);
 
   useEffect(() => {
     if (!open || !googleAdsCustomerId) {
@@ -623,6 +648,7 @@ export function AIOptimizationModal({
               <StrategistEnhancementPanels
                 analysisSources={analysisSources}
                 optimized={optimized}
+                competitorAnalysis={competitorAnalysis}
                 campaignPerformance={campaignPerformance}
                 selectedCampaign={selectedCampaign}
                 auditHealthScore={auditHealthScore}

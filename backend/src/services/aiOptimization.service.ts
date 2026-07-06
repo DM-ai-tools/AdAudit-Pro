@@ -13,6 +13,8 @@ import {
 } from './audit-intelligence.service.js';
 import type { Finding } from '../types/index.js';
 import { prisma } from '../lib/prisma.js';
+import type { CompetitorIntelligence } from './competitor-intelligence.service.js';
+import { analyzeCompetitors } from './competitor-intelligence.service.js';
 import { extractJsonFromClaudeText } from '../utils/claude-json.js';
 import {
   displayPathFromWebsite,
@@ -60,6 +62,21 @@ export interface PerformanceEstimates {
   estimated: PerformanceMetrics;
 }
 
+export interface CompetitiveOutperformance {
+  messagingImprovements: string;
+  keywordImprovements: string;
+  offerImprovements: string;
+  conversionImprovements: string;
+}
+
+export interface CompetitorInsightCard {
+  name: string;
+  url?: string;
+  keyMessages: string[];
+  offers: string[];
+  keywordOpportunities: string[];
+}
+
 export interface StrategistReasoning {
   headlineChanges: string;
   descriptionChanges: string;
@@ -68,6 +85,7 @@ export interface StrategistReasoning {
   conversionPotential: string;
   auditFindingsAddressed: string[];
   competitorInsightsUsed: string[];
+  competitiveOutperformance?: CompetitiveOutperformance;
 }
 
 export interface AccountImpact {
@@ -134,6 +152,8 @@ export interface OptimizedAdContent {
   accountImpact?: AccountImpact;
   strategistReasoning?: StrategistReasoning;
   strategistRecommendations?: StrategistRecommendations;
+  competitorInsights?: CompetitorInsightCard[];
+  missingCompetitorAdvantages?: string[];
   keywordImprovements?: string[];
   negativeKeywordSuggestions?: string[];
   landingPageRecommendations?: string[];
@@ -156,6 +176,9 @@ export interface OptimizeAdRequest {
     googleAdsCustomerId?: string;
     websiteUrl?: string;
     industry?: string;
+    location?: string;
+    competitorUrls?: string[];
+    productsServices?: string[];
     userId?: string;
     campaignId?: string;
     campaignName?: string;
@@ -213,6 +236,7 @@ export interface OptimizeAdResult {
   analysisSources: AnalysisSources;
   campaignPerformance?: import('./audit-intelligence.service.js').CampaignPerformanceSummary | null;
   auditHealthScore?: number;
+  competitorAnalysis?: CompetitorIntelligence | null;
 }
 
 const VARIATION_HINTS: Record<string, string> = {
@@ -397,6 +421,16 @@ function parseClaudeJson(
     : undefined;
 
   const srRaw = parsed.strategistReasoning as Record<string, unknown> | undefined;
+  const coRaw = srRaw?.competitiveOutperformance as Record<string, unknown> | undefined;
+  const competitiveOutperformance: CompetitiveOutperformance | undefined = coRaw
+    ? {
+        messagingImprovements: String(coRaw.messagingImprovements ?? ''),
+        keywordImprovements: String(coRaw.keywordImprovements ?? ''),
+        offerImprovements: String(coRaw.offerImprovements ?? ''),
+        conversionImprovements: String(coRaw.conversionImprovements ?? ''),
+      }
+    : undefined;
+
   const strategistReasoning: StrategistReasoning | undefined = srRaw
     ? {
         headlineChanges: String(srRaw.headlineChanges ?? ''),
@@ -406,8 +440,40 @@ function parseClaudeJson(
         conversionPotential: String(srRaw.conversionPotential ?? ''),
         auditFindingsAddressed: normalizeStringArray(srRaw.auditFindingsAddressed),
         competitorInsightsUsed: normalizeStringArray(srRaw.competitorInsightsUsed),
+        competitiveOutperformance,
       }
     : undefined;
+
+  const competitorInsightsRaw = parsed.competitorInsights;
+  let competitorInsights: CompetitorInsightCard[] = [];
+  if (Array.isArray(competitorInsightsRaw)) {
+    for (const row of competitorInsightsRaw) {
+      if (!row || typeof row !== 'object') continue;
+      const o = row as Record<string, unknown>;
+      const name = String(o.name ?? '').trim();
+      if (!name) continue;
+      competitorInsights.push({
+        name,
+        url: o.url != null ? String(o.url) : undefined,
+        keyMessages: normalizeStringArray(o.keyMessages),
+        offers: normalizeStringArray(o.offers),
+        keywordOpportunities: normalizeStringArray(o.keywordOpportunities),
+      });
+    }
+  } else if (intelligence.competitorAnalysis?.insights?.length) {
+    competitorInsights = intelligence.competitorAnalysis.insights.map((i) => ({
+      name: i.name,
+      url: i.url,
+      keyMessages: i.keyMessages,
+      offers: i.offers,
+      keywordOpportunities: i.keywordOpportunities,
+    }));
+  }
+
+  const missingCompetitorAdvantages = normalizeStringArray(
+    parsed.missingCompetitorAdvantages ??
+      intelligence.competitorAnalysis?.missingFromYourAds
+  );
 
   const strategistRecommendations: StrategistRecommendations = {
     keywords: normalizeStringArray(parsed.recommendedKeywords ?? parsed.keywordImprovements),
@@ -450,6 +516,10 @@ function parseClaudeJson(
     accountImpact,
     strategistReasoning,
     strategistRecommendations,
+    competitorInsights: competitorInsights.length ? competitorInsights : undefined,
+    missingCompetitorAdvantages: missingCompetitorAdvantages.length
+      ? missingCompetitorAdvantages
+      : undefined,
     keywordImprovements: strategistRecommendations.keywords,
     negativeKeywordSuggestions: strategistRecommendations.negativeKeywords,
     landingPageRecommendations: strategistRecommendations.landingPage,
@@ -626,6 +696,32 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
     console.log(`[optimizeAd] intelligence ready in ${Date.now() - startedAt}ms (source=${intelligence.dataSource}${useLightweight ? ', lightweight' : ''})`);
   }
 
+  if (!(intelligence.competitorAnalysis?.competitors?.length ?? 0)) {
+    const websiteUrl = intelligence.business.websiteUrl;
+    const refreshed = await analyzeCompetitors({
+      businessName: intelligence.business.name,
+      websiteUrl,
+      industry: request.accountContext?.industry,
+      location: request.accountContext?.location ?? intelligence.websiteAnalysis?.locations?.[0],
+      productsServices: [
+        ...(request.accountContext?.productsServices ?? []),
+        ...(intelligence.websiteAnalysis?.services ?? []),
+      ],
+      competitorUrls: request.accountContext?.competitorUrls,
+      websiteIntel: intelligence.websiteAnalysis,
+      lightweight: useLightweight,
+    });
+    intelligence = {
+      ...intelligence,
+      competitorAnalysis: refreshed,
+      analysisSources: {
+        ...intelligence.analysisSources,
+        competitorAnalysis: refreshed.competitors.length > 0,
+      },
+    };
+    console.log(`[optimizeAd] competitor intelligence refreshed (${refreshed.competitors.length} competitors)`);
+  }
+
   const originalAd = intelligenceToCurrentAd(intelligence, finding);
   const tone = request.tone ?? 'default';
   const variationHint = request.variation ? VARIATION_HINTS[request.variation] : undefined;
@@ -733,6 +829,7 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
     analysisSources: intelligence.analysisSources,
     campaignPerformance: intelligence.campaignPerformance,
     auditHealthScore: intelligence.auditHealth.score,
+    competitorAnalysis: intelligence.competitorAnalysis,
   };
 }
 
