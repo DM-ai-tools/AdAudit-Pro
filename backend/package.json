@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "prisma generate && tsc",
+    "build": "npx --no-install prisma generate && npx --no-install tsc",
     "start": "node scripts/start-production.mjs",
     "start:server": "node dist/index.js",
     "db:generate": "prisma generate",

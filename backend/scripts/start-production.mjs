@@ -13,7 +13,7 @@ async function main() {
   if (process.env.DATABASE_URL) {
     console.log('→ Syncing PostgreSQL schema (prisma db push)...');
     try {
-      execSync('npx prisma db push --skip-generate', {
+      execSync('npx --no-install prisma db push --skip-generate', {
         cwd: root,
         stdio: 'inherit',
         env: process.env,

@@ -49,7 +49,8 @@ COPY --from=backend-build /app/backend/dist ./dist
 COPY --from=backend-build /app/backend/node_modules/.prisma ./node_modules/.prisma
 COPY --from=backend-build /app/backend/node_modules/@prisma/client ./node_modules/@prisma/client
 COPY backend/prisma ./prisma
-COPY backend/scripts/start-production.mjs ./scripts/start-production.mjs
+COPY backend/scripts ./scripts
+RUN npx --no-install prisma generate
 COPY --from=frontend-build /app/frontend/dist /app/frontend/dist
 
 # Railway injects PORT at runtime; default for local Docker runs

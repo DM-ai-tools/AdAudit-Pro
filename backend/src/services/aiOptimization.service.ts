@@ -1,8 +1,9 @@
 import { createClaudeMessage } from '../ai/anthropic-client.js';
 import { env } from '../config/env.js';
-import type { OptimizationTone } from '../ai/prompts/optimize-ad.prompt.js';
+import type { OptimizationMode } from '../ai/prompts/full-optimize-ad.prompt.js';
 import {
   buildFullOptimizeAdPrompt,
+  buildCompactOptimizeRetryPrompt,
   liveAdToCurrentAd,
 } from '../ai/prompts/full-optimize-ad.prompt.js';
 import { getAuditReport } from './audit.service.js';
@@ -22,7 +23,14 @@ import {
   resolveDisplayHost,
 } from '../utils/business-identity.js';
 
-export type { OptimizationTone } from '../ai/prompts/optimize-ad.prompt.js';
+export type OptimizationTone =
+  | 'default'
+  | 'professional'
+  | 'luxury'
+  | 'high-conversion'
+  | 'aggressive'
+  | 'shorter';
+export type { OptimizationMode } from '../ai/prompts/full-optimize-ad.prompt.js';
 
 export interface CurrentAdData {
   headlines: string[];
@@ -164,6 +172,7 @@ export interface OptimizeAdRequest {
   auditId: string;
   findingId: string;
   tone?: OptimizationTone;
+  optimizationMode?: OptimizationMode;
   variation?: 'regenerate' | 'shorter' | 'more-variations' | 'aggressive-cta';
   customPrompt?: string;
   regenerateOnly?: boolean;
@@ -203,6 +212,10 @@ export interface OptimizeAdRequest {
       adGroupName?: string;
       resourceName?: string;
     };
+    previousOptimizedSnapshot?: {
+      headlines?: string[];
+      descriptions?: string[];
+    };
     campaignMetrics?: {
       impressions?: number;
       clicks?: number;
@@ -240,11 +253,20 @@ export interface OptimizeAdResult {
 }
 
 const VARIATION_HINTS: Record<string, string> = {
-  regenerate: 'Generate fresh alternative copy with different angles.',
+  regenerate:
+    'REGENERATE: Produce a completely fresh ad. Study competitor adGallery copy and out-position rivals with NEW headlines/descriptions — do not reuse or lightly reword the PREVIOUS AI OPTIMIZATION.',
   shorter: 'Prioritize shorter, punchier headlines and descriptions.',
   'more-variations': 'Maximize headline/description diversity for RSA ad strength.',
   'aggressive-cta': 'Use stronger, more urgent call-to-action language.',
 };
+
+function countRealCompetitorAds(analysis: CompetitorIntelligence | null | undefined): number {
+  return (
+    analysis?.adGallery?.filter(
+      (g) => g.adSource === 'sociavault' || g.adSource === 'transparency_center'
+    ).length ?? 0
+  );
+}
 
 function normalizeStringArray(val: unknown): string[] {
   if (!val) return [];
@@ -277,13 +299,26 @@ function asDisplayText(val: unknown, fallback = ''): string {
   return fallback;
 }
 
+function finalizeDescription(text: string): string {
+  let s = text.trim().replace(/\s+/g, ' ');
+  if (!s) return s;
+  if (s.length > 90) {
+    s = s.slice(0, 90);
+    const lastSpace = s.lastIndexOf(' ');
+    if (lastSpace > 55) s = s.slice(0, lastSpace);
+  }
+  s = s.replace(/[,;\s]+$/, '');
+  if (!/[.!?]$/.test(s)) s += '.';
+  return s.slice(0, 90);
+}
+
 function enforceGoogleAdsLimits(
   headlines: string[],
   descriptions: string[],
   brand: string
 ): { headlines: string[]; descriptions: string[] } {
   const h = headlines.map((s) => s.trim().slice(0, 30)).filter(Boolean);
-  const d = descriptions.map((s) => s.trim().slice(0, 90)).filter(Boolean);
+  const d = descriptions.map((s) => finalizeDescription(s)).filter(Boolean);
 
   const fallbacksH = [
     `${brand} — Get Started`,
@@ -303,12 +338,12 @@ function enforceGoogleAdsLimits(
     else break;
   }
   while (d.length < 2) {
-    const next = fallbacksD[d.length % fallbacksD.length];
-    if (!d.includes(next)) d.push(next.slice(0, 90));
+    const next = finalizeDescription(fallbacksD[d.length % fallbacksD.length]);
+    if (!d.includes(next)) d.push(next);
     else break;
   }
 
-  return { headlines: h.slice(0, 15), descriptions: d.slice(0, 4) };
+  return { headlines: h.slice(0, 15), descriptions: d.slice(0, 4).map(finalizeDescription) };
 }
 
 function buildBaselinePerformance(
@@ -471,8 +506,9 @@ function parseClaudeJson(
   }
 
   const missingCompetitorAdvantages = normalizeStringArray(
-    parsed.missingCompetitorAdvantages ??
-      intelligence.competitorAnalysis?.missingFromYourAds
+    Array.isArray(parsed.missingCompetitorAdvantages) && parsed.missingCompetitorAdvantages.length
+      ? parsed.missingCompetitorAdvantages
+      : intelligence.competitorAnalysis?.missingFromYourAds
   );
 
   const strategistRecommendations: StrategistRecommendations = {
@@ -650,6 +686,7 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
   console.log(`[optimizeAd] start audit=${request.auditId} finding=${request.findingId} campaign=${request.accountContext?.campaignId ?? 'all'}${request.regenerateOnly ? ' (regenerate-only)' : ''}`);
 
   let intelligence: AuditIntelligence;
+  let previousOptimizedAd: { headlines: string[]; descriptions: string[] } | undefined;
   const useLightweight =
     request.regenerateOnly ||
     env.isProduction ||
@@ -683,6 +720,28 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
       });
       console.log(`[optimizeAd] lightweight intelligence ready in ${Date.now() - startedAt}ms`);
     }
+
+    if (cached?.optimizedContent && typeof cached.optimizedContent === 'object') {
+      const prev = cached.optimizedContent as unknown as OptimizedAdContent;
+      if (prev.headlines?.length) {
+        previousOptimizedAd = {
+          headlines: prev.headlines,
+          descriptions: prev.descriptions ?? [],
+        };
+      }
+    }
+    const snapshot = request.accountContext?.previousOptimizedSnapshot;
+    if (snapshot?.headlines?.length) {
+      previousOptimizedAd = {
+        headlines: snapshot.headlines,
+        descriptions: snapshot.descriptions ?? previousOptimizedAd?.descriptions ?? [],
+      };
+    }
+    if (previousOptimizedAd?.headlines?.length) {
+      console.log(
+        `[optimizeAd] regenerate avoiding ${previousOptimizedAd.headlines.length} previous headlines, gallery=${countRealCompetitorAds(intelligence.competitorAnalysis)} ads`
+      );
+    }
   } else {
     intelligence = await gatherAuditIntelligence({
       auditId: request.auditId,
@@ -696,7 +755,11 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
     console.log(`[optimizeAd] intelligence ready in ${Date.now() - startedAt}ms (source=${intelligence.dataSource}${useLightweight ? ', lightweight' : ''})`);
   }
 
-  if (!(intelligence.competitorAnalysis?.competitors?.length ?? 0)) {
+  const needsCompetitorRefresh =
+    !(intelligence.competitorAnalysis?.competitors?.length ?? 0) ||
+    countRealCompetitorAds(intelligence.competitorAnalysis) < 4;
+
+  if (needsCompetitorRefresh) {
     const websiteUrl = intelligence.business.websiteUrl;
     const refreshed = await analyzeCompetitors({
       businessName: intelligence.business.name,
@@ -709,6 +772,12 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
       ],
       competitorUrls: request.accountContext?.competitorUrls,
       websiteIntel: intelligence.websiteAnalysis,
+      currentAd: request.accountContext?.primaryAdSnapshot
+        ? {
+            headlines: request.accountContext.primaryAdSnapshot.headlines ?? [],
+            descriptions: request.accountContext.primaryAdSnapshot.descriptions ?? [],
+          }
+        : undefined,
       lightweight: useLightweight,
     });
     intelligence = {
@@ -733,25 +802,27 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
   const baseline = buildBaselinePerformance(intelligence);
 
   const claudeStart = Date.now();
+  const promptCtx = {
+    intelligence,
+    finding,
+    currentAd: originalAd,
+    previousOptimizedAd,
+    scenario: intelligence.scenario,
+    tone,
+    optimizationMode: request.optimizationMode ?? 'balanced',
+    variationHint,
+    customPrompt: request.customPrompt,
+  };
+
   const response = await createClaudeMessage({
-    max_tokens: 6144,
-    messages: [
-      {
-        role: 'user',
-        content: buildFullOptimizeAdPrompt({
-          intelligence,
-          finding,
-          currentAd: originalAd,
-          scenario: intelligence.scenario,
-          tone,
-          variationHint,
-          customPrompt: request.customPrompt,
-        }),
-      },
-    ],
+    max_tokens: 8192,
+    temperature: request.regenerateOnly ? 1 : undefined,
+    messages: [{ role: 'user', content: buildFullOptimizeAdPrompt(promptCtx) }],
   });
 
-  console.log(`[optimizeAd] Claude response in ${Date.now() - claudeStart}ms (total ${Date.now() - startedAt}ms)`);
+  console.log(
+    `[optimizeAd] Claude response in ${Date.now() - claudeStart}ms (total ${Date.now() - startedAt}ms, stop=${response.stop_reason ?? 'unknown'})`
+  );
 
   const block = response.content[0];
   if (block.type !== 'text') throw new Error('Unexpected Claude response format');
@@ -760,30 +831,28 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
   try {
     optimized = parseClaudeJson(block.text, brand, baseline, intelligence);
   } catch (firstErr) {
+    const firstMsg = firstErr instanceof Error ? firstErr.message : String(firstErr);
+    console.warn(`[optimizeAd] first parse failed (${firstMsg}), retrying with compact prompt`);
     const retry = await createClaudeMessage({
-      max_tokens: 6144,
+      max_tokens: 8192,
       messages: [
         {
           role: 'user',
-          content: `${buildFullOptimizeAdPrompt({
-            intelligence,
-            finding,
-            currentAd: originalAd,
-            scenario: intelligence.scenario,
-            tone,
-            variationHint,
-            customPrompt: request.customPrompt,
-          })}\n\nIMPORTANT: Your previous response was missing required headlines/descriptions. Return ONLY valid JSON with exactly 15 headlines (≤30 chars) and 4 descriptions (≤90 chars).`,
+          content: buildCompactOptimizeRetryPrompt(promptCtx),
         },
       ],
     });
     const retryBlock = retry.content[0];
     if (retryBlock.type !== 'text') throw firstErr;
+    console.log(`[optimizeAd] compact retry stop=${retry.stop_reason ?? 'unknown'}`);
     optimized = parseClaudeJson(retryBlock.text, brand, baseline, intelligence);
   }
 
   if (originalAd.campaignId) optimized.campaignId = originalAd.campaignId;
   if (originalAd.adGroupId) optimized.adGroupId = originalAd.adGroupId;
+
+  // Gallery is already enriched during analyzeCompetitors — skip duplicate SociaVault calls here.
+  const competitorAnalysis = intelligence.competitorAnalysis;
 
   const record = await prisma.aIOptimization.create({
     data: {
@@ -804,6 +873,8 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
       status: 'DRAFT',
     },
   });
+
+  console.log(`[optimizeAd] saved optimization ${record.id} (total ${Date.now() - startedAt}ms)`);
 
   return {
     optimizationId: record.id,
@@ -829,7 +900,7 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
     analysisSources: intelligence.analysisSources,
     campaignPerformance: intelligence.campaignPerformance,
     auditHealthScore: intelligence.auditHealth.score,
-    competitorAnalysis: intelligence.competitorAnalysis,
+    competitorAnalysis,
   };
 }
 
@@ -855,6 +926,7 @@ export interface AuditReportOptimization {
   createdAt: Date;
   originalAd: CurrentAdData;
   optimizedContent: OptimizedAdContent;
+  competitorAnalysis?: CompetitorIntelligence | null;
   improvementReasoning: string | null;
 }
 
@@ -884,6 +956,10 @@ export async function getOptimizationsForAuditReport(
       createdAt: row.createdAt,
       originalAd: row.originalAd as unknown as CurrentAdData,
       optimizedContent: row.optimizedContent as unknown as OptimizedAdContent,
+      competitorAnalysis:
+        row.auditContext && typeof row.auditContext === 'object'
+          ? (row.auditContext as unknown as AuditIntelligence).competitorAnalysis
+          : null,
       improvementReasoning: row.improvementReasoning,
     });
   }

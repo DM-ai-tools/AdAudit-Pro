@@ -1,9 +1,9 @@
 import { Response } from 'express';
 import { AuthRequest } from '../middleware/auth.js';
-import { env } from '../config/env.js';
 import {
   optimizeAd,
   type OptimizationTone,
+  type OptimizationMode,
   type OptimizeAdRequest,
 } from '../services/aiOptimization.service.js';
 import {
@@ -29,7 +29,7 @@ function mapOptimizeAdError(err: unknown): { status: number; message: string } {
   if (message.includes('not found') || message.includes('Not found')) {
     return { status: 404, message };
   }
-  if (message.includes('JSON') || message.includes('parse')) {
+  if (message.includes('JSON') || message.includes('parse') || message.includes('Incomplete')) {
     return { status: 502, message: 'AI returned an invalid response. Click Try Again.' };
   }
   if (message.includes('Anthropic') || message.includes('API keys')) {
@@ -44,6 +44,8 @@ function mapOptimizeAdError(err: unknown): { status: number; message: string } {
   return { status: 500, message };
 }
 
+const VALID_MODES: OptimizationMode[] = ['conservative', 'balanced', 'aggressive'];
+
 function buildOptimizeAdRequest(
   req: AuthRequest,
   userId: string
@@ -52,6 +54,7 @@ function buildOptimizeAdRequest(
     auditId,
     findingId,
     tone,
+    optimizationMode,
     variation,
     customPrompt,
     regenerateOnly,
@@ -62,6 +65,7 @@ function buildOptimizeAdRequest(
     auditId?: string;
     findingId?: string;
     tone?: OptimizationTone;
+    optimizationMode?: OptimizationMode;
     variation?: 'regenerate' | 'shorter' | 'more-variations' | 'aggressive-cta';
     customPrompt?: string;
     regenerateOnly?: boolean;
@@ -78,11 +82,16 @@ function buildOptimizeAdRequest(
     return { error: 'Invalid tone', status: 400 };
   }
 
+  if (optimizationMode && !VALID_MODES.includes(optimizationMode)) {
+    return { error: 'Invalid optimization mode', status: 400 };
+  }
+
   return {
     userId,
     auditId,
     findingId,
     tone,
+    optimizationMode: optimizationMode ?? 'balanced',
     variation,
     customPrompt,
     regenerateOnly,
@@ -92,10 +101,9 @@ function buildOptimizeAdRequest(
   };
 }
 
-function shouldRunAsync(req: AuthRequest): boolean {
-  if (req.query.async === '1' || req.query.async === 'true') return true;
-  if (req.body?.async === true) return true;
-  return env.isProduction;
+function shouldRunAsync(_req: AuthRequest): boolean {
+  // Always async — optimization includes competitor crawl + Claude and exceeds HTTP timeouts.
+  return true;
 }
 
 async function runOptimizeAdJob(jobId: string, request: OptimizeAdRequest): Promise<void> {

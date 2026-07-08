@@ -51,6 +51,12 @@ export const THINKING_STEPS = [
   'Generating optimized ads & impact projections…',
 ];
 
+export const MODE_OPTIONS = [
+  { id: 'conservative' as const, label: 'Conservative', desc: 'Subtle refinements, minimal change' },
+  { id: 'balanced' as const, label: 'Balanced', desc: 'Audit + competitor-informed improvements' },
+  { id: 'aggressive' as const, label: 'Aggressive', desc: 'Bold differentiation vs competitors' },
+];
+
 export const TONE_OPTIONS = [
   { id: 'default' as const, label: 'Balanced' },
   { id: 'professional' as const, label: 'Professional Tone' },

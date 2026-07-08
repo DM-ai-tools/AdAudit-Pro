@@ -233,6 +233,7 @@ export const aiApi = {
     auditId: string;
     findingId: string;
     tone?: import('../types/optimization').OptimizationTone;
+    optimizationMode?: import('../types/optimization').OptimizationMode;
     variation?: import('../types/optimization').OptimizationVariation;
     customPrompt?: string;
     regenerateOnly?: boolean;
@@ -272,6 +273,10 @@ export const aiApi = {
         adGroupName?: string;
         resourceName?: string;
       };
+      previousOptimizedSnapshot?: {
+        headlines?: string[];
+        descriptions?: string[];
+      };
       campaignMetrics?: {
         impressions?: number;
         clicks?: number;
@@ -292,7 +297,8 @@ export const aiApi = {
         `/ai/optimize-ad/status/${jobId}`,
         `/audit/optimize-ad/status/${jobId}`,
       ];
-      const maxAttempts = 90;
+      // Competitor fetch + Claude can exceed 3 minutes; allow ~8 minutes of polling.
+      const maxAttempts = 240;
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 1500 : 2000));
         for (const path of statusPaths) {

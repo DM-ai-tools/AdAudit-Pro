@@ -8,9 +8,12 @@ import {
 import clsx from 'clsx';
 import { Button } from '../ui/Button';
 import { AIThinkingLoader } from './AIThinkingLoader';
-import { AdPreviewPanel } from './AdPreviewPanel';
 import { StrategistEnhancementPanels } from './StrategistEnhancementPanels';
-import { TONE_OPTIONS, normalizeRenderableStrings, asDisplayText } from './utils';
+import { CompetitorAdGallery } from './CompetitorAdGallery';
+import { CompetitorGapAnalysisTable } from './CompetitorGapAnalysisTable';
+import { CurrentAdSection } from './CurrentAdSection';
+import { AIOptimizedSection } from './AIOptimizedSection';
+import { TONE_OPTIONS, MODE_OPTIONS, normalizeRenderableStrings, asDisplayText } from './utils';
 import { OptimizationErrorBoundary } from './OptimizationErrorBoundary';
 import { PublishWorkflow } from './PublishWorkflow';
 import { aiApi, googleAdsApi } from '../../services/api';
@@ -21,6 +24,7 @@ import type {
   CurrentAdData,
   OptimizedAdContent,
   OptimizationTone,
+  OptimizationMode,
   OptimizationVariation,
   OptimizationScenario,
   PreviewDevice,
@@ -216,12 +220,14 @@ export function AIOptimizationModal({
   const [campaigns, setCampaigns] = useState<GoogleAdsCampaign[]>([]);
   const [campaignsLoading, setCampaignsLoading] = useState(false);
   const [activeTone, setActiveTone] = useState<OptimizationTone>('default');
+  const [activeMode, setActiveMode] = useState<OptimizationMode>('balanced');
   const [regenerating, setRegenerating] = useState(false);
   const [campaignSwitching, setCampaignSwitching] = useState(false);
   const [analysisSources, setAnalysisSources] = useState<AnalysisSources | undefined>();
   const [campaignPerformance, setCampaignPerformance] = useState<CampaignPerformanceSummary | null | undefined>();
   const [auditHealthScore, setAuditHealthScore] = useState<number | undefined>();
   const [competitorAnalysis, setCompetitorAnalysis] = useState<CompetitorIntelligenceData | null>(null);
+  const [optimizationVersion, setOptimizationVersion] = useState(0);
   const optimizationCache = useRef<Map<string, OptimizeAdResponse>>(new Map());
   const requestGeneration = useRef(0);
   const requestInFlight = useRef(false);
@@ -274,6 +280,7 @@ export function AIOptimizationModal({
     setCampaignPerformance(data.campaignPerformance);
     setAuditHealthScore(data.auditHealthScore);
     setCompetitorAnalysis(data.competitorAnalysis ?? null);
+    setOptimizationVersion((v) => v + 1);
     setError(null);
   }, []);
 
@@ -282,13 +289,16 @@ export function AIOptimizationModal({
     variation?: OptimizationVariation,
     promptOverride?: string,
     isRegenerate = false,
-    campaignIdOverride?: string
+    campaignIdOverride?: string,
+    modeOverride?: OptimizationMode
   ) => {
     if (requestInFlight.current) return;
 
     const campaignKey = resolveCampaignKey(campaignIdOverride);
     if (isRegenerate) {
       setRegenerating(true);
+      setError(null);
+      setEditMode(false);
       optimizationCache.current.delete(campaignKey);
     } else if (optimizationCache.current.has(campaignKey) && !promptOverride) {
       applyOptimizationResponse(optimizationCache.current.get(campaignKey)!);
@@ -305,7 +315,9 @@ export function AIOptimizationModal({
       setRollbackAvailable(false);
     }
     const resolvedTone = tone ?? activeTone;
+    const resolvedMode = modeOverride ?? activeMode;
     if (tone) setActiveTone(tone);
+    if (modeOverride) setActiveMode(modeOverride);
     const prompt = promptOverride ?? customPrompt;
     const generation = ++requestGeneration.current;
     requestInFlight.current = true;
@@ -315,6 +327,7 @@ export function AIOptimizationModal({
         auditId,
         findingId: finding.id,
         tone: resolvedTone,
+        optimizationMode: resolvedMode,
         variation,
         customPrompt: prompt.trim() || undefined,
         regenerateOnly: isRegenerate,
@@ -332,6 +345,14 @@ export function AIOptimizationModal({
           campaignId: campaignKey || undefined,
           findingCategory: finding.category,
           findingTitle: finding.title,
+          ...(isRegenerate
+            ? {
+                previousOptimizedSnapshot: {
+                  headlines: editedHeadlines.length ? editedHeadlines : optimized?.headlines ?? [],
+                  descriptions: editedDescriptions.length ? editedDescriptions : optimized?.descriptions ?? [],
+                },
+              }
+            : {}),
           ...buildCampaignAccountContext(campaignMeta),
         },
       });
@@ -343,7 +364,7 @@ export function AIOptimizationModal({
       let message = 'Failed to generate optimizations';
       if (axios.isAxiosError(err)) {
         if (err.code === 'ECONNABORTED') {
-          message = 'Optimization timed out — please try again.';
+          message = 'Optimization is still running — wait a moment and try again.';
         } else if (err.code === 'ECONNRESET' || err.message?.includes('Network Error')) {
           message = isRegenerate
             ? 'Connection lost while regenerating. Your previous results are still shown — wait a moment and try Regenerate again.'
@@ -361,6 +382,8 @@ export function AIOptimizationModal({
         } else if (!err.code) {
           message = err.message;
         }
+      } else if (err instanceof Error && err.message) {
+        message = err.message;
       }
       setError(message);
     } finally {
@@ -370,7 +393,7 @@ export function AIOptimizationModal({
       setRegenerating(false);
       setCampaignSwitching(false);
     }
-  }, [auditId, finding, auditFindings, businessName, goal, monthlySpend, googleAdsCustomerId, websiteUrl, userId, industry, competitorUrls, customPrompt, activeTone, applyOptimizationResponse, resolveCampaignKey, resolveCampaignMeta, optimized]);
+  }, [auditId, finding, auditFindings, businessName, goal, monthlySpend, googleAdsCustomerId, websiteUrl, userId, industry, competitorUrls, customPrompt, activeTone, activeMode, applyOptimizationResponse, resolveCampaignKey, resolveCampaignMeta, optimized, editedHeadlines, editedDescriptions]);
 
   useEffect(() => {
     if (!open || !googleAdsCustomerId) {
@@ -532,6 +555,11 @@ export function AIOptimizationModal({
         : toneId === 'aggressive' ? 'aggressive-cta'
           : 'regenerate';
     void runOptimization(toneId, variation, undefined, true, resolveCampaignKey());
+  };
+
+  const handleModeClick = (modeId: OptimizationMode) => {
+    if (modeId === activeMode) return;
+    void runOptimization(activeTone, 'regenerate', undefined, true, resolveCampaignKey(), modeId);
   };
 
   if (!open) return null;
@@ -729,6 +757,33 @@ export function AIOptimizationModal({
                 </div>
               </div>
 
+              {/* Optimization mode */}
+              <div className="space-y-2">
+                <p className="text-muted text-xs uppercase tracking-wider">Optimization Mode</p>
+                <div className="flex flex-wrap gap-2">
+                  {MODE_OPTIONS.map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      disabled={isBusy}
+                      onClick={() => handleModeClick(m.id)}
+                      title={m.desc}
+                      className={clsx(
+                        'px-3 py-1.5 rounded-full text-xs font-medium border transition-colors disabled:opacity-50',
+                        activeMode === m.id
+                          ? 'border-purple-400/50 bg-purple-500/15 text-purple-300'
+                          : 'border-border bg-navy text-muted hover:text-white hover:border-purple-400/40'
+                      )}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-muted text-[11px]">
+                  {MODE_OPTIONS.find((m) => m.id === activeMode)?.desc}
+                </p>
+              </div>
+
               {/* Tone controls */}
               <div className="flex flex-wrap gap-2">
                 {TONE_OPTIONS.map((t) => (
@@ -784,82 +839,49 @@ export function AIOptimizationModal({
                 ))}
               </div>
 
-              {/* Split comparison */}
-              <div className="grid lg:grid-cols-2 gap-6">
-                <div className="bg-panel border border-red-500/20 rounded-2xl p-5 space-y-4">
-                  <h3 className="text-white font-semibold flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-red-400" />
-                    {scenario === 'REPLACE_EXISTING'
-                      ? 'Current Ad'
-                      : scenario === 'CREATE_STRATEGY'
+              {/* Current ad */}
+              <CurrentAdSection
+                originalAd={originalAd}
+                displayUrl={displayUrl}
+                finalUrl={originalAd?.finalUrls?.[0] ?? websiteUrl}
+                previewDevice={previewDevice}
+                onDeviceChange={setPreviewDevice}
+                title={
+                  scenario === 'REPLACE_EXISTING'
+                    ? 'Current Ad'
+                    : scenario === 'CREATE_STRATEGY'
                       ? 'No Campaign Yet'
                       : scenario === 'CREATE_ADS'
                         ? isPmaxScope
                           ? 'No PMax Assets Yet'
                           : 'Campaign — No Ads'
-                        : 'Current Ad'}
-                  </h3>
-                  <AdPreviewPanel
-                    headlines={originalAd?.headlines ?? optimized.headlines.slice(0, 5)}
-                    descriptions={originalAd?.descriptions ?? optimized.descriptions.slice(0, 2)}
-                    displayUrl={displayUrl}
-                    displayPaths={{ path1: originalAd?.displayPath1, path2: originalAd?.displayPath2 }}
-                    device={previewDevice}
-                    onDeviceChange={setPreviewDevice}
-                    variant="current"
-                    finalUrl={originalAd?.finalUrls?.[0] ?? websiteUrl}
-                  />
-                  <div className="grid grid-cols-3 gap-2 text-center text-xs">
-                    {[
-                      { l: 'CTR', v: originalAd?.ctr != null ? `${originalAd.ctr}%` : '—' },
-                      { l: 'QS', v: originalAd?.qualityScore ?? '—' },
-                      { l: 'Strength', v: originalAd?.adStrength ?? '—' },
-                    ].map((m) => (
-                      <div key={m.l} className="bg-navy rounded-lg p-2 border border-border">
-                        <div className="text-muted text-[10px]">{m.l}</div>
-                        <div className="text-white font-bold">{m.v}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+                        : 'Current Ad'
+                }
+              />
 
-                <div className="bg-panel border border-teal/30 rounded-2xl p-5 space-y-4 glow-teal">
-                  <h3 className="text-white font-semibold flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-teal animate-pulse" />
-                    AI Optimized Ad
-                  </h3>
-                  <AdPreviewPanel
-                    headlines={editedHeadlines}
-                    descriptions={editedDescriptions}
-                    displayUrl={displayUrl}
-                    displayPaths={optimized.displayPaths}
-                    sitelinks={optimized.adExtensions?.sitelinks}
-                    callouts={optimized.adExtensions?.callouts}
-                    structuredSnippets={optimized.adExtensions?.structuredSnippets}
-                    device={previewDevice}
-                    onDeviceChange={setPreviewDevice}
-                    variant="optimized"
-                    finalUrl={originalAd?.finalUrls?.[0] ?? websiteUrl}
-                  />
-                  <p className="text-muted text-xs leading-relaxed bg-teal/5 border border-teal/20 rounded-lg p-3">
-                    {optimized.improvementReasoning}
-                  </p>
-                  {optimized.campaignStrategy && (
-                    <div className="bg-purple-500/5 border border-purple-400/20 rounded-lg p-3 space-y-2">
-                      <p className="text-purple-300 text-xs font-semibold uppercase tracking-wide">Recommended Campaign Strategy</p>
-                      {optimized.campaignStrategy.campaignName && (
-                        <p className="text-white text-sm font-medium">{optimized.campaignStrategy.campaignName}</p>
-                      )}
-                      {(optimized.campaignStrategy?.adGroups ?? []).map((ag, i) => (
-                        <div key={i} className="text-xs text-muted">
-                          <span className="text-white">{ag.name}</span>
-                          {ag.keywords?.length ? `: ${ag.keywords.slice(0, 6).join(', ')}` : ''}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
+              {/* Competitor ads from Transparency Center */}
+              <CompetitorAdGallery
+                competitors={competitorAnalysis?.adGallery ?? []}
+                previewDevice={previewDevice}
+                onDeviceChange={setPreviewDevice}
+                source={competitorAnalysis?.source}
+              />
+
+              {competitorAnalysis?.gapAnalysis && (
+                <CompetitorGapAnalysisTable gapAnalysis={competitorAnalysis.gapAnalysis} />
+              )}
+
+              {/* AI optimized — separate section */}
+              <AIOptimizedSection
+                key={`optimized-${optimizationVersion}`}
+                optimized={optimized}
+                headlines={editedHeadlines}
+                descriptions={editedDescriptions}
+                displayUrl={displayUrl}
+                finalUrl={originalAd?.finalUrls?.[0] ?? websiteUrl}
+                previewDevice={previewDevice}
+                onDeviceChange={setPreviewDevice}
+              />
 
               {/* Manual edit */}
               {editMode && (
@@ -895,13 +917,13 @@ export function AIOptimizationModal({
         </div>
 
         {/* Footer actions */}
-        {!isBusy && optimized && (
+        {optimized && (
           <div className="shrink-0 border-t border-border bg-panel px-6 py-4">
             <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
-              <Button variant="ghost" onClick={onClose}>Cancel</Button>
+              <Button variant="ghost" onClick={onClose} disabled={isBusy}>Cancel</Button>
               <div className="flex gap-3">
                 <Button variant="secondary" disabled={isBusy} onClick={() => void runOptimization(activeTone, 'regenerate', undefined, true, resolveCampaignKey())}>
-                  <RefreshCw size={16} className={regenerating ? 'animate-spin' : ''} /> Regenerate
+                  <RefreshCw size={16} className={regenerating ? 'animate-spin' : ''} /> {regenerating ? 'Regenerating…' : 'Regenerate'}
                 </Button>
                 <Button disabled={isBusy} onClick={openPublishWorkflow} className="bg-gradient-to-r from-orange to-orange-2 glow-orange">
                   <Send size={16} /> Approve & Publish

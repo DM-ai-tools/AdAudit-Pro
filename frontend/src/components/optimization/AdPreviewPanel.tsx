@@ -3,6 +3,7 @@ import clsx from 'clsx';
 import { ChevronLeft, ChevronRight, Link2, Phone, MapPin } from 'lucide-react';
 import type { PreviewDevice } from '../../types/optimization';
 import { normalizeRenderableStrings } from './utils';
+import { decodeHtmlEntities } from './html-entities';
 
 interface AdPreviewPanelProps {
   headlines: string[];
@@ -14,8 +15,9 @@ interface AdPreviewPanelProps {
   structuredSnippets?: string[];
   device: PreviewDevice;
   onDeviceChange: (d: PreviewDevice) => void;
-  variant?: 'current' | 'optimized';
+  variant?: 'current' | 'optimized' | 'competitor';
   finalUrl?: string;
+  simpleAdView?: boolean;
 }
 
 export function AdPreviewPanel({
@@ -30,12 +32,13 @@ export function AdPreviewPanel({
   onDeviceChange,
   variant = 'optimized',
   finalUrl,
+  simpleAdView = false,
 }: AdPreviewPanelProps) {
   const [headlineIdx, setHeadlineIdx] = useState(0);
   const [descIdx, setDescIdx] = useState(0);
 
-  const safeHeadlines = normalizeRenderableStrings(headlines);
-  const safeDescriptions = normalizeRenderableStrings(descriptions);
+  const safeHeadlines = normalizeRenderableStrings(headlines).map(decodeHtmlEntities);
+  const safeDescriptions = normalizeRenderableStrings(descriptions).map(decodeHtmlEntities);
   const safeSitelinks = normalizeRenderableStrings(sitelinks);
   const safeCallouts = normalizeRenderableStrings(callouts);
   const safeSnippets = normalizeRenderableStrings(structuredSnippets);
@@ -54,7 +57,11 @@ export function AdPreviewPanel({
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <span className="text-muted text-xs uppercase tracking-wider">
-          {variant === 'optimized' ? 'AI Optimized Preview' : 'Current Ad Preview'}
+          {variant === 'optimized'
+            ? 'AI Optimized Preview'
+            : variant === 'competitor'
+              ? 'Competitor Ad Preview'
+              : 'Current Ad Preview'}
         </span>
         <div className="flex gap-1 bg-navy rounded-lg p-0.5 border border-border">
           {(['mobile', 'desktop'] as PreviewDevice[]).map((d) => (
@@ -76,10 +83,12 @@ export function AdPreviewPanel({
       {/* Google SERP mock */}
       <div
         className={clsx(
-          'rounded-xl border transition-all duration-300 overflow-hidden',
+          'rounded-xl border transition-all duration-300',
           variant === 'optimized'
             ? 'border-teal/40 bg-gradient-to-br from-teal/5 to-navy glow-teal'
-            : 'border-border bg-navy/50',
+            : variant === 'competitor'
+              ? 'border-purple-400/35 bg-gradient-to-br from-purple-500/5 to-navy'
+              : 'border-border bg-navy/50',
           device === 'mobile' ? 'max-w-[320px] mx-auto' : 'w-full'
         )}
       >
@@ -98,11 +107,14 @@ export function AdPreviewPanel({
           >
             {headline}
           </h3>
-          <p className={clsx('text-gray-300 leading-relaxed', device === 'mobile' ? 'text-xs' : 'text-sm')}>
+          <p className={clsx(
+            'text-gray-300 leading-relaxed break-words whitespace-normal',
+            device === 'mobile' ? 'text-xs' : 'text-sm'
+          )}>
             {description}
           </p>
           {finalUrl && (
-            <p className="text-[10px] text-teal/80 mt-2 flex items-center gap-1 truncate">
+            <p className="text-[10px] text-teal/80 mt-2 flex items-center gap-1 break-all">
               <Link2 size={10} /> {finalUrl}
             </p>
           )}
@@ -132,8 +144,8 @@ export function AdPreviewPanel({
         )}
       </div>
 
-      {/* RSA headline / description rotator */}
-      {safeHeadlines.length > 1 && (
+      {/* RSA headline / description rotator — hidden for exact competitor ads */}
+      {!simpleAdView && safeHeadlines.length > 1 && (
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-[10px] text-muted uppercase tracking-wide">
@@ -178,7 +190,7 @@ export function AdPreviewPanel({
         </div>
       )}
 
-      {safeDescriptions.length > 1 && (
+      {!simpleAdView && safeDescriptions.length > 1 && (
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-[10px] text-muted uppercase tracking-wide">

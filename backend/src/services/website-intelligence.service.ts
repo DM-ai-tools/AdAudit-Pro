@@ -11,6 +11,7 @@ export interface WebsiteIntelligence {
   ctas: string[];
   locations: string[];
   usps: string[];
+  trustSignals: string[];
   rawTextSample: string;
   error?: string;
 }
@@ -60,6 +61,48 @@ function guessOffers(text: string): string[] {
   return [...found].slice(0, 8);
 }
 
+function guessTrustSignals(text: string): string[] {
+  const patterns = [
+    /\d+\+?\s*years?\s+(?:of\s+)?(?:experience|serving)/gi,
+    /\d+[,.]?\d*\s*(?:star|★)\s*reviews?/gi,
+    /trusted\s+by\s+[\w\s]{3,40}/gi,
+    /certified\s+[\w\s]{2,30}/gi,
+    /award[- ]winning/gi,
+    /licensed\s+(?:and\s+)?insured/gi,
+    /money[- ]back\s+guarantee/gi,
+    /satisfaction\s+guarantee/gi,
+    /bbb\s+accredited/gi,
+    /a\+\s+rating/gi,
+    /family[- ]owned/gi,
+    /locally\s+owned/gi,
+    /since\s+\d{4}/gi,
+  ];
+  const found = new Set<string>();
+  for (const p of patterns) {
+    for (const m of text.match(p) ?? []) {
+      found.add(m.trim().slice(0, 80));
+    }
+  }
+  return [...found].slice(0, 8);
+}
+
+function guessDescriptions(site: {
+  metaDescription?: string;
+  title?: string;
+  valuePropositions?: string[];
+  headings: string[];
+}): string[] {
+  const out: string[] = [];
+  if (site.metaDescription?.trim()) out.push(site.metaDescription.trim().slice(0, 90));
+  if (site.title?.trim() && !out.includes(site.title)) out.push(site.title.trim().slice(0, 90));
+  for (const h of site.headings) {
+    if (out.length >= 4) break;
+    const d = h.trim().slice(0, 90);
+    if (d.length > 20 && !out.includes(d)) out.push(d);
+  }
+  return out.slice(0, 4);
+}
+
 function guessCtas(text: string): string[] {
   const ctas = [
     'get a quote', 'book now', 'call now', 'contact us', 'free consultation',
@@ -106,6 +149,7 @@ export async function analyzeWebsite(url?: string): Promise<WebsiteIntelligence 
         .filter((l) => l.length < 40)
         .slice(0, 6),
       usps: headings.slice(0, 5),
+      trustSignals: guessTrustSignals(text),
       rawTextSample: text.slice(0, 1500),
     };
   } catch (err) {
@@ -118,6 +162,7 @@ export async function analyzeWebsite(url?: string): Promise<WebsiteIntelligence 
       ctas: [],
       locations: [],
       usps: [],
+      trustSignals: [],
       rawTextSample: '',
       error: err instanceof Error ? err.message : 'Could not fetch website',
     };

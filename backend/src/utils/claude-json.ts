@@ -1,6 +1,59 @@
 /**
  * Extract a JSON object from Claude responses that may include markdown fences or trailing prose.
  */
+
+/** Attempt to close truncated JSON when Claude hits max_tokens mid-response. */
+function repairTruncatedJsonObject(text: string): Record<string, unknown> | null {
+  const start = text.indexOf('{');
+  if (start === -1) return null;
+
+  let slice = text.slice(start).trimEnd();
+  slice = slice.replace(/,\s*"[^"]*$/s, '');
+  slice = slice.replace(/,\s*$/s, '');
+  slice = slice.replace(/:\s*"[^"]*$/s, ': ""');
+  slice = slice.replace(/:\s*$/s, ': null');
+
+  let braces = 0;
+  let brackets = 0;
+  let inString = false;
+  let escape = false;
+
+  for (const ch of slice) {
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (ch === '\\' && inString) {
+      escape = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === '{') braces++;
+    if (ch === '}') braces--;
+    if (ch === '[') brackets++;
+    if (ch === ']') brackets--;
+  }
+
+  while (brackets > 0) {
+    slice += ']';
+    brackets--;
+  }
+  while (braces > 0) {
+    slice += '}';
+    braces--;
+  }
+
+  try {
+    return JSON.parse(slice) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 export function extractJsonFromClaudeText(text: string): Record<string, unknown> {
   let cleaned = text.trim();
 
@@ -56,6 +109,9 @@ export function extractJsonFromClaudeText(text: string): Record<string, unknown>
       }
     }
   }
+
+  const repaired = repairTruncatedJsonObject(cleaned);
+  if (repaired) return repaired;
 
   throw new Error('Incomplete JSON object in Claude response');
 }

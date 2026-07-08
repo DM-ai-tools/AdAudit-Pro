@@ -3,6 +3,8 @@ import type { Finding } from '../../types/index.js';
 import type { OptimizationTone } from './optimize-ad.prompt.js';
 import { resolveBusinessName, displayPathFromWebsite } from '../../utils/business-identity.js';
 
+export type OptimizationMode = 'conservative' | 'balanced' | 'aggressive';
+
 export interface FullOptimizeAdContext {
   intelligence: AuditIntelligence;
   finding: Finding;
@@ -16,11 +18,25 @@ export interface FullOptimizeAdContext {
     conversions?: number;
     adStrength?: string;
   };
+  previousOptimizedAd?: {
+    headlines: string[];
+    descriptions: string[];
+  };
   scenario: OptimizationScenario;
   tone?: OptimizationTone;
+  optimizationMode?: OptimizationMode;
   variationHint?: string;
   customPrompt?: string;
 }
+
+const MODE_INSTRUCTIONS: Record<OptimizationMode, string> = {
+  conservative:
+    'CONSERVATIVE MODE: Refine the current ad for clarity and QS, but still incorporate competitor Transparency Center angles where the client is clearly losing. At least 40% of headlines must use new phrasing vs the existing ad.',
+  balanced:
+    'BALANCED MODE: Study competitor Transparency Center ads (adGallery) and produce an ad that beats them on offers, trust, and keywords — while being clearly different from the EXISTING AD. Do NOT paraphrase current headlines; borrow competitor winning angles and improve them.',
+  aggressive:
+    'AGGRESSIVE MODE: Generate a radically different ad from the EXISTING AD. Heavily mine competitor Transparency Center ads for positioning, offers, trust signals, and keywords — then out-position the set with bold, distinct copy. Zero headline overlap with the current ad’s top messages.',
+};
 
 const TONE_INSTRUCTIONS: Record<OptimizationTone, string> = {
   default: 'Balanced, professional, conversion-focused tone.',
@@ -82,11 +98,33 @@ function formatCompetitorIntel(intelligence: AuditIntelligence): string {
     missingOffers: c.missingOffers,
     competitiveAdvantages: c.competitiveAdvantages,
     missingFromYourAds: c.missingFromYourAds,
+    adGallery: c.adGallery?.slice(0, 6).map((x) => ({
+      name: x.name,
+      advertiserName: x.advertiserName,
+      headlines: x.headlines,
+      descriptions: x.descriptions,
+      creativeUrl: x.creativeUrl,
+      transparencyUrl: x.transparencyUrl,
+      adSource: x.adSource,
+    })),
+    gapAnalysisSummary: c.gapAnalysis?.summary,
   }, null, 0);
 }
 
 export function buildFullOptimizeAdPrompt(ctx: FullOptimizeAdContext): string {
-  const { intelligence, finding, currentAd, scenario, tone, variationHint, customPrompt } = ctx;
+  const {
+    intelligence,
+    finding,
+    currentAd,
+    previousOptimizedAd,
+    scenario,
+    tone,
+    optimizationMode,
+    variationHint,
+    customPrompt,
+  } = ctx;
+  const mode = optimizationMode ?? 'balanced';
+  const modeInstruction = MODE_INSTRUCTIONS[mode];
   const biz = intelligence.business;
   const brandName = resolveBusinessName(biz.name, biz.websiteUrl);
   const toneInstruction = TONE_INSTRUCTIONS[tone ?? 'default'];
@@ -173,13 +211,14 @@ COMPETITOR INTELLIGENCE (use aggressively — do NOT produce generic headline re
 ${formatCompetitorIntel(intelligence)}
 
 COMPETITIVE DIFFERENTIATION REQUIREMENTS
-- Benchmark every headline and description against competitor key messages, offers, and CTAs above
-- Steal high-performing competitor angles but differentiate with the client's unique offers/USPs
-- Incorporate competitor keyword opportunities into headlines, descriptions, and recommendedKeywords
-- Close offer gaps competitors promote that the client also provides but does not advertise
-- Ads must feel strategically different from both the client's current ad AND competitor messaging
+- The adGallery contains EXACT competitor ads from Google Transparency Center — treat these as the benchmark to beat
+- Your output MUST be substantially different from the EXISTING AD above (no paraphrasing, no swapping word order)
+- Generate copy to outrank EACH competitor in adGallery — use their headlines/descriptions as the competitive baseline
+- competitorInsights in JSON must ONLY name competitors from adGallery (exact same names)
+- At least 70% of headlines must be net-new vs the existing ad; descriptions must introduce new value props or proof points
+- Ads must out-position competitors while remaining unmistakably on-brand for the client
 
-${scenario === 'REPLACE_EXISTING' ? `EXISTING AD
+${scenario === 'REPLACE_EXISTING' ? `EXISTING AD (live in Google Ads — benchmark only)
 - Headlines: ${JSON.stringify(currentAd.headlines)}
 - Descriptions: ${JSON.stringify(currentAd.descriptions)}
 - CTR: ${currentAd.ctr ?? perf?.ctr ?? 'Unknown'}%
@@ -187,78 +226,83 @@ ${scenario === 'REPLACE_EXISTING' ? `EXISTING AD
 - Conversions: ${currentAd.conversions ?? perf?.conversions ?? 'Unknown'}
 - Ad strength: ${currentAd.adStrength ?? 'Unknown'}
 ` : ''}
+${previousOptimizedAd?.headlines?.length ? `
+PREVIOUS AI OPTIMIZATION (DO NOT REPEAT — generate fresh competitor-driven alternatives)
+- Headlines: ${JSON.stringify(previousOptimizedAd.headlines.slice(0, 15))}
+- Descriptions: ${JSON.stringify(previousOptimizedAd.descriptions.slice(0, 4))}
+- At least 80% of new headlines must use different wording vs this previous AI version
+- Mine competitor adGallery for NEW angles, offers, and trust signals not used above
+` : ''}
 
 TONE: ${toneInstruction}
+OPTIMIZATION MODE: ${modeInstruction}
 ${variationHint ? `VARIATION: ${variationHint}` : ''}
 ${customPrompt?.trim() ? `\nUSER INSTRUCTIONS:\n${customPrompt.trim()}\n` : ''}
 ${websiteNote}
 
 COMPLIANCE
 - Headlines: max 30 chars, exactly 15 unique
-- Descriptions: max 90 chars, exactly 4 unique
+- Descriptions: max 90 chars, exactly 4 unique — each a COMPLETE sentence (ends . ! ?), 70-90 chars, never truncated mid-word
 - Display paths: max 15 chars each
 - Google Ads compliant, publishable today
+- Keep ALL string fields concise (1-2 sentences max). Limit arrays to the counts shown — do not exceed.
 
-Return ONLY valid JSON (no markdown):
+Return ONLY valid JSON (no markdown). Competitor profile cards are derived server-side — do NOT repeat full competitor crawl data.
 {
-  "campaignId": "",
-  "adGroupId": "",
-  "headlines": ["15 headlines"],
-  "descriptions": ["4 descriptions"],
+  "headlines": ["exactly 15 headlines"],
+  "descriptions": ["exactly 4 descriptions"],
   "displayPaths": ["path1", "path2"],
-  "callouts": ["4 callouts"],
-  "sitelinks": ["4 sitelinks"],
-  "structuredSnippets": ["snippet values"],
-  "reasoning": "3-5 sentence executive summary",
+  "callouts": ["4 callouts max"],
+  "sitelinks": ["4 sitelinks max"],
+  "structuredSnippets": ["4 snippet values max"],
+  "reasoning": "2-3 sentence executive summary",
   "strategistReasoning": {
-    "headlineChanges": "why headlines changed",
-    "descriptionChanges": "why descriptions changed",
-    "keywordRelevance": "how keyword alignment improved",
-    "qualityScore": "why QS may improve",
-    "conversionPotential": "why conversions may improve",
-    "auditFindingsAddressed": ["finding 1 addressed", "finding 2"],
-    "competitorInsightsUsed": ["specific competitor insight applied to ad copy"],
+    "headlineChanges": "1-2 sentences",
+    "descriptionChanges": "1-2 sentences",
+    "keywordRelevance": "1-2 sentences",
+    "qualityScore": "1 sentence",
+    "conversionPotential": "1-2 sentences",
+    "auditFindingsAddressed": ["max 4 bullets"],
+    "competitorInsightsUsed": ["max 4 specific competitor insights applied"],
     "competitiveOutperformance": {
-      "messagingImprovements": "how messaging beats competitors",
-      "keywordImprovements": "keyword gaps closed vs competitors",
-      "offerImprovements": "offer/CTA improvements vs competitors",
-      "conversionImprovements": "why conversions should improve vs competitive set"
+      "messagingImprovements": "1-2 sentences vs competitors",
+      "keywordImprovements": "1-2 sentences",
+      "offerImprovements": "1-2 sentences",
+      "conversionImprovements": "1-2 sentences"
     }
   },
-  "competitorInsights": [
-    {
-      "name": "Competitor Name",
-      "keyMessages": ["message 1"],
-      "offers": ["offer 1"],
-      "keywordOpportunities": ["keyword 1"]
-    }
-  ],
-  "missingCompetitorAdvantages": ["advantage competitors use that your ads lack"],
-  "recommendedKeywords": ["5-10 keywords"],
-  "negativeKeywordSuggestions": ["5-15 negatives"],
-  "recommendedExtensions": ["extension recommendations"],
-  "landingPageRecommendations": ["2-4 LP improvements"],
-  "budgetRecommendations": ["budget advice from data"],
-  "biddingRecommendations": ["bidding advice"],
-  "audienceRecommendations": ["audience advice"],
+  "missingCompetitorAdvantages": ["max 5 gaps vs competitors"],
+  "recommendedKeywords": ["max 8 keywords"],
+  "negativeKeywordSuggestions": ["max 10 negatives"],
+  "recommendedExtensions": ["max 4"],
+  "landingPageRecommendations": ["max 3"],
+  "budgetRecommendations": ["max 2"],
+  "biddingRecommendations": ["max 2"],
+  "audienceRecommendations": ["max 2"],
   "performanceEstimates": {
     "label": "AI Estimated Impact",
-    "current": { "ctr": "", "qualityScore": "", "conversionRate": "", "cpa": "", "roas": "", "monthlyLeads": "", "monthlySavings": "" },
-    "estimated": { "ctr": "", "qualityScore": "", "conversionRate": "", "cpa": "", "roas": "", "monthlyLeads": "", "monthlySavings": "" }
+    "current": { "ctr": "", "qualityScore": "", "conversionRate": "", "cpa": "" },
+    "estimated": { "ctr": "", "qualityScore": "", "conversionRate": "", "cpa": "" }
   },
-  "campaignHealth": { "currentScore": 0, "predictedScore": 0, "explanation": "" },
-  "accountImpact": {
-    "currentAccountHealth": 0,
-    "predictedAccountHealth": 0,
-    "currentMonthlyLeads": "",
-    "estimatedMonthlyLeads": "",
-    "currentWastedSpend": "",
-    "estimatedWastedSpend": "",
-    "currentRoas": "",
-    "estimatedRoas": ""
-  },
+  "campaignHealth": { "currentScore": 0, "predictedScore": 0, "explanation": "1 sentence" },
   "predictedImprovements": { "ctr": "", "qualityScore": "", "conversionRate": "" }
 }`;
+}
+
+/** Shorter retry prompt when the first Claude response was truncated or invalid JSON. */
+export function buildCompactOptimizeRetryPrompt(ctx: FullOptimizeAdContext): string {
+  const brandName = resolveBusinessName(ctx.intelligence.business.name, ctx.intelligence.business.websiteUrl);
+  const prevBlock = ctx.previousOptimizedAd?.headlines?.length
+    ? `\nDo NOT repeat previous AI headlines: ${JSON.stringify(ctx.previousOptimizedAd.headlines.slice(0, 8))}. Use fresh competitor-driven angles from adGallery.`
+    : '';
+  return `Return ONLY compact valid JSON for Google Ads RSA optimization. Brand: ${brandName}.
+Scenario: ${ctx.scenario}. Finding: ${ctx.finding.title}.${prevBlock}
+
+Required: exactly 15 headlines (≤30 chars), 4 descriptions (≤90 chars), displayPaths [path1,path2].
+Include brief strategistReasoning with competitiveOutperformance (4 one-sentence fields) and competitorInsightsUsed (max 3).
+Include missingCompetitorAdvantages (max 4), recommendedKeywords (max 6), negativeKeywordSuggestions (max 8).
+Include callouts (4), sitelinks (4), reasoning (2 sentences), predictedImprovements {ctr, qualityScore, conversionRate}.
+NO markdown. NO extra text. Stay under 3500 tokens total output.`;
 }
 
 export function liveAdToCurrentAd(ad: LiveAdRow | null, fallbackBrand: string, websiteUrl?: string) {

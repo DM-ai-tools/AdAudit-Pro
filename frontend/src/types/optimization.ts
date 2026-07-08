@@ -1,3 +1,5 @@
+export type OptimizationMode = 'conservative' | 'balanced' | 'aggressive';
+
 export type OptimizationTone =
   | 'default'
   | 'professional'
@@ -65,18 +67,61 @@ export interface CompetitorInsightCard {
   keywordOpportunities: string[];
 }
 
+export interface CompetitorAdPreview {
+  name: string;
+  url: string;
+  displayUrl: string;
+  displayPaths?: { path1?: string; path2?: string };
+  headlines: string[];
+  descriptions: string[];
+  offers: string[];
+  ctas: string[];
+  trustSignals: string[];
+  transparencyUrl?: string;
+  creativeUrl?: string;
+  advertiserName?: string;
+  adSource?: 'sociavault' | 'transparency_center' | 'website_fallback';
+  adLink?: string;
+  previewImageUrl?: string;
+}
+
+export type GapCategory = 'messaging' | 'offers' | 'keywords' | 'trust_signals' | 'ctas';
+
+export interface CompetitorGapRow {
+  category: GapCategory;
+  competitor: string;
+  competitorHas: string;
+  youHave: string;
+  gap: string;
+}
+
+export interface CompetitorGapAnalysis {
+  rows: CompetitorGapRow[];
+  summary: {
+    messagingGaps: number;
+    offerGaps: number;
+    keywordGaps: number;
+    trustSignalGaps: number;
+    ctaGaps: number;
+  };
+}
+
 export interface CompetitorIntelligenceData {
   competitors: Array<{
     name: string;
     url: string;
     fetched: boolean;
     headlines: string[];
+    descriptions?: string[];
     offers: string[];
     keyMessages: string[];
+    trustSignals?: string[];
     valuePropositions: string[];
     positioning?: string;
   }>;
   insights: CompetitorInsightCard[];
+  adGallery: CompetitorAdPreview[];
+  gapAnalysis: CompetitorGapAnalysis;
   keywordOpportunities: string[];
   messagingOpportunities: string[];
   missingOffers: string[];

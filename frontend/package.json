@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "npx --no-install tsc -b && npx --no-install vite build",
     "lint": "eslint .",
     "preview": "vite preview"
   },

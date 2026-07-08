@@ -554,6 +554,7 @@ export async function gatherAuditIntelligence(options: {
           ctas: [],
           locations: [],
           usps: [],
+          trustSignals: [],
           rawTextSample: '',
         }
       : null)
@@ -569,6 +570,7 @@ export async function gatherAuditIntelligence(options: {
       ctas: [],
       locations: [],
       usps: [],
+      trustSignals: [],
       rawTextSample: '',
       error: 'Website fetch timed out',
     } : null,
@@ -589,12 +591,27 @@ export async function gatherAuditIntelligence(options: {
       ],
       competitorUrls: options.accountContext?.competitorUrls,
       websiteIntel: websiteAnalysis,
+      currentAd: options.accountContext?.primaryAdSnapshot
+        ? {
+            headlines: Array.isArray(options.accountContext.primaryAdSnapshot.headlines)
+              ? (options.accountContext.primaryAdSnapshot.headlines as string[])
+              : [],
+            descriptions: Array.isArray(options.accountContext.primaryAdSnapshot.descriptions)
+              ? (options.accountContext.primaryAdSnapshot.descriptions as string[])
+              : [],
+          }
+        : undefined,
       lightweight: options.lightweight,
     }),
     options.lightweight ? 28_000 : 40_000,
     {
       competitors: [],
       insights: [],
+      adGallery: [],
+      gapAnalysis: {
+        rows: [],
+        summary: { messagingGaps: 0, offerGaps: 0, keywordGaps: 0, trustSignalGaps: 0, ctaGaps: 0 },
+      },
       keywordOpportunities: [],
       messagingOpportunities: [],
       missingOffers: [],

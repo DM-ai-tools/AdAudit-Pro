@@ -113,6 +113,111 @@ interface AdCopyColumnData {
   finalUrl?: string;
 }
 
+interface PdfCompetitorAdPreview {
+  name?: string;
+  url?: string;
+  headlines?: unknown;
+  descriptions?: unknown;
+  adSource?: string;
+  adLink?: string;
+  transparencyUrl?: string;
+  creativeUrl?: string;
+}
+
+interface PdfGapRow {
+  category?: string;
+  competitor?: string;
+  competitorHas?: string;
+  youHave?: string;
+  gap?: string;
+}
+
+function renderCompetitorAdGalleryHtml(
+  galleryRaw: unknown,
+  fallbackInsights: OptimizedAdContent['competitorInsights']
+): string {
+  const gallery = Array.isArray(galleryRaw) ? (galleryRaw as PdfCompetitorAdPreview[]) : [];
+  const cardsFromGallery = gallery
+    .map((ad) => {
+      const name = asDisplayText(ad.name, 'Competitor');
+      const website = asDisplayText(ad.url);
+      const source = asDisplayText(ad.adSource).replace(/_/g, ' ');
+      const adLink = asDisplayText(ad.adLink) || asDisplayText(ad.transparencyUrl) || asDisplayText(ad.creativeUrl);
+      const headlines = asStringList(ad.headlines);
+      const descriptions = asStringList(ad.descriptions);
+      if (!headlines.length && !descriptions.length) return '';
+      return `
+        <div class="opt-competitor-card">
+          <h4 style="color:#7c3aed">${escapeHtml(name)}</h4>
+          ${website ? `<p class="opt-path">Website: ${escapeHtml(website)}</p>` : ''}
+          ${source ? `<p class="opt-path">Source: ${escapeHtml(source)}</p>` : ''}
+          ${adLink ? `<p class="opt-path">Ad link: ${escapeHtml(adLink)}</p>` : ''}
+          ${renderStringList('Headlines', headlines, 15)}
+          ${renderStringList('Descriptions', descriptions, 8)}
+        </div>`;
+    })
+    .filter(Boolean)
+    .join('');
+
+  if (cardsFromGallery) {
+    return `
+      <div class="opt-competitor-section">
+        <p class="opt-subtitle">Competitor Ad Gallery (Google Ads copy)</p>
+        <div class="opt-competitor-grid">${cardsFromGallery}</div>
+      </div>`;
+  }
+
+  const cardsFromInsights = (fallbackInsights ?? [])
+    .map(
+      (c) => `
+      <div class="opt-competitor-card">
+        <h4 style="color:#7c3aed">${escapeHtml(c.name)}</h4>
+        ${c.url ? `<p class="opt-path">Website: ${escapeHtml(c.url)}</p>` : ''}
+        ${renderStringList('Key messages', asStringList(c.keyMessages), 5)}
+        ${renderStringList('Offers', asStringList(c.offers), 5)}
+        ${renderStringList('Keyword opportunities', asStringList(c.keywordOpportunities), 8)}
+      </div>`
+    )
+    .join('');
+
+  return cardsFromInsights
+    ? `
+      <div class="opt-competitor-section">
+        <p class="opt-subtitle">Competitor Insights</p>
+        <div class="opt-competitor-grid">${cardsFromInsights}</div>
+      </div>`
+    : '';
+}
+
+function renderGapAnalysisHtml(gapRowsRaw: unknown): string {
+  const rows = Array.isArray(gapRowsRaw) ? (gapRowsRaw as PdfGapRow[]) : [];
+  if (!rows.length) return '';
+  const body = rows
+    .map((row) => {
+      const category = asDisplayText(row.category, '—').replace(/_/g, ' ');
+      const competitor = asDisplayText(row.competitor, '—');
+      const competitorHas = asDisplayText(row.competitorHas, '—');
+      const youHave = asDisplayText(row.youHave, '—');
+      const gap = asDisplayText(row.gap, '—');
+      return `<tr>
+        <td>${escapeHtml(category)}</td>
+        <td>${escapeHtml(competitor)}</td>
+        <td>${escapeHtml(competitorHas)}</td>
+        <td>${escapeHtml(youHave)}</td>
+        <td>${escapeHtml(gap)}</td>
+      </tr>`;
+    })
+    .join('');
+  return `
+    <div class="opt-perf">
+      <p class="opt-subtitle">Competitor Gap Analysis</p>
+      <table class="opt-perf-table opt-gap-table">
+        <thead><tr><th>Category</th><th>Competitor</th><th>Competitor Has</th><th>You Have</th><th>Gap</th></tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>`;
+}
+
 function resolveAdCopyForReport(
   original: CurrentAdData | null | undefined,
   optimized: OptimizedAdContent
@@ -194,18 +299,7 @@ function renderCompetitorInsightsHtml(optimized: OptimizedAdContent): string {
   const missing = asStringList(optimized.missingCompetitorAdvantages);
   const outperform = optimized.strategistReasoning?.competitiveOutperformance;
 
-  const cards = insights
-    .map(
-      (c) => `
-    <div class="opt-competitor-card">
-      <h4 style="color:#7c3aed">${escapeHtml(c.name)}</h4>
-      ${c.url ? `<p class="opt-path">Website: ${escapeHtml(c.url)}</p>` : ''}
-      ${renderStringList('Key messages', asStringList(c.keyMessages), 5)}
-      ${renderStringList('Offers', asStringList(c.offers), 5)}
-      ${renderStringList('Keyword opportunities', asStringList(c.keywordOpportunities), 8)}
-    </div>`
-    )
-    .join('');
+  const cards = insights.length ? renderCompetitorAdGalleryHtml([], insights) : '';
 
   const outperformHtml = outperform
     ? `
@@ -232,7 +326,7 @@ function renderCompetitorInsightsHtml(optimized: OptimizedAdContent): string {
   if (!cards && !missing.length && !outperformHtml) return '';
 
   return `
-    ${cards ? `<div class="opt-competitor-section"><p class="opt-subtitle">Competitor Insights</p><div class="opt-competitor-grid">${cards}</div></div>` : ''}
+    ${cards}
     ${outperformHtml}
     ${missing.length ? `<div class="opt-missing-advantages"><p class="opt-subtitle">Competitor Advantages Missing From Your Ads</p><ul class="opt-list-block">${missing.map((m) => `<li style="color:#1e293b">${escapeHtml(m)}</li>`).join('')}</ul></div>` : ''}`;
 }
@@ -248,6 +342,11 @@ function renderOptimizationBlock(
   const recs = optimized.strategistRecommendations;
   const extensions = optimized.adExtensions;
   const strategy = optimized.campaignStrategy;
+  const competitorGalleryHtml = renderCompetitorAdGalleryHtml(
+    opt.competitorAnalysis?.adGallery,
+    optimized.competitorInsights
+  );
+  const gapAnalysisHtml = renderGapAnalysisHtml(opt.competitorAnalysis?.gapAnalysis?.rows);
 
   const reasoningHtml = reasoning
     ? `
@@ -379,6 +478,8 @@ function renderOptimizationBlock(
       ${renderStringList('CTA suggestions', asStringList(optimized.ctaSuggestions))}
       ${renderStringList('Keyword suggestions', asStringList(optimized.keywordSuggestions))}
       ${extensionsHtml}
+      ${competitorGalleryHtml}
+      ${gapAnalysisHtml}
       ${renderCompetitorInsightsHtml(optimized)}
       ${reasoningHtml}
       ${recsHtml}

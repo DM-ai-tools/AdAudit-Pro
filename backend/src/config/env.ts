@@ -159,4 +159,5 @@ export const env = {
   clientUrl,
   railwayPublicDomain,
   useMockData: resolveUseMockData(),
+  sociavaultApiKey: (process.env.SOCIAVAULT_API_KEY || '').trim(),
 };

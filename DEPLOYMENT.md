@@ -40,6 +40,7 @@ AdAudit Pro ships as a **single Docker service**: Express API + built React fron
 | `REDIS_URL` | Redis for BullMQ background workers (omit to use in-memory audit runner) |
 | `GOOGLE_ADS_MANAGER_ACCOUNT_ID` | MCC account ID if using manager accounts |
 | `ANTHROPIC_API_KEY_2/3/4` | Parallel Claude keys for faster audits |
+| `SOCIAVAULT_API_KEY` | Competitor ad copy from Google Ad Library (Make It Better) |
 
 ### Do NOT set in production
 
