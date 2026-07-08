@@ -283,6 +283,21 @@ model AIOptimization {
   @@index([findingId])
 }
 
+/** Async Make It Better jobs — persisted so Railway multi-instance polls always find the job. */
+model OptimizeAdJob {
+  id        String   @id
+  userId    String
+  status    String
+  result    Json?
+  error     String?  @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([updatedAt])
+}
+
 model PublishedAdVersion {
   id                     String        @id @default(cuid())
   userId                 String

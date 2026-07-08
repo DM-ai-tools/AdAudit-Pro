@@ -109,16 +109,16 @@ function shouldRunAsync(_req: AuthRequest): boolean {
 async function runOptimizeAdJob(jobId: string, request: OptimizeAdRequest): Promise<void> {
   try {
     const result = await optimizeAd(request);
-    completeOptimizeAdJob(jobId, result);
+    await completeOptimizeAdJob(jobId, result);
   } catch (err) {
     const { message } = mapOptimizeAdError(err);
     console.error(`optimize-ad job ${jobId} failed:`, err);
-    failOptimizeAdJob(jobId, message);
+    await failOptimizeAdJob(jobId, message);
   }
 }
 
 export async function handleOptimizeAdStatus(req: AuthRequest, res: Response): Promise<void> {
-  const job = getOptimizeAdJob(req.params.jobId);
+  const job = await getOptimizeAdJob(req.params.jobId);
   if (!job) {
     res.status(404).json({ error: 'Optimization job not found or expired. Try again.' });
     return;
@@ -172,7 +172,7 @@ export async function handleOptimizeAd(req: AuthRequest, res: Response): Promise
     }
 
     if (shouldRunAsync(req)) {
-      const job = createOptimizeAdJob(userId);
+      const job = await createOptimizeAdJob(userId);
       void runOptimizeAdJob(job.id, built);
       res.status(202).json({
         jobId: job.id,

@@ -8,6 +8,12 @@ export function getApiOrigin(): string {
     return `http://localhost:${port}`;
   }
 
+  // Production SPA is same-origin with the API — never use relative-only
+  // base URLs in case proxies/extensions rewrite hosts incorrectly.
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    return window.location.origin;
+  }
+
   return '';
 }
 
