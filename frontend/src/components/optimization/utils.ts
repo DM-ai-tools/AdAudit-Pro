@@ -33,12 +33,118 @@ export function isOptimizableFinding(finding: Finding): boolean {
   return ['BUDGET', 'BIDDING', 'CAMPAIGNS', 'CAMPAIGN', 'CONVERSIONS'].includes(finding.category);
 }
 
-export function truncateHeadline(text: string, max = 30): string {
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+export function finalizeHeadline(text: string, max = 30): string {
+  const completions = [
+    'Approval',
+    'Approvals',
+    'Approved',
+    'Consultation',
+    'Guaranteed',
+    'Australian',
+    'Financing',
+    'Refinance',
+    'Commercial',
+    'Mortgage',
+    'Businesses',
+    'Specialists',
+    'Experts',
+    'Brokers',
+    'Lenders',
+    'Application',
+    'Pre-Approval',
+  ];
+
+  let s = text
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/[–—]/g, '-')
+    .replace(/\s*-\s*/g, ' - ');
+  if (!s) return s;
+
+  const repair = (candidate: string): string => {
+    let out = candidate.trim();
+    if (out.length > max) {
+      let cut = out.slice(0, max);
+      const lastSpace = cut.lastIndexOf(' ');
+      if (lastSpace >= Math.floor(max * 0.4)) cut = cut.slice(0, lastSpace);
+      out = cut.replace(/[\s\-|,;:/]+$/g, '').trim();
+    }
+    const parts = out.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) {
+      const last = parts[parts.length - 1]!;
+      const stem = last.replace(/[^a-zA-Z0-9']/g, '');
+      const lower = stem.toLowerCase();
+      let fixed: string | null = null;
+      for (const full of completions) {
+        const f = full.toLowerCase();
+        if (f === lower) {
+          fixed = null;
+          break;
+        }
+        if (f.startsWith(lower) && lower.length >= 4 && lower.length < f.length) {
+          fixed = full;
+          break;
+        }
+      }
+      if (fixed) {
+        const attempt = `${parts.slice(0, -1).join(' ')} ${fixed}`;
+        if (attempt.length <= max) {
+          out = attempt;
+        } else if (parts.length >= 2) {
+          const short = `${parts[parts.length - 2]} ${fixed}`;
+          out = short.length <= max ? short : fixed.length <= max ? fixed : parts.slice(0, -1).join(' ');
+        } else {
+          out = parts.slice(0, -1).join(' ');
+        }
+      } else if (
+        stem.length >= 5 &&
+        /^[A-Za-z]+$/.test(stem) &&
+        !/[aeiouy]{2}|ing$|ed$|ly$|er$|ers$|est$|tion$|sion$|ment$|ness$|able$|ful$|ous$/i.test(stem)
+      ) {
+        out = parts.slice(0, -1).join(' ');
+      }
+    }
+    out = out.replace(/[\s\-|,;:/]+$/g, '').trim();
+    if (out.length > max) {
+      let cut = out.slice(0, max);
+      const lastSpace = cut.lastIndexOf(' ');
+      if (lastSpace >= Math.floor(max * 0.4)) cut = cut.slice(0, lastSpace);
+      out = cut.replace(/[\s\-|,;:/]+$/g, '').trim();
+    }
+    return out.slice(0, max);
+  };
+
+  return repair(s);
 }
 
+export function finalizeDescription(text: string, max = 90): string {
+  let s = text.trim().replace(/\s+/g, ' ').replace(/[–—]/g, '-');
+  if (!s) return s;
+  if (s.length > max) {
+    s = s.slice(0, max);
+    const lastSpace = s.lastIndexOf(' ');
+    if (lastSpace > 55) s = s.slice(0, lastSpace);
+  }
+  s = s.replace(/[,;\s\-]+$/, '');
+  if (!/[.!?]$/.test(s)) s += '.';
+  if (s.length > max) {
+    s = s.slice(0, max);
+    const lastSpace = s.lastIndexOf(' ');
+    if (lastSpace > 55) s = s.slice(0, lastSpace);
+    s = s.replace(/[,;\s\-]+$/, '');
+    if (!/[.!?]$/.test(s)) s += '.';
+  }
+  return s.slice(0, max);
+}
+
+/** @deprecated Prefer finalizeHeadline — never mid-word truncate for Google Ads. */
+export function truncateHeadline(text: string, max = 30): string {
+  return finalizeHeadline(text, max);
+}
+
+/** @deprecated Prefer finalizeDescription */
 export function truncateDescription(text: string, max = 90): string {
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+  return finalizeDescription(text, max);
 }
 
 export const THINKING_STEPS = [

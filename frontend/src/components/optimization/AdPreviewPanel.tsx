@@ -97,7 +97,14 @@ export function AdPreviewPanel({
             <span className="text-[9px] font-bold text-teal bg-teal/15 px-1.5 py-0.5 rounded">Sponsored</span>
           </div>
           <div className="flex items-center gap-1 mb-1">
-            <span className="text-[10px] text-muted truncate">{urlLine}</span>
+            <span
+              className={clsx(
+                'text-[10px] text-muted',
+                variant === 'competitor' ? 'break-all' : 'truncate'
+              )}
+            >
+              {urlLine}
+            </span>
           </div>
           <h3
             className={clsx(

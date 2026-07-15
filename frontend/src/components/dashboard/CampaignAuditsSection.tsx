@@ -1,12 +1,23 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loader2, Target, Megaphone, Search, RefreshCw } from 'lucide-react';
+import { Loader2, Target, Megaphone, Search, RefreshCw, Filter } from 'lucide-react';
+import clsx from 'clsx';
 import { Button } from '../ui/Button';
 import { Badge } from '../ui/Badge';
 import { CampaignCard } from '../connect/CampaignCard';
 import { googleAdsApi, auditApi } from '../../services/api';
 import type { GoogleAdsCampaign } from '../../types/connect';
 import type { Finding } from '../../types';
+import {
+  ACCOUNT_CAMPAIGN_TYPES,
+  campaignMatchesService,
+  deriveServiceFilters,
+  getCampaignTypeMeta,
+  resolveAccountCampaignType,
+  type AccountCampaignTypeKey,
+} from '../../utils/campaignTypes';
+import { buildAdOptimizeFinding, inferServiceFromAd } from '../../utils/adServiceInference';
+import type { GoogleAdsCampaignAd } from '../../types/connect';
 
 interface CampaignAuditsSectionProps {
   auditId: string;
@@ -15,13 +26,34 @@ interface CampaignAuditsSectionProps {
   auditScope?: 'account' | 'campaign';
   parentAuditId?: string;
   campaignName?: string;
+  websiteUrl?: string;
   onOptimizeCampaign?: (finding: Finding, campaign: GoogleAdsCampaign) => void;
+  onOptimizeAd?: (finding: Finding, campaign: GoogleAdsCampaign, ad: GoogleAdsCampaignAd) => void;
 }
 
 function formatGoogleAdsCustomerId(id: string): string {
   const bare = id.replace(/\D/g, '');
   if (bare.length !== 10) return id;
   return `${bare.slice(0, 3)}-${bare.slice(3, 6)}-${bare.slice(6)}`;
+}
+
+function optimizeFindingFor(campaign: GoogleAdsCampaign): Finding {
+  return {
+    id: `camp-opt-${campaign.id}`,
+    severity: 'HIGH',
+    title: `Optimize campaign: ${campaign.name}`,
+    description: campaign.adCount > 0
+      ? `AI optimization for ${campaign.name} (${campaign.type}, ${campaign.status}) — improve existing ads.`
+      : `AI recommendations for ${campaign.name} (${campaign.type}, ${campaign.status}) — no responsive search ads found; generate new copy and strategy.`,
+    recommendation: campaign.adCount > 0
+      ? 'Generate improved ad copy and extensions for this campaign.'
+      : 'Generate new ad copy, asset recommendations, and campaign strategy for this campaign.',
+    confidence: 85,
+    impactMonthly: 0,
+    category: 'AD_COPY',
+    dimension: 'Ad Copy Review',
+    status: 'OPEN',
+  };
 }
 
 export function CampaignAuditsSection({
@@ -31,7 +63,9 @@ export function CampaignAuditsSection({
   auditScope,
   parentAuditId,
   campaignName,
+  websiteUrl,
   onOptimizeCampaign,
+  onOptimizeAd,
 }: CampaignAuditsSectionProps) {
   const navigate = useNavigate();
   const [campaigns, setCampaigns] = useState<GoogleAdsCampaign[]>([]);
@@ -42,6 +76,9 @@ export function CampaignAuditsSection({
   const [startingId, setStartingId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [dataSource, setDataSource] = useState<'google_ads_api' | 'mock' | null>(null);
+  const [typeFilter, setTypeFilter] = useState<AccountCampaignTypeKey | 'all'>('all');
+  const [serviceFilter, setServiceFilter] = useState<string | 'all'>('all');
+  const [websiteServices, setWebsiteServices] = useState<string[]>([]);
 
   const isCampaignAudit = auditScope === 'campaign';
   const customerId = googleAdsCustomerId ? formatGoogleAdsCustomerId(googleAdsCustomerId) : undefined;
@@ -74,6 +111,22 @@ export function CampaignAuditsSection({
     void loadCampaigns();
   }, [loadCampaigns]);
 
+  useEffect(() => {
+    if (!auditId || isCampaignAudit) return;
+    let cancelled = false;
+    void auditApi
+      .companyServices(auditId)
+      .then((res) => {
+        if (!cancelled) setWebsiteServices(res.data.services ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setWebsiteServices([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [auditId, isCampaignAudit, websiteUrl]);
+
   const handleCampaignAudit = async (campaign: GoogleAdsCampaign) => {
     const parentId = parentAuditId ?? auditId;
     setStartingId(campaign.id);
@@ -91,8 +144,100 @@ export function CampaignAuditsSection({
     }
   };
 
-  const filteredCampaigns = campaigns.filter((c) =>
-    !search.trim() || c.name.toLowerCase().includes(search.toLowerCase())
+  const typedCampaigns = useMemo(
+    () =>
+      campaigns.map((c) => ({
+        campaign: c,
+        typeKey: resolveAccountCampaignType({
+          type: c.type,
+          name: c.name,
+          ads: c.ads,
+        }),
+      })),
+    [campaigns]
+  );
+
+  const availableTypes = useMemo(() => {
+    // Always show every Google Ads campaign type, including types with 0 campaigns
+    return ACCOUNT_CAMPAIGN_TYPES.filter((t) => t.key !== 'other').concat(
+      typedCampaigns.some((t) => t.typeKey === 'other')
+        ? ACCOUNT_CAMPAIGN_TYPES.filter((t) => t.key === 'other')
+        : []
+    );
+  }, [typedCampaigns]);
+
+  const typeCounts = useMemo(() => {
+    const counts = {} as Record<AccountCampaignTypeKey, number>;
+    for (const t of ACCOUNT_CAMPAIGN_TYPES) counts[t.key] = 0;
+    for (const row of typedCampaigns) counts[row.typeKey] = (counts[row.typeKey] ?? 0) + 1;
+    return counts;
+  }, [typedCampaigns]);
+
+  const serviceOptions = useMemo(
+    () => deriveServiceFilters(websiteServices, campaigns),
+    [websiteServices, campaigns]
+  );
+
+  const serviceCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const service of serviceOptions) {
+      counts[service] = campaigns.filter((c) => campaignMatchesService(c, service)).length;
+    }
+    return counts;
+  }, [serviceOptions, campaigns]);
+
+  const filteredTyped = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return typedCampaigns.filter(({ campaign, typeKey }) => {
+      if (typeFilter !== 'all' && typeKey !== typeFilter) return false;
+      if (serviceFilter !== 'all' && !campaignMatchesService(campaign, serviceFilter)) return false;
+      if (q && !campaign.name.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [typedCampaigns, typeFilter, serviceFilter, search]);
+
+  const groupedByType = useMemo(() => {
+    // Always include every standard type so empty buckets show as 0
+    const keys = ACCOUNT_CAMPAIGN_TYPES
+      .map((t) => t.key)
+      .filter((k) => k !== 'other' || typedCampaigns.some((t) => t.typeKey === 'other'));
+
+    return keys.map((key) => ({
+      key,
+      campaigns: filteredTyped.filter((t) => t.typeKey === key).map((t) => t.campaign),
+      totalInAccount: typeCounts[key] ?? 0,
+    }));
+  }, [filteredTyped, typedCampaigns, typeCounts]);
+
+  const activeTypeMeta =
+    typeFilter === 'all' ? null : getCampaignTypeMeta(typeFilter);
+
+  const renderCampaignCard = (campaign: GoogleAdsCampaign) => (
+    <CampaignCard
+      key={campaign.id}
+      campaign={campaign}
+      variant="action"
+      currency={currency}
+      auditing={startingId === campaign.id}
+      onAudit={() => void handleCampaignAudit(campaign)}
+      onOptimize={
+        onOptimizeCampaign
+          ? () => onOptimizeCampaign(optimizeFindingFor(campaign), campaign)
+          : undefined
+      }
+      onOptimizeAd={
+        onOptimizeAd
+          ? (ad) => {
+              const inferred = inferServiceFromAd(ad);
+              onOptimizeAd(
+                buildAdOptimizeFinding(campaign.id, campaign.name, ad, inferred.primaryService),
+                campaign,
+                ad
+              );
+            }
+          : undefined
+      }
+    />
   );
 
   if (isCampaignAudit) {
@@ -140,9 +285,8 @@ export function CampaignAuditsSection({
             Your Campaigns
           </h2>
           <p className="text-muted text-sm mt-1 max-w-xl">
-            Account audit complete. Stats and ad previews match your Google Ads campaigns view
+            Segregated by Google Ads campaign type. Filter by type or company service, then open a campaign for a detailed audit
             ({metricsWindowDays >= 365 ? 'last 365 days' : metricsWindowDays >= 90 ? 'last 90 days' : 'last 30 days'}).
-            Click a campaign to run a detailed audit using these metrics.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -155,16 +299,108 @@ export function CampaignAuditsSection({
         </div>
       </div>
 
-      {campaigns.length > 4 && (
-        <div className="relative mb-4">
-          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
-          <input
-            type="search"
-            placeholder="Search campaigns…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full bg-panel border border-border rounded-lg pl-9 pr-4 py-2.5 text-white text-sm placeholder:text-muted/70 focus:outline-none focus:border-orange/50"
-          />
+      {!loading && campaigns.length > 0 && (
+        <div className="bg-panel border border-border rounded-xl p-4 mb-4 space-y-4">
+          <div className="flex items-center gap-2 text-muted text-[11px] uppercase tracking-wider">
+            <Filter size={12} />
+            Campaign type
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setTypeFilter('all')}
+              className={clsx(
+                'text-[11px] px-3 py-1.5 rounded-full border transition-colors',
+                typeFilter === 'all'
+                  ? 'bg-orange/15 text-orange border-orange/40'
+                  : 'bg-navy text-muted border-border hover:text-white'
+              )}
+            >
+              All types
+              <span className="ml-1.5 opacity-70">({campaigns.length})</span>
+            </button>
+            {availableTypes.map((t) => {
+              const count = typeCounts[t.key] ?? 0;
+              return (
+                <button
+                  key={t.key}
+                  type="button"
+                  onClick={() => setTypeFilter(t.key)}
+                  className={clsx(
+                    'text-[11px] px-3 py-1.5 rounded-full border transition-colors',
+                    typeFilter === t.key
+                      ? 'bg-teal/15 text-teal border-teal/40'
+                      : count === 0
+                        ? 'bg-navy text-muted/70 border-border/70 hover:text-muted'
+                        : 'bg-navy text-muted border-border hover:text-white'
+                  )}
+                >
+                  {t.shortLabel}
+                  <span className="ml-1.5 opacity-70">({count})</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {activeTypeMeta && (
+            <div className="rounded-lg border border-teal/25 bg-teal/5 px-3 py-2.5">
+              <p className="text-teal text-xs font-semibold">{activeTypeMeta.label}</p>
+              <p className="text-muted text-[11px] leading-relaxed mt-1">{activeTypeMeta.description}</p>
+              <p className="text-muted text-[11px] mt-1">
+                Campaigns in account: <span className="text-white">{typeCounts[activeTypeMeta.key] ?? 0}</span>
+              </p>
+            </div>
+          )}
+
+          {serviceOptions.length > 0 && (
+            <>
+              <div className="flex items-center gap-2 text-muted text-[11px] uppercase tracking-wider pt-1 border-t border-border/50">
+                Service / offering
+                <span className="normal-case tracking-normal text-muted/80">(from landing page)</span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setServiceFilter('all')}
+                  className={clsx(
+                    'text-[11px] px-3 py-1.5 rounded-full border transition-colors',
+                    serviceFilter === 'all'
+                      ? 'bg-orange/15 text-orange border-orange/40'
+                      : 'bg-navy text-muted border-border hover:text-white'
+                  )}
+                >
+                  All services
+                </button>
+                {serviceOptions.map((service) => (
+                  <button
+                    key={service}
+                    type="button"
+                    onClick={() => setServiceFilter(service)}
+                    className={clsx(
+                      'text-[11px] px-3 py-1.5 rounded-full border transition-colors',
+                      serviceFilter === service
+                        ? 'bg-purple-500/15 text-purple-300 border-purple-400/40'
+                        : 'bg-navy text-muted border-border hover:text-white'
+                    )}
+                  >
+                    {service}
+                    <span className="ml-1.5 opacity-70">({serviceCounts[service] ?? 0})</span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+
+          <div className="relative">
+            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+            <input
+              type="search"
+              placeholder="Search campaigns by name…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full bg-navy border border-border rounded-lg pl-9 pr-4 py-2.5 text-white text-sm placeholder:text-muted/70 focus:outline-none focus:border-orange/50"
+            />
+          </div>
         </div>
       )}
 
@@ -199,42 +435,93 @@ export function CampaignAuditsSection({
         </div>
       )}
 
-      {!loading && filteredCampaigns.length > 0 && (
-        <div className="grid lg:grid-cols-1 gap-4">
-          {filteredCampaigns.map((campaign) => (
-            <CampaignCard
-              key={campaign.id}
-              campaign={campaign}
-              variant="action"
-              currency={currency}
-              auditing={startingId === campaign.id}
-              onAudit={() => void handleCampaignAudit(campaign)}
-              onOptimize={onOptimizeCampaign ? () => onOptimizeCampaign(
-                {
-                  id: `camp-opt-${campaign.id}`,
-                  severity: 'HIGH',
-                  title: `Optimize campaign: ${campaign.name}`,
-                  description: campaign.adCount > 0
-                    ? `AI optimization for ${campaign.name} (${campaign.type}, ${campaign.status}) — improve existing ads.`
-                    : `AI recommendations for ${campaign.name} (${campaign.type}, ${campaign.status}) — no responsive search ads found; generate new copy and strategy.`,
-                  recommendation: campaign.adCount > 0
-                    ? 'Generate improved ad copy and extensions for this campaign.'
-                    : 'Generate new ad copy, asset recommendations, and campaign strategy for this campaign.',
-                  confidence: 85,
-                  impactMonthly: 0,
-                  category: 'AD_COPY',
-                  dimension: 'Ad Copy Review',
-                  status: 'OPEN',
-                },
-                campaign
-              ) : undefined}
-            />
-          ))}
+      {!loading && campaigns.length > 0 && typeFilter === 'all' && (
+        <div className="space-y-8">
+          {groupedByType.map((group) => {
+            const meta = getCampaignTypeMeta(group.key);
+            return (
+              <div key={group.key} className="space-y-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <h3 className="text-white font-semibold text-sm flex items-center gap-2">
+                      {meta.label}
+                      <Badge variant="teal">
+                        {serviceFilter !== 'all' || search.trim()
+                          ? group.campaigns.length
+                          : group.totalInAccount}
+                      </Badge>
+                    </h3>
+                    <p className="text-muted text-[11px] leading-relaxed mt-1 max-w-3xl">
+                      {meta.description}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setTypeFilter(group.key)}
+                    className="text-[11px] text-teal hover:underline shrink-0"
+                  >
+                    Filter to {meta.shortLabel}
+                  </button>
+                </div>
+                {group.campaigns.length > 0 ? (
+                  <div className="grid lg:grid-cols-1 gap-4">
+                    {group.campaigns.map(renderCampaignCard)}
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-dashed border-border bg-navy/30 px-4 py-5 text-center">
+                    <p className="text-muted text-sm">
+                      0 campaigns of this type in the Google Ads account
+                      {serviceFilter !== 'all' || search.trim()
+                        ? ' matching the current filters'
+                        : ''}
+                      .
+                    </p>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
-      {!loading && campaigns.length > 0 && filteredCampaigns.length === 0 && (
-        <p className="text-muted text-sm text-center py-6">No campaigns match &ldquo;{search}&rdquo;</p>
+      {!loading && typeFilter !== 'all' && (
+        <div className="space-y-4">
+          {filteredTyped.length > 0 ? (
+            <div className="grid lg:grid-cols-1 gap-4">
+              {filteredTyped.map(({ campaign }) => renderCampaignCard(campaign))}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-dashed border-border bg-navy/30 px-4 py-8 text-center">
+              <p className="text-white text-sm font-medium mb-1">
+                0 {getCampaignTypeMeta(typeFilter).shortLabel} campaigns
+              </p>
+              <p className="text-muted text-xs">
+                No campaigns of this type
+                {serviceFilter !== 'all' || search.trim()
+                  ? ' match the current service / search filters'
+                  : ' were found in this Google Ads account'}
+                .
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {!loading && campaigns.length > 0 && filteredTyped.length === 0 && typeFilter === 'all' && (serviceFilter !== 'all' || search.trim()) && (
+        <p className="text-muted text-sm text-center py-6">
+          No campaigns match the current service / search filters.
+          <button
+            type="button"
+            className="block mx-auto mt-2 text-orange hover:underline"
+            onClick={() => {
+              setTypeFilter('all');
+              setServiceFilter('all');
+              setSearch('');
+            }}
+          >
+            Clear filters
+          </button>
+        </p>
       )}
     </section>
   );

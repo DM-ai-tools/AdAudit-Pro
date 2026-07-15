@@ -6,8 +6,13 @@
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import dotenv from 'dotenv';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+// Load .env before validating DATABASE_URL (Railway injects env vars; local uses files)
+dotenv.config({ path: join(root, '../.env') });
+dotenv.config({ path: join(root, '.env') });
 
 async function main() {
   if (process.env.DATABASE_URL) {

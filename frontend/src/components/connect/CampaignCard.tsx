@@ -2,7 +2,7 @@ import clsx from 'clsx';
 import { motion } from 'framer-motion';
 import { Check, Megaphone, ArrowRight, Sparkles, ChevronDown, ChevronUp } from 'lucide-react';
 import { useState } from 'react';
-import type { GoogleAdsCampaign } from '../../types/connect';
+import type { GoogleAdsCampaign, GoogleAdsCampaignAd } from '../../types/connect';
 import {
   formatCurrencyPrecise,
   formatNumber,
@@ -10,6 +10,7 @@ import {
 } from '../../utils/helpers';
 import { Button } from '../ui/Button';
 import { CampaignAdPreview } from '../dashboard/CampaignAdPreview';
+import { inferServiceFromAd } from '../../utils/adServiceInference';
 
 interface CampaignCardProps {
   campaign: GoogleAdsCampaign;
@@ -17,12 +18,29 @@ interface CampaignCardProps {
   onToggle?: () => void;
   onAudit?: () => void;
   onOptimize?: () => void;
+  /** Per-ad Make This Ad Better */
+  onOptimizeAd?: (ad: GoogleAdsCampaignAd) => void;
   auditing?: boolean;
   variant?: 'select' | 'action';
   currency?: string;
 }
 
 function formatType(type: string): string {
+  // Prefer friendly labels when we can resolve the channel
+  try {
+    // lazy import avoided — keep local mapping aligned with campaignTypes util wording
+    const key = type.toUpperCase().replace(/\s+/g, '_');
+    if (key.includes('PERFORMANCE_MAX')) return 'Performance Max';
+    if (key.includes('DEMAND_GEN') || key.includes('DISCOVERY')) return 'Demand Gen';
+    if (key.includes('SHOPPING')) return 'Shopping Ads';
+    if (key.includes('VIDEO')) return 'Video Ads';
+    if (key.includes('DISPLAY')) return 'Display Ads';
+    if (key.includes('MULTI_CHANNEL') || key.includes('APP')) return 'App Campaigns';
+    if (key.includes('LOCAL_SERVICES') || key === 'LOCAL') return 'Local Services Ads';
+    if (key.includes('SEARCH')) return 'Search Ads';
+  } catch {
+    /* fall through */
+  }
   return type.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
@@ -37,6 +55,7 @@ export function CampaignCard({
   onToggle,
   onAudit,
   onOptimize,
+  onOptimizeAd,
   auditing = false,
   variant = 'select',
   currency = 'AUD',
@@ -128,9 +147,19 @@ export function CampaignCard({
           </button>
           {adsExpanded && (
             <div className="space-y-3 pb-1">
-              {campaign.ads.map((ad) => (
-                <CampaignAdPreview key={ad.id} ad={ad} currency={currency} compact />
-              ))}
+              {campaign.ads.map((ad) => {
+                const inferred = inferServiceFromAd(ad);
+                return (
+                  <CampaignAdPreview
+                    key={ad.id}
+                    ad={ad}
+                    currency={currency}
+                    compact
+                    inferredService={inferred.primaryService}
+                    onOptimizeAd={onOptimizeAd ? () => onOptimizeAd(ad) : undefined}
+                  />
+                );
+              })}
             </div>
           )}
         </div>

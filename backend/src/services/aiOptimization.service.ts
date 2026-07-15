@@ -18,10 +18,19 @@ import type { CompetitorIntelligence } from './competitor-intelligence.service.j
 import { analyzeCompetitors } from './competitor-intelligence.service.js';
 import { extractJsonFromClaudeText } from '../utils/claude-json.js';
 import {
+  AD_DIFFERENCE_TARGET,
+  computeAdDifferenceScore,
+} from '../utils/ad-difference-score.js';
+import {
   displayPathFromWebsite,
   resolveBusinessName,
   resolveDisplayHost,
 } from '../utils/business-identity.js';
+import {
+  detectServiceFamilies,
+  hasConflictingService,
+  targetServiceFamilies,
+} from '../utils/service-relevance.js';
 
 export type OptimizationTone =
   | 'default'
@@ -73,16 +82,50 @@ export interface PerformanceEstimates {
 export interface CompetitiveOutperformance {
   messagingImprovements: string;
   keywordImprovements: string;
+  trustSignalImprovements?: string;
   offerImprovements: string;
   conversionImprovements: string;
+  ctaImprovements?: string;
+  competitorStrategiesUsed?: string;
+  competitorGapsExploited?: string;
+}
+
+export interface InfluencingCompetitor {
+  name: string;
+  influencePercent: number;
+  reason: string;
+}
+
+/** Why This Ad Was Generated — Gen 2.0 explanation panel */
+export interface AdGenerationExplanation {
+  competitorSignalsUsed: string[];
+  topCompetitorsInfluencing: InfluencingCompetitor[];
+  offersUsed: string[];
+  trustSignalsUsed: string[];
+  keywordsUsed: string[];
+  reviewInsightsUsed: string[];
+  socialAuthorityInsightsUsed: string[];
+  marketPositioningUsed: string[];
+  /** Server-computed 0–100; target 70+ */
+  adDifferenceScore?: number;
 }
 
 export interface CompetitorInsightCard {
   name: string;
   url?: string;
+  advertiserId?: string;
   keyMessages: string[];
   offers: string[];
   keywordOpportunities: string[];
+  adDurationDays?: number;
+  activeAdCount?: number;
+  totalAdCount?: number;
+  firstShown?: string;
+  lastShown?: string;
+  brandReview?: import('./competitor-intelligence.service.js').CompetitorBrandReview;
+  confidenceScore?: number;
+  influencePercent?: number;
+  durationLabel?: string;
 }
 
 export interface StrategistReasoning {
@@ -162,6 +205,8 @@ export interface OptimizedAdContent {
   strategistRecommendations?: StrategistRecommendations;
   competitorInsights?: CompetitorInsightCard[];
   missingCompetitorAdvantages?: string[];
+  adGenerationExplanation?: AdGenerationExplanation;
+  adDifferenceScore?: number;
   keywordImprovements?: string[];
   negativeKeywordSuggestions?: string[];
   landingPageRecommendations?: string[];
@@ -188,6 +233,10 @@ export interface OptimizeAdRequest {
     location?: string;
     competitorUrls?: string[];
     productsServices?: string[];
+    /** When 'ad', competitor discovery is scoped to primaryService / productsServices only */
+    optimizationScope?: 'campaign' | 'ad';
+    primaryService?: string;
+    serviceKeywords?: string[];
     userId?: string;
     campaignId?: string;
     campaignName?: string;
@@ -211,6 +260,7 @@ export interface OptimizeAdRequest {
       clicks?: number;
       adGroupName?: string;
       resourceName?: string;
+      adId?: string;
     };
     previousOptimizedSnapshot?: {
       headlines?: string[];
@@ -263,9 +313,78 @@ const VARIATION_HINTS: Record<string, string> = {
 function countRealCompetitorAds(analysis: CompetitorIntelligence | null | undefined): number {
   return (
     analysis?.adGallery?.filter(
-      (g) => g.adSource === 'sociavault' || g.adSource === 'transparency_center'
+      (g) =>
+        (g.adSource === 'sociavault' || g.adSource === 'transparency_center') &&
+        (g.totalAdCount ?? 0) > 0
     ).length ?? 0
   );
+}
+
+function mergeCompetitorInsightCards(
+  aiInsights: CompetitorInsightCard[],
+  analysis: CompetitorIntelligence | null | undefined
+): CompetitorInsightCard[] {
+  // SociaVault-backed analysis is the source of truth — never invent competitors from Claude.
+  const gallery = (analysis?.adGallery ?? []).filter((g) => (g.totalAdCount ?? 0) > 0);
+  const fallbacks = (analysis?.insights ?? []).filter(
+    (i) =>
+      (i.totalAdCount ?? 0) > 0 ||
+      gallery.some(
+        (g) =>
+          g.name.toLowerCase() === i.name.toLowerCase() ||
+          (g.advertiserName?.toLowerCase() === i.name.toLowerCase())
+      )
+  );
+
+  if (!fallbacks.length && gallery.length) {
+    return gallery.slice(0, 4).map((g) => ({
+      name: g.advertiserName ?? g.name,
+      url: g.url,
+      keyMessages: [...(g.headlines ?? []), ...(g.descriptions ?? [])].filter(Boolean).slice(0, 6),
+      offers: g.offers ?? [],
+      keywordOpportunities: [],
+      adDurationDays: g.adDurationDays,
+      activeAdCount: g.activeAdCount,
+      totalAdCount: g.totalAdCount,
+      firstShown: g.firstShown,
+      lastShown: g.lastShown,
+      brandReview: g.brandReview,
+      confidenceScore: g.confidenceScore,
+      influencePercent: g.influencePercent,
+      durationLabel: g.durationLabel,
+    }));
+  }
+
+  return fallbacks.slice(0, 4).map((i) => {
+    const ai = aiInsights.find((a) => a.name.toLowerCase() === i.name.toLowerCase());
+    const g = gallery.find(
+      (x) =>
+        x.name.toLowerCase() === i.name.toLowerCase() ||
+        x.advertiserName?.toLowerCase() === i.name.toLowerCase()
+    );
+    return {
+      name: i.name,
+      url: i.url ?? g?.url ?? ai?.url,
+      keyMessages: i.keyMessages.length
+        ? i.keyMessages
+        : ai?.keyMessages?.length
+          ? ai.keyMessages
+          : [...(g?.headlines ?? []), ...(g?.descriptions ?? [])].filter(Boolean).slice(0, 6),
+      offers: i.offers.length ? i.offers : (ai?.offers ?? g?.offers ?? []),
+      keywordOpportunities: i.keywordOpportunities.length
+        ? i.keywordOpportunities
+        : (ai?.keywordOpportunities ?? []),
+      adDurationDays: i.adDurationDays ?? g?.adDurationDays,
+      activeAdCount: i.activeAdCount ?? g?.activeAdCount,
+      totalAdCount: i.totalAdCount ?? g?.totalAdCount,
+      firstShown: i.firstShown ?? g?.firstShown,
+      lastShown: i.lastShown ?? g?.lastShown,
+      brandReview: i.brandReview ?? g?.brandReview,
+      confidenceScore: i.confidenceScore ?? g?.confidenceScore,
+      influencePercent: i.influencePercent ?? g?.influencePercent,
+      durationLabel: i.durationLabel ?? g?.durationLabel,
+    };
+  });
 }
 
 function normalizeStringArray(val: unknown): string[] {
@@ -299,46 +418,257 @@ function asDisplayText(val: unknown, fallback = ''): string {
   return fallback;
 }
 
+/** Common ad words Claude often truncates at the 30-char limit. */
+const HEADLINE_WORD_COMPLETIONS: string[] = [
+  'Approval',
+  'Approvals',
+  'Approved',
+  'Approving',
+  'Consultation',
+  'Consultations',
+  'Guaranteed',
+  'Guarantee',
+  'Australian',
+  'Australia',
+  'Financing',
+  'Finance',
+  'Financial',
+  'Refinance',
+  'Refinancing',
+  'Comparison',
+  'Compare',
+  'Commercial',
+  'Mortgage',
+  'Mortgages',
+  'Property',
+  'Properties',
+  'Business',
+  'Businesses',
+  'Independent',
+  'Specialists',
+  'Specialist',
+  'Experts',
+  'Expert',
+  'Broker',
+  'Brokers',
+  'Lending',
+  'Lenders',
+  'Lowest',
+  'Rates',
+  'Quote',
+  'Quotes',
+  'Online',
+  'Today',
+  'Available',
+  'Application',
+  'Applications',
+  'Pre-Approval',
+  'Preapproval',
+];
+
+function isIncompleteTrailingWord(word: string): string | null {
+  const stem = word.replace(/[^a-zA-Z0-9']/g, '');
+  if (stem.length < 4) return null;
+  const lower = stem.toLowerCase();
+  for (const full of HEADLINE_WORD_COMPLETIONS) {
+    const f = full.toLowerCase();
+    if (f === lower) return null; // already complete
+    if (f.startsWith(lower) && lower.length < f.length) return full;
+  }
+  // Heuristic: ends with truncated Latin fragment (e.g. "Approv", "Consultati")
+  if (/^[A-Za-z]+$/.test(stem) && stem.length >= 5 && !/[aeiouy]{2}|ing$|ed$|ly$|er$|ers$|est$|tion$|sion$|ment$|ness$|able$|ful$|ous$/i.test(stem)) {
+    // Likely incomplete if it doesn't look like a finished English word ending
+    // Prefer dropping rather than inventing unknown completions
+    return '';
+  }
+  return null;
+}
+
+/**
+ * Enforce ≤30 chars with COMPLETE words only — never mid-word cuts like "Fast Approv".
+ */
+export function finalizeHeadline(text: string, max = 30): string {
+  let s = text
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/[–—]/g, '-')
+    .replace(/\s*-\s*/g, ' - ');
+  if (!s) return s;
+
+  const fitComplete = (candidate: string): string => {
+    let out = candidate.trim().replace(/\s+/g, ' ');
+    if (out.length > max) {
+      let cut = out.slice(0, max);
+      const lastSpace = cut.lastIndexOf(' ');
+      if (lastSpace >= Math.floor(max * 0.4)) cut = cut.slice(0, lastSpace);
+      out = cut.replace(/[\s\-|,;:/]+$/g, '').trim();
+    }
+    // Repair / drop incomplete final token
+    const parts = out.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) {
+      const last = parts[parts.length - 1]!;
+      const completion = isIncompleteTrailingWord(last);
+      if (completion === '') {
+        out = parts.slice(0, -1).join(' ').replace(/[\s\-|,;:/]+$/g, '').trim();
+      } else if (completion) {
+        const attempt = `${parts.slice(0, -1).join(' ')} ${completion}`.replace(/\s+/g, ' ').trim();
+        if (attempt.length <= max) {
+          out = attempt;
+        } else if (parts.length >= 2) {
+          const short = `${parts[parts.length - 2]} ${completion}`.replace(/\s+/g, ' ').trim();
+          out =
+            short.length <= max
+              ? short
+              : completion.length <= max
+                ? completion
+                : parts.slice(0, -1).join(' ').replace(/[\s\-|,;:/]+$/g, '').trim();
+        } else {
+          out = parts.slice(0, -1).join(' ').replace(/[\s\-|,;:/]+$/g, '').trim();
+        }
+      }
+    }
+    if (out.length > max) {
+      let cut = out.slice(0, max);
+      const lastSpace = cut.lastIndexOf(' ');
+      if (lastSpace >= Math.floor(max * 0.4)) cut = cut.slice(0, lastSpace);
+      out = cut.replace(/[\s\-|,;:/]+$/g, '').trim();
+    }
+    return out.slice(0, max);
+  };
+
+  return fitComplete(s);
+}
+
 function finalizeDescription(text: string): string {
-  let s = text.trim().replace(/\s+/g, ' ');
+  let s = text.trim().replace(/\s+/g, ' ').replace(/[–—]/g, '-');
   if (!s) return s;
   if (s.length > 90) {
     s = s.slice(0, 90);
     const lastSpace = s.lastIndexOf(' ');
     if (lastSpace > 55) s = s.slice(0, lastSpace);
   }
-  s = s.replace(/[,;\s]+$/, '');
+  s = s.replace(/[,;\s\-]+$/, '');
+  // Drop incomplete trailing word on descriptions too
+  const parts = s.split(/\s+/);
+  if (parts.length >= 2) {
+    const completion = isIncompleteTrailingWord(parts[parts.length - 1]!);
+    if (completion === '') {
+      s = parts.slice(0, -1).join(' ');
+    } else if (completion) {
+      const attempt = `${parts.slice(0, -1).join(' ')} ${completion}`;
+      if (attempt.length <= 90) s = attempt;
+      else s = parts.slice(0, -1).join(' ');
+    }
+  }
   if (!/[.!?]$/.test(s)) s += '.';
+  if (s.length > 90) {
+    s = s.slice(0, 90);
+    const lastSpace = s.lastIndexOf(' ');
+    if (lastSpace > 55) s = s.slice(0, lastSpace);
+    s = s.replace(/[,;\s\-]+$/, '');
+    if (!/[.!?]$/.test(s)) s += '.';
+  }
   return s.slice(0, 90);
+}
+
+function finalizeCallout(text: string, max = 25): string {
+  return finalizeHeadline(text, max);
 }
 
 function enforceGoogleAdsLimits(
   headlines: string[],
   descriptions: string[],
-  brand: string
+  brand: string,
+  primaryService?: string
 ): { headlines: string[]; descriptions: string[] } {
-  const h = headlines.map((s) => s.trim().slice(0, 30)).filter(Boolean);
+  const seen = new Set<string>();
+  const h: string[] = [];
+  for (const raw of headlines) {
+    const next = finalizeHeadline(raw);
+    if (!next || next.length < 3) continue;
+    const key = next.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    h.push(next);
+  }
   const d = descriptions.map((s) => finalizeDescription(s)).filter(Boolean);
 
-  const fallbacksH = [
-    `${brand} — Get Started`,
-    `Trusted ${brand} Experts`,
-    'Free Consultation Today',
-    'Book Online Now',
-    'Call For a Quote',
-  ];
-  const fallbacksD = [
-    `${brand} delivers results you can measure. Contact us for a free consultation today.`,
-    'Professional services tailored to your goals. Start improving performance now.',
-  ];
+  const svc = (primaryService ?? '').toLowerCase();
+  const isCar = /\bcar\b|\bauto\b|\bvehicle\b/.test(svc);
+  const isHome = /\bhome\b|\bmortgage\b/.test(svc);
+  const isBiz = /\bbusiness\b|\bcommercial\b|\bsme\b/.test(svc);
 
-  while (h.length < 5) {
-    const next = fallbacksH[h.length % fallbacksH.length];
-    if (!h.includes(next)) h.push(next.slice(0, 30));
-    else break;
+  const fallbacksH = (
+    isCar
+      ? [
+          'Compare Car Loan Rates',
+          'New & Used Car Finance',
+          'Same-Day Car Approvals',
+          'No Deposit Car Loans',
+          `${brand} Car Finance`.slice(0, 30),
+          'Licensed Car Loan Broker',
+          'Faster Car Finance Yes',
+          'Get Your Car Loan Quote',
+        ]
+      : isHome
+        ? [
+            'Compare Home Loan Rates',
+            'Refinance & Save Today',
+            'Local Mortgage Experts',
+            `${brand} Home Loans`.slice(0, 30),
+            'First Home Buyer Help',
+            'Low-Rate Home Options',
+            'Free Home Loan Review',
+            'Talk to a Broker Today',
+          ]
+        : isBiz
+          ? [
+              'Business Loan Options',
+              'Fast SME Finance Yes',
+              'Working Capital Ready',
+              `${brand} Biz Finance`.slice(0, 30),
+              'Compare Business Rates',
+              'Equipment Finance Fast',
+              'Simple Business Funding',
+              'Get a Business Quote',
+            ]
+          : [
+              `${brand} Get Started`.slice(0, 30),
+              'Free Consultation Today',
+              'Compare Top Options',
+              'Fast Approvals Online',
+              'Trusted Local Experts',
+              'Apply Online in Minutes',
+              'No Obligation Quote',
+              'Better Rates Today',
+            ]
+  ).map((s) => finalizeHeadline(s));
+
+  const fallbacksD = isCar
+    ? [
+        `${brand} compares car lenders for competitive rates on new & used vehicles. Get a free quote today.`,
+        'Licensed brokers. Transparent fees. Same-day decisions on car finance when you qualify. Apply online.',
+        'New or used cars — we match you with lenders that fit your budget. Speak with a specialist today.',
+        'No-obligation car loan quotes with clear next steps from enquiry to approval. Start online now.',
+      ]
+    : [
+        `${brand} helps you compare options and secure competitive rates. Get a free consultation today.`,
+        'Expert guidance, transparent pricing, and fast approvals. Start your application online now.',
+        'Trusted specialists matching you with options that fit your goals. Speak with an expert today.',
+        'Clear next steps from enquiry to approval. Request your free, no-obligation quote online.',
+      ];
+
+  let i = 0;
+  while (h.length < 15 && i < fallbacksH.length * 3) {
+    const next = fallbacksH[i % fallbacksH.length]!;
+    i += 1;
+    const key = next.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    h.push(next);
   }
-  while (d.length < 2) {
-    const next = finalizeDescription(fallbacksD[d.length % fallbacksD.length]);
+  while (d.length < 4) {
+    const next = finalizeDescription(fallbacksD[d.length % fallbacksD.length]!);
     if (!d.includes(next)) d.push(next);
     else break;
   }
@@ -351,28 +681,150 @@ function buildBaselinePerformance(
 ): PerformanceMetrics {
   const perf = intelligence.campaignPerformance;
   const ad = intelligence.primaryAd;
-  if (perf) {
-    return {
-      ctr: `${perf.ctr}%`,
-      qualityScore: perf.avgQualityScore != null ? String(perf.avgQualityScore) : undefined,
-      conversionRate: `${perf.conversionRate}%`,
-      cpa: perf.costPerConversion > 0 ? `$${perf.costPerConversion}` : undefined,
-      monthlyLeads: perf.conversions > 0 ? String(Math.round(perf.conversions)) : undefined,
-      monthlySavings: perf.cost > 0 ? `$${Math.round(perf.cost * 0.1)}/mo est. waste` : undefined,
-    };
-  }
+
+  // Prefer the selected ad's live CTR/conversions when present (incl. 0) — don't invent campaign averages as "this ad"
+  const ctr =
+    ad?.ctr != null
+      ? `${ad.ctr}%`
+      : perf?.ctr != null
+        ? `${perf.ctr}%`
+        : undefined;
+  const conversionRate =
+    perf?.conversionRate != null ? `${perf.conversionRate}%` : undefined;
+  const qualityScore =
+    perf?.avgQualityScore != null ? String(perf.avgQualityScore) : undefined;
+  const cpa =
+    perf && perf.costPerConversion > 0 ? `$${Math.round(perf.costPerConversion)}` : undefined;
+  const monthlyLeads =
+    ad?.conversions != null && ad.conversions > 0
+      ? String(Math.round(ad.conversions))
+      : perf && perf.conversions > 0
+        ? String(Math.round(perf.conversions))
+        : undefined;
+  const monthlySavings =
+    perf && perf.cost > 0 ? `$${Math.round(perf.cost * 0.1)}` : undefined;
+
   return {
-    ctr: ad?.ctr != null ? `${ad.ctr}%` : undefined,
-    conversionRate: undefined,
-    qualityScore: undefined,
+    ctr,
+    qualityScore,
+    conversionRate,
+    cpa,
+    monthlyLeads,
+    monthlySavings,
   };
+}
+
+/** Keep Google Ads baseline for "current"; never let Claude invent fictitious baseline stats. */
+function mergeCurrentMetrics(
+  baseline: PerformanceMetrics,
+  fromClaude: PerformanceMetrics
+): PerformanceMetrics {
+  // Only allow Claude to fill fields we truly have no signal for AND that aren't commonly hallucinated.
+  // ROAS / savings are frequently invented — never take them from Claude for "current".
+  return {
+    ctr: baseline.ctr ?? fromClaude.ctr,
+    qualityScore: baseline.qualityScore ?? fromClaude.qualityScore,
+    conversionRate: baseline.conversionRate ?? fromClaude.conversionRate,
+    cpa: baseline.cpa ?? fromClaude.cpa,
+    roas: baseline.roas,
+    monthlyLeads: baseline.monthlyLeads ?? fromClaude.monthlyLeads,
+    monthlySavings: baseline.monthlySavings,
+  };
+}
+
+function parsePercentish(raw?: string): number | null {
+  if (!raw) return null;
+  const m = String(raw).replace(/,/g, '').match(/-?\d+(\.\d+)?/);
+  return m ? Number(m[0]) : null;
+}
+
+/** Extract Claude's declared % change (e.g. "+23% to ~3.44%" → 23). */
+function parseUpliftPct(raw?: string): number | null {
+  if (!raw?.trim()) return null;
+  const m = raw.trim().match(/([+-]?\d+(?:\.\d+)?)\s*%/);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * Build uplift strings grounded in real Google Ads baselines.
+ * Never keep Claude absolute targets that ignore the live baseline (e.g. inventing 2.8% CTR).
+ */
+function groundedEstimate(
+  baselineValue: string | undefined,
+  preferred: string | undefined,
+  defaultPct: number,
+  opts?: { suffix?: string; money?: boolean }
+): string | undefined {
+  const preferredTrim = preferred?.trim();
+  const isGenericEst = preferredTrim ? /^\+?\d+(\.\d+)?%\s*est\.?$/i.test(preferredTrim) : false;
+  const base = parsePercentish(baselineValue);
+
+  // No live baseline → never invent absolute projections (drop Claude fiction)
+  if (base == null) {
+    if (preferredTrim && !isGenericEst && preferredTrim !== '—') {
+      // Relative-only phrases without an absolute baseline are still ok
+      if (/^[+-]?\d+(\.\d+)?%\s*(relative|est)?/i.test(preferredTrim) && !/to\s*~/i.test(preferredTrim)) {
+        return preferredTrim;
+      }
+    }
+    return undefined;
+  }
+
+  // Near-zero rate/count baselines cannot be projected to absolute targets honestly
+  if (base === 0 && (opts?.suffix === '%' || opts?.suffix === 'x' || !opts?.money)) {
+    const pct = parseUpliftPct(preferredTrim) ?? defaultPct;
+    const sign = pct >= 0 ? '+' : '';
+    return `${sign}${pct}% relative (baseline ${baselineValue} — need more volume to project absolute)`;
+  }
+
+  const pct = parseUpliftPct(preferredTrim) ?? defaultPct;
+  const next = base * (1 + pct / 100);
+  const rounded = opts?.money
+    ? `$${Math.round(next).toLocaleString('en-US')}`
+    : opts?.suffix === 'x'
+      ? `${next.toFixed(2)}x`
+      : opts?.suffix === '%'
+        ? `${next.toFixed(2)}%`
+        : `${Math.round(next)}`;
+  const sign = pct >= 0 ? '+' : '';
+  return `${sign}${pct}% to ~${rounded}`;
+}
+
+function conflictsWithLockedService(text: string, lockedService?: string): boolean {
+  if (!lockedService?.trim()) return false;
+  const lock = lockedService.toLowerCase();
+  const t = text.toLowerCase();
+  const isCar = /\bcar\b|\bauto\b|\bvehicle\b/.test(lock);
+  const isHome = /\bhome\b|\bmortgage\b/.test(lock);
+  const isPersonal = /\bpersonal\b/.test(lock);
+  const isBiz = /\bbusiness\b|\bcommercial\b|\bsme\b/.test(lock);
+
+  if (isCar) {
+    // Novated lease / chattel can be vehicle finance — keep those. Block other loan verticals.
+    if (/\b(home\s*loans?|mortgages?|personal\s*loans?|business\s*loans?|sme\s*loans?)\b/.test(t)) {
+      return true;
+    }
+    // "personal" alone as product breadth is drift
+    if (/\bpersonal\b/.test(t) && !/\bcar\b|\bauto\b|\bvehicle\b|\bnovated\b|\bchattel\b/.test(t)) {
+      return true;
+    }
+  }
+  if (isHome && /\b(car\s*loans?|auto\s*loans?|personal\s*loans?|business\s*loans?)\b/.test(t)) return true;
+  if (isPersonal && /\b(car\s*loans?|home\s*loans?|business\s*loans?)\b/.test(t)) return true;
+  if (isBiz && /\b(car\s*loans?|home\s*loans?|personal\s*loans?)\b/.test(t)) return true;
+  return false;
+}
+
+function filterServiceLockedInsights(items: string[], lockedService?: string): string[] {
+  return items.filter((item) => !conflictsWithLockedService(item, lockedService));
 }
 
 function parseClaudeJson(
   text: string,
   brand: string,
   baseline: PerformanceMetrics,
-  intelligence: AuditIntelligence
+  intelligence: AuditIntelligence,
+  lockedService?: string
 ): OptimizedAdContent {
   const parsed = extractJsonFromClaudeText(text);
 
@@ -386,7 +838,12 @@ function parseClaudeJson(
     if (!descriptions.length) descriptions = normalizeStringArray(rsa.descriptions);
   }
 
-  ({ headlines, descriptions } = enforceGoogleAdsLimits(headlines, descriptions, brand));
+  ({ headlines, descriptions } = enforceGoogleAdsLimits(
+    headlines,
+    descriptions,
+    brand,
+    lockedService ?? intelligence.websiteAnalysis?.services?.[0]
+  ));
 
   const displayPathsRaw = parsed.displayPaths ?? rsa?.displayPaths;
   let displayPaths: { path1?: string; path2?: string } | undefined;
@@ -410,7 +867,15 @@ function parseClaudeJson(
   const parsePerf = (raw: unknown): PerformanceMetrics => {
     if (!raw || typeof raw !== 'object') return {};
     const m = raw as Record<string, unknown>;
-    const pick = (k: string) => (m[k] != null ? String(m[k]) : undefined);
+    // Treat "", "—", null as missing so we never wipe real baseline metrics
+    const pick = (k: string): string | undefined => {
+      if (m[k] == null) return undefined;
+      const s = String(m[k]).trim();
+      if (!s || s === '—' || s === '-' || s.toLowerCase() === 'n/a' || s.toLowerCase() === 'null') {
+        return undefined;
+      }
+      return s;
+    };
     return {
       ctr: pick('ctr'),
       qualityScore: pick('qualityScore'),
@@ -422,47 +887,171 @@ function parseClaudeJson(
     };
   };
 
-  const performanceEstimates: PerformanceEstimates = {
-    label: String(perfRaw?.label ?? 'AI Estimated Impact'),
-    current: { ...baseline, ...parsePerf(perfRaw?.current) },
-    estimated: parsePerf(perfRaw?.estimated),
+  let estimatedPerf = parsePerf(perfRaw?.estimated);
+  // Compact Claude retries often omit performanceEstimates — fill from predictedImprovements
+  if (!estimatedPerf.ctr && (predicted?.ctr || legacyPredicted?.ctrIncrease)) {
+    estimatedPerf = {
+      ...estimatedPerf,
+      ctr: predicted?.ctr ?? legacyPredicted?.ctrIncrease,
+      qualityScore: estimatedPerf.qualityScore ?? predicted?.qualityScore ?? legacyPredicted?.qualityScoreIncrease,
+      conversionRate:
+        estimatedPerf.conversionRate ??
+        predicted?.conversionRate ??
+        legacyPredicted?.conversionImprovement,
+    };
+  }
+
+  // Prefer real Google Ads baseline for CURRENT — Claude may invent fictional baselines
+  const currentMetrics = mergeCurrentMetrics(baseline, parsePerf(perfRaw?.current));
+
+  // Ground estimates in baseline — drop Claude absolutes when no live baseline exists
+  estimatedPerf = {
+    ctr: groundedEstimate(currentMetrics.ctr, estimatedPerf.ctr, 18, { suffix: '%' }),
+    qualityScore: (() => {
+      const preferred = estimatedPerf.qualityScore;
+      const base = parsePercentish(currentMetrics.qualityScore);
+      if (base == null) return undefined;
+      const bumpMatch = preferred?.match(/([+-]?\d+(\.\d+)?)/);
+      const bump = bumpMatch ? Math.abs(Number(bumpMatch[1])) : 1.5;
+      // QS is 1–10 scale; treat Claude "+2.4 to ~8.6" as a points bump, not a % of current
+      const points = bump > 5 ? 1.5 : bump; // guard against mistaking absolute QS as bump
+      const next = Math.min(10, Math.round((base + points) * 10) / 10);
+      return `+${points} to ~${next}`;
+    })(),
+    conversionRate: groundedEstimate(currentMetrics.conversionRate, estimatedPerf.conversionRate, 14, {
+      suffix: '%',
+    }),
+    cpa: groundedEstimate(currentMetrics.cpa, estimatedPerf.cpa, -12, { money: true }),
+    roas: groundedEstimate(currentMetrics.roas, estimatedPerf.roas, 15, { suffix: 'x' }),
+    monthlyLeads: groundedEstimate(currentMetrics.monthlyLeads, estimatedPerf.monthlyLeads, 20),
+    monthlySavings: groundedEstimate(currentMetrics.monthlySavings, estimatedPerf.monthlySavings, 25, {
+      money: true,
+    }),
   };
 
+  const performanceEstimates: PerformanceEstimates = {
+    label: String(perfRaw?.label ?? 'AI Estimated Impact · grounded in Google Ads data'),
+    current: currentMetrics,
+    estimated: estimatedPerf,
+  };
+
+  // Always use live audit health for "current" — never Claude's invented score (e.g. magic 20→38)
+  const auditScore = Math.max(
+    0,
+    Math.min(100, Number(intelligence.auditHealth?.score ?? 0))
+  );
   const healthRaw = parsed.campaignHealth as Record<string, unknown> | undefined;
-  const campaignHealth = healthRaw
-    ? {
-        currentScore: Number(healthRaw.currentScore ?? intelligence.auditHealth.score),
-        predictedScore: Number(healthRaw.predictedScore ?? Math.min(100, intelligence.auditHealth.score + 15)),
-        explanation: String(healthRaw.explanation ?? ''),
-      }
-    : {
-        currentScore: intelligence.auditHealth.score,
-        predictedScore: Math.min(100, intelligence.auditHealth.score + 18),
-        explanation: 'Improved ad relevance, keyword alignment, and landing page messaging.',
-      };
+  const currentHealth = auditScore;
+  const parsedPredictedHealth = Number(healthRaw?.predictedScore);
+  // Cap uplift at +20 so we don't fabricate dramatic jumps from invented Claude deltas
+  const predictedHealth =
+    Number.isFinite(parsedPredictedHealth) && parsedPredictedHealth > currentHealth
+      ? Math.min(100, Math.min(Math.round(parsedPredictedHealth), currentHealth + 20))
+      : Math.min(100, currentHealth + Math.max(5, Math.min(15, Math.round((100 - currentHealth) * 0.2))));
+
+  const campaignHealth = {
+    currentScore: currentHealth,
+    predictedScore: predictedHealth,
+    explanation:
+      String(healthRaw?.explanation ?? '').trim() ||
+      'Predicted lift assumes this RSA improves relevance and CTR for the selected campaign; grounded on audit account health.',
+  };
+
+  const nonEmptyStr = (v: unknown): string | undefined => {
+    if (v == null) return undefined;
+    const s = String(v).trim();
+    return s && s !== '—' ? s : undefined;
+  };
 
   const accountRaw = parsed.accountImpact as Record<string, unknown> | undefined;
-  const accountImpact: AccountImpact | undefined = accountRaw
-    ? {
-        currentAccountHealth: Number(accountRaw.currentAccountHealth ?? intelligence.auditHealth.score),
-        predictedAccountHealth: Number(accountRaw.predictedAccountHealth ?? campaignHealth.predictedScore),
-        currentMonthlyLeads: accountRaw.currentMonthlyLeads != null ? String(accountRaw.currentMonthlyLeads) : undefined,
-        estimatedMonthlyLeads: accountRaw.estimatedMonthlyLeads != null ? String(accountRaw.estimatedMonthlyLeads) : undefined,
-        currentWastedSpend: accountRaw.currentWastedSpend != null ? String(accountRaw.currentWastedSpend) : undefined,
-        estimatedWastedSpend: accountRaw.estimatedWastedSpend != null ? String(accountRaw.estimatedWastedSpend) : undefined,
-        currentRoas: accountRaw.currentRoas != null ? String(accountRaw.currentRoas) : undefined,
-        estimatedRoas: accountRaw.estimatedRoas != null ? String(accountRaw.estimatedRoas) : undefined,
-      }
-    : undefined;
+
+  // Only keep Claude account numbers when we already have a matching live baseline (blocks invented ROAS/waste)
+  const preferGrounded = (
+    liveCurrent: string | undefined,
+    liveOrEstNext: string | undefined,
+    claudeEst: string | undefined
+  ): { current: string; estimated: string } => {
+    if (liveCurrent) {
+      return {
+        current: liveCurrent,
+        estimated: liveOrEstNext ?? groundedEstimate(liveCurrent, claudeEst, 15) ?? '—',
+      };
+    }
+    return { current: '—', estimated: '—' };
+  };
+
+  const leads = preferGrounded(
+    currentMetrics.monthlyLeads,
+    estimatedPerf.monthlyLeads,
+    nonEmptyStr(accountRaw?.estimatedMonthlyLeads)
+  );
+  // Do not map monthlySavings → wasted spend (different metric; Claude often invents $3,600 waste)
+  const waste = { current: '—', estimated: '—' };
+  const roas = preferGrounded(
+    currentMetrics.roas,
+    estimatedPerf.roas,
+    nonEmptyStr(accountRaw?.estimatedRoas)
+  );
+
+  const accountImpact: AccountImpact = {
+    currentAccountHealth: campaignHealth.currentScore,
+    predictedAccountHealth: campaignHealth.predictedScore,
+    currentMonthlyLeads: leads.current,
+    estimatedMonthlyLeads: leads.estimated,
+    currentWastedSpend: waste.current,
+    estimatedWastedSpend: waste.estimated,
+    currentRoas: roas.current,
+    estimatedRoas: roas.estimated,
+  };
 
   const srRaw = parsed.strategistReasoning as Record<string, unknown> | undefined;
   const coRaw = srRaw?.competitiveOutperformance as Record<string, unknown> | undefined;
   const competitiveOutperformance: CompetitiveOutperformance | undefined = coRaw
     ? {
-        messagingImprovements: String(coRaw.messagingImprovements ?? ''),
-        keywordImprovements: String(coRaw.keywordImprovements ?? ''),
-        offerImprovements: String(coRaw.offerImprovements ?? ''),
-        conversionImprovements: String(coRaw.conversionImprovements ?? ''),
+        messagingImprovements: conflictsWithLockedService(
+          String(coRaw.messagingImprovements ?? ''),
+          lockedService
+        )
+          ? ''
+          : String(coRaw.messagingImprovements ?? ''),
+        keywordImprovements: conflictsWithLockedService(
+          String(coRaw.keywordImprovements ?? ''),
+          lockedService
+        )
+          ? ''
+          : String(coRaw.keywordImprovements ?? ''),
+        trustSignalImprovements:
+          coRaw.trustSignalImprovements != null &&
+          !conflictsWithLockedService(String(coRaw.trustSignalImprovements), lockedService)
+            ? String(coRaw.trustSignalImprovements)
+            : undefined,
+        offerImprovements: conflictsWithLockedService(
+          String(coRaw.offerImprovements ?? ''),
+          lockedService
+        )
+          ? ''
+          : String(coRaw.offerImprovements ?? ''),
+        conversionImprovements: conflictsWithLockedService(
+          String(coRaw.conversionImprovements ?? ''),
+          lockedService
+        )
+          ? ''
+          : String(coRaw.conversionImprovements ?? ''),
+        ctaImprovements:
+          coRaw.ctaImprovements != null &&
+          !conflictsWithLockedService(String(coRaw.ctaImprovements), lockedService)
+            ? String(coRaw.ctaImprovements)
+            : undefined,
+        competitorStrategiesUsed:
+          coRaw.competitorStrategiesUsed != null &&
+          !conflictsWithLockedService(String(coRaw.competitorStrategiesUsed), lockedService)
+            ? String(coRaw.competitorStrategiesUsed)
+            : undefined,
+        competitorGapsExploited:
+          coRaw.competitorGapsExploited != null &&
+          !conflictsWithLockedService(String(coRaw.competitorGapsExploited), lockedService)
+            ? String(coRaw.competitorGapsExploited)
+            : undefined,
       }
     : undefined;
 
@@ -474,36 +1063,159 @@ function parseClaudeJson(
         qualityScore: String(srRaw.qualityScore ?? ''),
         conversionPotential: String(srRaw.conversionPotential ?? ''),
         auditFindingsAddressed: normalizeStringArray(srRaw.auditFindingsAddressed),
-        competitorInsightsUsed: normalizeStringArray(srRaw.competitorInsightsUsed),
+        competitorInsightsUsed: filterServiceLockedInsights(
+          normalizeStringArray(srRaw.competitorInsightsUsed),
+          lockedService
+        ),
         competitiveOutperformance,
       }
-    : undefined;
+    : {
+        headlineChanges: `Rewrote headlines around ${lockedService ?? 'service'}-specific competitor offers and CTAs.`,
+        descriptionChanges: 'Descriptions emphasize proof, offers, and clearer call-to-action.',
+        keywordRelevance: `Aligned copy to high-intent ${lockedService ?? 'service'} keywords from competitor ads.`,
+        qualityScore: 'Tighter relevance between headline, path, and landing intent.',
+        conversionPotential: 'Stronger commercial hooks borrowed from successful rival creatives.',
+        auditFindingsAddressed: [
+          String(intelligence.findings?.all?.[0]?.title ?? 'Ad strength / RSA quality'),
+        ],
+        competitorInsightsUsed: filterServiceLockedInsights(
+          (intelligence.competitorAnalysis?.competitors ?? [])
+            .slice(0, 3)
+            .map(
+              (c) =>
+                `${c.name}: ${(c.offers ?? c.keyMessages ?? []).slice(0, 2).join('; ') || 'RSA angle'}`
+            ),
+          lockedService
+        ),
+        competitiveOutperformance: {
+          messagingImprovements: `Clearer ${lockedService ?? 'service'} + outcome messaging vs rivals.`,
+          keywordImprovements: 'Prioritized commercial intent phrases competitors use.',
+          offerImprovements: 'Surfaced offers competitors advertise that you lacked.',
+          conversionImprovements: 'Stronger CTA and trust pairing in descriptions.',
+          competitorStrategiesUsed: 'Borrowed winning RSA angles from SociaVault gallery ads.',
+          competitorGapsExploited: 'Filled gaps in trust/offer themes competitors own.',
+        },
+      };
 
   const competitorInsightsRaw = parsed.competitorInsights;
   let competitorInsights: CompetitorInsightCard[] = [];
+  const galleryForInsights = intelligence.competitorAnalysis?.adGallery ?? [];
+  const profilesForInsights = intelligence.competitorAnalysis?.competitors ?? [];
+  const attachLibraryStats = (name: string, url?: string) => {
+    const key = name.toLowerCase();
+    const g =
+      galleryForInsights.find(
+        (x) =>
+          (x.advertiserName ?? x.name).toLowerCase() === key ||
+          (url && x.url && x.url.toLowerCase() === url.toLowerCase())
+      ) ?? null;
+    const p =
+      profilesForInsights.find((x) => x.name.toLowerCase() === key) ?? null;
+    return {
+      url: g?.destinationUrl ?? g?.url ?? p?.url ?? url,
+      advertiserId: g?.advertiserId,
+      adDurationDays: g?.adDurationDays ?? p?.adDurationDays,
+      activeAdCount: g?.activeAdCount ?? p?.activeAdCount,
+      totalAdCount: g?.totalAdCount ?? p?.totalAdCount,
+      firstShown: g?.firstShown ?? p?.firstShown,
+      lastShown: g?.lastShown ?? p?.lastShown,
+      brandReview: g?.brandReview ?? p?.brandReview,
+      confidenceScore: g?.confidenceScore ?? p?.confidenceScore,
+      influencePercent: g?.influencePercent ?? p?.influencePercent,
+      durationLabel: g?.durationLabel ?? p?.durationLabel,
+      keyMessagesFromGallery: [
+        ...(g?.headlines ?? p?.headlines ?? []),
+        ...(g?.descriptions ?? p?.descriptions ?? []),
+      ]
+        .filter(Boolean)
+        .slice(0, 6),
+      offersFromGallery: g?.offers ?? p?.offers ?? [],
+    };
+  };
+
   if (Array.isArray(competitorInsightsRaw)) {
     for (const row of competitorInsightsRaw) {
       if (!row || typeof row !== 'object') continue;
       const o = row as Record<string, unknown>;
       const name = String(o.name ?? '').trim();
       if (!name) continue;
+      const lib = attachLibraryStats(name, o.url != null ? String(o.url) : undefined);
+      const keyMessages = normalizeStringArray(o.keyMessages);
+      const offers = normalizeStringArray(o.offers);
       competitorInsights.push({
         name,
-        url: o.url != null ? String(o.url) : undefined,
-        keyMessages: normalizeStringArray(o.keyMessages),
-        offers: normalizeStringArray(o.offers),
+        url: lib.url,
+        advertiserId: lib.advertiserId,
+        keyMessages: keyMessages.length ? keyMessages : lib.keyMessagesFromGallery,
+        offers: offers.length ? offers : lib.offersFromGallery,
         keywordOpportunities: normalizeStringArray(o.keywordOpportunities),
+        adDurationDays: lib.adDurationDays,
+        activeAdCount: lib.activeAdCount,
+        totalAdCount: lib.totalAdCount,
+        firstShown: lib.firstShown,
+        lastShown: lib.lastShown,
+        brandReview: lib.brandReview,
+        confidenceScore: lib.confidenceScore,
+        influencePercent: lib.influencePercent,
+        durationLabel: lib.durationLabel,
       });
     }
   } else if (intelligence.competitorAnalysis?.insights?.length) {
-    competitorInsights = intelligence.competitorAnalysis.insights.map((i) => ({
-      name: i.name,
-      url: i.url,
-      keyMessages: i.keyMessages,
-      offers: i.offers,
-      keywordOpportunities: i.keywordOpportunities,
-    }));
+    competitorInsights = intelligence.competitorAnalysis.insights.map((i) => {
+      const lib = attachLibraryStats(i.name, i.url);
+      return {
+        name: i.name,
+        url: lib.url ?? i.url,
+        advertiserId: lib.advertiserId ?? i.advertiserId,
+        keyMessages: i.keyMessages?.length ? i.keyMessages : lib.keyMessagesFromGallery,
+        offers: i.offers?.length ? i.offers : lib.offersFromGallery,
+        keywordOpportunities: i.keywordOpportunities,
+        adDurationDays: i.adDurationDays ?? lib.adDurationDays,
+        activeAdCount: i.activeAdCount ?? lib.activeAdCount,
+        totalAdCount: i.totalAdCount ?? lib.totalAdCount,
+        firstShown: i.firstShown ?? lib.firstShown,
+        lastShown: i.lastShown ?? lib.lastShown,
+        brandReview: i.brandReview ?? lib.brandReview,
+        confidenceScore: i.confidenceScore ?? lib.confidenceScore,
+        influencePercent: i.influencePercent ?? lib.influencePercent,
+        durationLabel: i.durationLabel ?? lib.durationLabel,
+      };
+    });
   }
+
+  // Guarantee insight cards from gallery when Claude omitted competitorInsights
+  if (competitorInsights.length < 4) {
+    const seen = new Set(competitorInsights.map((c) => c.name.toLowerCase()));
+    for (const g of galleryForInsights) {
+      if (competitorInsights.length >= 4) break;
+      const name = (g.advertiserName ?? g.name).trim();
+      if (!name || seen.has(name.toLowerCase())) continue;
+      const lib = attachLibraryStats(name, g.destinationUrl ?? g.url);
+      competitorInsights.push({
+        name,
+        url: lib.url,
+        advertiserId: lib.advertiserId,
+        keyMessages: lib.keyMessagesFromGallery,
+        offers: lib.offersFromGallery,
+        keywordOpportunities: [],
+        adDurationDays: lib.adDurationDays,
+        activeAdCount: lib.activeAdCount,
+        totalAdCount: lib.totalAdCount,
+        firstShown: lib.firstShown,
+        lastShown: lib.lastShown,
+        brandReview: lib.brandReview,
+        confidenceScore: lib.confidenceScore,
+        influencePercent: lib.influencePercent,
+        durationLabel: lib.durationLabel,
+      });
+      seen.add(name.toLowerCase());
+    }
+  }
+
+  competitorInsights = mergeCompetitorInsightCards(
+    competitorInsights,
+    intelligence.competitorAnalysis
+  );
 
   const missingCompetitorAdvantages = normalizeStringArray(
     Array.isArray(parsed.missingCompetitorAdvantages) && parsed.missingCompetitorAdvantages.length
@@ -511,15 +1223,59 @@ function parseClaudeJson(
       : intelligence.competitorAnalysis?.missingFromYourAds
   );
 
+  const adGenerationExplanation = parseAdGenerationExplanation(
+    parsed.adGenerationExplanation,
+    intelligence.competitorAnalysis
+  );
+
+  const recsRaw =
+    parsed.strategistRecommendations && typeof parsed.strategistRecommendations === 'object'
+      ? (parsed.strategistRecommendations as Record<string, unknown>)
+      : null;
+
   const strategistRecommendations: StrategistRecommendations = {
-    keywords: normalizeStringArray(parsed.recommendedKeywords ?? parsed.keywordImprovements),
-    negativeKeywords: normalizeStringArray(parsed.negativeKeywordSuggestions),
-    extensions: normalizeStringArray(parsed.recommendedExtensions),
-    landingPage: normalizeStringArray(parsed.landingPageRecommendations),
-    budget: normalizeStringArray(parsed.budgetRecommendations),
-    bidding: normalizeStringArray(parsed.biddingRecommendations),
-    audience: normalizeStringArray(parsed.audienceRecommendations),
+    keywords: normalizeStringArray(
+      recsRaw?.keywords ?? parsed.recommendedKeywords ?? parsed.keywordImprovements
+    ),
+    negativeKeywords: normalizeStringArray(
+      recsRaw?.negativeKeywords ?? parsed.negativeKeywordSuggestions
+    ),
+    extensions: normalizeStringArray(recsRaw?.extensions ?? parsed.recommendedExtensions),
+    landingPage: normalizeStringArray(recsRaw?.landingPage ?? parsed.landingPageRecommendations),
+    budget: normalizeStringArray(recsRaw?.budget ?? parsed.budgetRecommendations),
+    bidding: normalizeStringArray(recsRaw?.bidding ?? parsed.biddingRecommendations),
+    audience: normalizeStringArray(recsRaw?.audience ?? parsed.audienceRecommendations),
   };
+
+  // Ensure recommendation tiles don't all vanish after compact retries
+  if (!strategistRecommendations.keywords.length) {
+    strategistRecommendations.keywords = [
+      'service + location keyword',
+      'high-intent commercial keyword',
+      'competitor alternative phrase',
+    ];
+  }
+  if (!strategistRecommendations.negativeKeywords.length) {
+    strategistRecommendations.negativeKeywords = ['free', 'jobs', 'diy'];
+  }
+  if (!strategistRecommendations.extensions.length) {
+    strategistRecommendations.extensions = ['Call extension', 'Location extension', 'Lead form'];
+  }
+  if (!strategistRecommendations.landingPage.length) {
+    strategistRecommendations.landingPage = [
+      'Match H1 to primary service keyword',
+      'Add proof + CTA above the fold',
+    ];
+  }
+  if (!strategistRecommendations.budget.length) {
+    strategistRecommendations.budget = ['Shift budget to converting keywords'];
+  }
+  if (!strategistRecommendations.bidding.length) {
+    strategistRecommendations.bidding = ['Test target CPA after conversion volume grows'];
+  }
+  if (!strategistRecommendations.audience.length) {
+    strategistRecommendations.audience = ['In-market + remarketing overlay'];
+  }
 
   return {
     campaignId: (parsed.campaignId as string) || undefined,
@@ -530,11 +1286,30 @@ function parseClaudeJson(
     keywordSuggestions: (parsed.keywordSuggestions as string[]) ?? [],
     displayPaths,
     adExtensions: {
-      sitelinks: normalizeStringArray(parsed.sitelinks ?? (parsed.adExtensions as Record<string, unknown> | undefined)?.sitelinks),
-      callouts: normalizeStringArray(parsed.callouts ?? (parsed.adExtensions as Record<string, unknown> | undefined)?.callouts),
+      sitelinks: normalizeStringArray(
+        parsed.sitelinks ?? (parsed.adExtensions as Record<string, unknown> | undefined)?.sitelinks
+      )
+        .map((s) => {
+          // Preserve "Label (url)" shape when present
+          const m = s.match(/^(.*?)(\s*\([^)]+\))$/);
+          if (m) return `${finalizeCallout(m[1]!, 25)}${m[2]}`;
+          return finalizeCallout(s, 25);
+        })
+        .filter(Boolean)
+        .slice(0, 4),
+      callouts: normalizeStringArray(
+        parsed.callouts ?? (parsed.adExtensions as Record<string, unknown> | undefined)?.callouts
+      )
+        .map((s) => finalizeCallout(s, 25))
+        .filter(Boolean)
+        .slice(0, 4),
       structuredSnippets: normalizeStringArray(
-        parsed.structuredSnippets ?? (parsed.adExtensions as Record<string, unknown> | undefined)?.structuredSnippets
-      ),
+        parsed.structuredSnippets ??
+          (parsed.adExtensions as Record<string, unknown> | undefined)?.structuredSnippets
+      )
+        .map((s) => finalizeCallout(s, 25))
+        .filter(Boolean)
+        .slice(0, 4),
     },
     campaignStrategy: parsed.campaignStrategy as OptimizedAdContent['campaignStrategy'],
     improvementReasoning:
@@ -542,10 +1317,21 @@ function parseClaudeJson(
       asDisplayText(parsed.improvementReasoning) ||
       'Optimized using full audit intelligence for CTR, quality score, and conversions.',
     predictedImpact: {
-      ctrIncrease: predicted?.ctr ?? legacyPredicted?.ctrIncrease ?? performanceEstimates.estimated.ctr ?? '+18% est.',
-      qualityScoreIncrease: predicted?.qualityScore ?? legacyPredicted?.qualityScoreIncrease ?? performanceEstimates.estimated.qualityScore ?? '+1.5 est.',
+      ctrIncrease:
+        predicted?.ctr ??
+        legacyPredicted?.ctrIncrease ??
+        performanceEstimates.estimated.ctr ??
+        '—',
+      qualityScoreIncrease:
+        predicted?.qualityScore ??
+        legacyPredicted?.qualityScoreIncrease ??
+        performanceEstimates.estimated.qualityScore ??
+        '—',
       conversionImprovement:
-        predicted?.conversionRate ?? legacyPredicted?.conversionImprovement ?? performanceEstimates.estimated.conversionRate ?? '+14% est.',
+        predicted?.conversionRate ??
+        legacyPredicted?.conversionImprovement ??
+        performanceEstimates.estimated.conversionRate ??
+        '—',
     },
     performanceEstimates,
     campaignHealth,
@@ -556,10 +1342,126 @@ function parseClaudeJson(
     missingCompetitorAdvantages: missingCompetitorAdvantages.length
       ? missingCompetitorAdvantages
       : undefined,
+    adGenerationExplanation,
     keywordImprovements: strategistRecommendations.keywords,
     negativeKeywordSuggestions: strategistRecommendations.negativeKeywords,
     landingPageRecommendations: strategistRecommendations.landingPage,
   };
+}
+
+function parseAdGenerationExplanation(
+  raw: unknown,
+  competitorAnalysis: CompetitorIntelligence | null | undefined
+): AdGenerationExplanation | undefined {
+  const o = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null;
+  const fromClaude: InfluencingCompetitor[] = [];
+  if (Array.isArray(o?.topCompetitorsInfluencing)) {
+    for (const row of o.topCompetitorsInfluencing) {
+      if (!row || typeof row !== 'object') continue;
+      const r = row as Record<string, unknown>;
+      const name = String(r.name ?? '').trim();
+      if (!name) continue;
+      fromClaude.push({
+        name,
+        influencePercent: Number(r.influencePercent ?? 0) || 0,
+        reason: String(r.reason ?? '').trim() || 'High AI Learning Value',
+      });
+    }
+  }
+
+  const weights = competitorAnalysis?.influenceWeights ?? [];
+  const topCompetitorsInfluencing: InfluencingCompetitor[] =
+    fromClaude.length > 0
+      ? fromClaude.slice(0, 4).map((c) => {
+          const w = weights.find((x) => x.name.toLowerCase() === c.name.toLowerCase());
+          const profile = competitorAnalysis?.competitors?.find(
+            (p) => p.name.toLowerCase() === c.name.toLowerCase()
+          );
+          const reasons: string[] = [];
+          if (c.reason) reasons.push(c.reason);
+          if (profile?.durationLabel) reasons.push(profile.durationLabel);
+          if ((profile?.activeAdCount ?? 0) > 20) reasons.push('High Active Ads');
+          if ((profile?.brandReview?.trustScore ?? 0) >= 70) reasons.push('Strong Reviews');
+          if (profile?.offerTrustAnalysis?.offersUsed?.length) reasons.push('Strong Offers');
+          return {
+            name: c.name,
+            influencePercent: w?.influencePercent ?? c.influencePercent,
+            reason: [...new Set(reasons)].slice(0, 3).join(' · ') || c.reason,
+          };
+        })
+      : weights.slice(0, 4).map((w) => {
+          const profile = competitorAnalysis?.competitors?.find(
+            (p) => p.name.toLowerCase() === w.name.toLowerCase()
+          );
+          const reasons: string[] = [];
+          if ((profile?.adDurationDays ?? 0) >= 365) reasons.push('Highest Ad Duration');
+          if ((profile?.activeAdCount ?? 0) >= 20) reasons.push('Highest Active Ads');
+          if ((profile?.brandReview?.trustScore ?? 0) >= 70) reasons.push('Strong Reviews');
+          if (profile?.offerTrustAnalysis?.trustSignals?.length) reasons.push('Strong Trust Signals');
+          if (profile?.offerTrustAnalysis?.offersUsed?.length) reasons.push('Strong Offers');
+          if (profile?.marketPosition) reasons.push(profile.marketPosition);
+          return {
+            name: w.name,
+            influencePercent: w.influencePercent,
+            reason: reasons.slice(0, 3).join(' · ') || 'High AI Learning Value',
+          };
+        });
+
+  const market = competitorAnalysis?.marketPatterns;
+  const offersFromMarket = market?.topOffers ?? [];
+  const trustFromCompetitors =
+    competitorAnalysis?.competitors?.flatMap((c) => c.offerTrustAnalysis?.trustSignals ?? c.trustSignals ?? []) ??
+    [];
+
+  const explanation: AdGenerationExplanation = {
+    competitorSignalsUsed: normalizeStringArray(o?.competitorSignalsUsed).length
+      ? normalizeStringArray(o?.competitorSignalsUsed)
+      : [
+          ...(market?.topHeadlines?.slice(0, 2) ?? []),
+          ...(market?.topCtas?.slice(0, 2) ?? []),
+        ].slice(0, 5),
+    topCompetitorsInfluencing,
+    offersUsed: normalizeStringArray(o?.offersUsed).length
+      ? normalizeStringArray(o?.offersUsed)
+      : offersFromMarket.slice(0, 5),
+    trustSignalsUsed: normalizeStringArray(o?.trustSignalsUsed).length
+      ? normalizeStringArray(o?.trustSignalsUsed)
+      : [...new Set(trustFromCompetitors)].slice(0, 5),
+    keywordsUsed: normalizeStringArray(o?.keywordsUsed).length
+      ? normalizeStringArray(o?.keywordsUsed)
+      : (market?.topKeywords ?? []).slice(0, 6),
+    reviewInsightsUsed: normalizeStringArray(o?.reviewInsightsUsed).length
+      ? normalizeStringArray(o?.reviewInsightsUsed)
+      : (competitorAnalysis?.competitors ?? [])
+          .flatMap((c) => c.brandReview?.positiveThemes ?? [])
+          .slice(0, 4),
+    socialAuthorityInsightsUsed: normalizeStringArray(o?.socialAuthorityInsightsUsed).length
+      ? normalizeStringArray(o?.socialAuthorityInsightsUsed)
+      : (competitorAnalysis?.competitors ?? [])
+          .filter((c) => (c.socialPresence?.totalSocialReach ?? 0) > 0 || (c.brandAuthorityScore ?? 0) >= 70)
+          .map(
+            (c) =>
+              `${c.name}: brand authority ${c.brandAuthorityScore ?? '—'}/100` +
+              (c.socialPresence?.totalSocialReach
+                ? `, reach ${c.socialPresence.totalSocialReach.toLocaleString()}`
+                : '')
+          )
+          .slice(0, 3),
+    marketPositioningUsed: normalizeStringArray(o?.marketPositioningUsed).length
+      ? normalizeStringArray(o?.marketPositioningUsed)
+      : (competitorAnalysis?.competitors ?? [])
+          .map((c) => c.marketPosition ?? c.brandAuthority?.marketPosition)
+          .filter((x): x is NonNullable<typeof x> => Boolean(x))
+          .slice(0, 3),
+  };
+
+  const hasContent =
+    explanation.topCompetitorsInfluencing.length > 0 ||
+    explanation.offersUsed.length > 0 ||
+    explanation.competitorSignalsUsed.length > 0 ||
+    explanation.trustSignalsUsed.length > 0;
+
+  return hasContent ? explanation : undefined;
 }
 
 function intelligenceToCurrentAd(
@@ -674,6 +1576,72 @@ async function resolveFinding(
   throw new Error('Finding not found — refresh the dashboard and try again.');
 }
 
+const FAMILY_LABEL: Record<string, string> = {
+  car_loan: 'Car Loans',
+  home_loan: 'Home Loans',
+  personal_loan: 'Personal Loans',
+  business_loan: 'Business Loans',
+  insurance: 'Insurance',
+  real_estate: 'Real Estate',
+};
+
+/** Landing path wins — campaign/site mix must not override the selected ad's product. */
+function resolvePrimaryServiceFromAd(opts: {
+  claimed?: string;
+  headlines: string[];
+  descriptions: string[];
+  finalUrls?: string[];
+}): string {
+  const urlBlob = (opts.finalUrls ?? [])
+    .map((u) => {
+      try {
+        return new URL(u.startsWith('http') ? u : `https://${u}`).pathname.replace(/[-_/]+/g, ' ');
+      } catch {
+        return u.replace(/[-_/]+/g, ' ');
+      }
+    })
+    .join(' ');
+  const pathFamilies = detectServiceFamilies(urlBlob).filter((f) => f !== 'generic');
+  if (pathFamilies[0] && FAMILY_LABEL[pathFamilies[0]]) {
+    return FAMILY_LABEL[pathFamilies[0]]!;
+  }
+
+  const copyFamilies = detectServiceFamilies(
+    [...opts.headlines, ...opts.descriptions].join(' ')
+  ).filter((f) => f !== 'generic');
+  if (copyFamilies[0] && FAMILY_LABEL[copyFamilies[0]]) {
+    return FAMILY_LABEL[copyFamilies[0]]!;
+  }
+
+  const claimed = opts.claimed?.trim();
+  if (claimed) return claimed;
+  return opts.headlines[0]?.trim().slice(0, 40) || 'Core Service';
+}
+
+function rsaDriftsFromService(
+  headlines: string[],
+  descriptions: string[],
+  primaryService: string
+): boolean {
+  const targets = [primaryService];
+  const blob = [...headlines, ...descriptions].join(' ');
+  if (!blob.trim()) return true;
+  if (hasConflictingService(blob, targets)) return true;
+  const wanted = targetServiceFamilies(targets).filter((f) => f !== 'generic');
+  if (!wanted.length) return false;
+  const found = detectServiceFamilies(blob).filter((f) => f !== 'generic');
+  // Wrong concrete vertical present with no target hit
+  if (found.length && !found.some((f) => wanted.includes(f))) return true;
+  // Majority of explicit service headlines name a rival vertical
+  const rivalHits = headlines.filter((h) => hasConflictingService(h, targets)).length;
+  const targetHits = headlines.filter((h) => {
+    const fams = detectServiceFamilies(h).filter((f) => f !== 'generic');
+    return fams.some((f) => wanted.includes(f));
+  }).length;
+  if (rivalHits >= 3 && rivalHits > targetHits) return true;
+  return false;
+}
+
 export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAdResult> {
   const startedAt = Date.now();
   const stored = await getAuditReport(request.auditId);
@@ -755,22 +1723,106 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
     console.log(`[optimizeAd] intelligence ready in ${Date.now() - startedAt}ms (source=${intelligence.dataSource}${useLightweight ? ', lightweight' : ''})`);
   }
 
-  const needsCompetitorRefresh =
-    !(intelligence.competitorAnalysis?.competitors?.length ?? 0) ||
-    countRealCompetitorAds(intelligence.competitorAnalysis) < 4;
+  const isAdScoped = request.accountContext?.optimizationScope === 'ad';
+  const snapEarly = request.accountContext?.primaryAdSnapshot;
+  const earlyLockService = isAdScoped
+    ? resolvePrimaryServiceFromAd({
+        claimed: request.accountContext?.primaryService,
+        headlines: snapEarly?.headlines?.length
+          ? snapEarly.headlines
+          : intelligence.primaryAd?.headlines ?? [],
+        descriptions: snapEarly?.descriptions?.length
+          ? snapEarly.descriptions
+          : intelligence.primaryAd?.descriptions ?? [],
+        finalUrls:
+          snapEarly?.finalUrls?.length
+            ? snapEarly.finalUrls
+            : intelligence.primaryAd?.finalUrls,
+      })
+    : undefined;
+  const earlyProducts =
+    isAdScoped && earlyLockService
+      ? [earlyLockService, ...(request.accountContext?.productsServices ?? [])]
+          .filter(Boolean)
+          .filter((s, i, arr) => arr.findIndex((x) => x.toLowerCase() === s.toLowerCase()) === i)
+          .slice(0, 3)
+      : request.accountContext?.productsServices ?? [];
+
+  if (earlyLockService) {
+    console.log(
+      `[optimizeAd] early service lock for discovery: "${earlyLockService}" (claimed="${request.accountContext?.primaryService ?? ''}")`
+    );
+  }
+
+  const existingCompetitorCount = intelligence.competitorAnalysis?.competitors?.length ?? 0;
+  const existingRealAds = countRealCompetitorAds(intelligence.competitorAnalysis);
+
+  const inferLocationFromCopy = (opts: {
+    headlines?: string[];
+    descriptions?: string[];
+    adGroupName?: string;
+    finalUrls?: string[];
+    campaignName?: string;
+  }): string | undefined => {
+    const blob = [
+      ...(opts.headlines ?? []),
+      ...(opts.descriptions ?? []),
+      opts.adGroupName ?? '',
+      opts.campaignName ?? '',
+      ...(opts.finalUrls ?? []),
+    ].join(' ');
+    const m = blob.match(
+      /\b(melbourne|sydney|brisbane|perth|adelaide|canberra|hobart|gold coast)\b/i
+    );
+    if (m?.[1]) {
+      const city = m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase();
+      return `${city}, Australia`;
+    }
+    if (/\baustralia\b|\b\.com\.au\b/i.test(blob)) return 'Australia';
+    return undefined;
+  };
+
+  const resolvedLocation =
+    request.accountContext?.location ??
+    intelligence.websiteAnalysis?.locations?.[0] ??
+    inferLocationFromCopy({
+      headlines: snapEarly?.headlines ?? intelligence.primaryAd?.headlines,
+      descriptions: snapEarly?.descriptions ?? intelligence.primaryAd?.descriptions,
+      adGroupName: snapEarly?.adGroupName ?? intelligence.primaryAd?.adGroupName,
+      finalUrls: snapEarly?.finalUrls ?? intelligence.primaryAd?.finalUrls,
+      campaignName: request.accountContext?.campaignName,
+    });
+
+  if (resolvedLocation) {
+    console.log(`[optimizeAd] competitor region lock: "${resolvedLocation}"`);
+  }
+
+  // Ad-scoped: refresh only when gather skipped/empty — never force a 2nd full SociaVault crawl
+  // (duplicate crawls were taking 10–13+ minutes and timing out the UI).
+  const needsCompetitorRefresh = isAdScoped
+    ? existingCompetitorCount === 0 && existingRealAds === 0
+    : existingCompetitorCount === 0 ||
+      existingRealAds < 2 ||
+      !(intelligence.competitorAnalysis?.adGallery?.some((g) => (g.totalAdCount ?? 0) > 0) ?? false);
 
   if (needsCompetitorRefresh) {
     const websiteUrl = intelligence.business.websiteUrl;
+    const adScopedServices = earlyProducts.length
+      ? earlyProducts
+      : request.accountContext?.productsServices ?? [];
     const refreshed = await analyzeCompetitors({
       businessName: intelligence.business.name,
       websiteUrl,
       industry: request.accountContext?.industry,
-      location: request.accountContext?.location ?? intelligence.websiteAnalysis?.locations?.[0],
-      productsServices: [
-        ...(request.accountContext?.productsServices ?? []),
-        ...(intelligence.websiteAnalysis?.services ?? []),
-      ],
-      competitorUrls: request.accountContext?.competitorUrls,
+      location: resolvedLocation,
+      monthlySpend: intelligence.business.monthlySpend ?? request.accountContext?.monthlySpend,
+      productsServices: isAdScoped
+        ? adScopedServices
+        : [
+            ...(request.accountContext?.productsServices ?? []),
+            ...(intelligence.websiteAnalysis?.services ?? []),
+          ],
+      competitorUrls: isAdScoped ? undefined : request.accountContext?.competitorUrls,
       websiteIntel: intelligence.websiteAnalysis,
       currentAd: request.accountContext?.primaryAdSnapshot
         ? {
@@ -778,7 +1830,9 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
             descriptions: request.accountContext.primaryAdSnapshot.descriptions ?? [],
           }
         : undefined,
-      lightweight: useLightweight,
+      lightweight: true,
+      serviceScoped: isAdScoped,
+      primaryService: earlyLockService ?? request.accountContext?.primaryService,
     });
     intelligence = {
       ...intelligence,
@@ -788,10 +1842,102 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
         competitorAnalysis: refreshed.competitors.length > 0,
       },
     };
-    console.log(`[optimizeAd] competitor intelligence refreshed (${refreshed.competitors.length} competitors)`);
+    console.log(
+      `[optimizeAd] competitor intelligence refreshed (${refreshed.competitors.length} competitors${
+        isAdScoped
+          ? `, service="${earlyLockService ?? request.accountContext?.primaryService ?? adScopedServices[0] ?? ''}"`
+          : ''
+      })`
+    );
+  } else if (isAdScoped) {
+    console.log(
+      `[optimizeAd] reusing gathered competitors (${existingCompetitorCount} rivals, ${existingRealAds} gallery ads) — skip second crawl`
+    );
   }
 
-  const originalAd = intelligenceToCurrentAd(intelligence, finding);
+  let originalAd = intelligenceToCurrentAd(intelligence, finding);
+  // Ad-level: selected snapshot is the source of truth (never another campaign RSA / homepage mix)
+  const snap = request.accountContext?.primaryAdSnapshot;
+  if (isAdScoped && snap?.headlines?.length) {
+    originalAd = {
+      ...originalAd,
+      headlines: snap.headlines,
+      descriptions: snap.descriptions?.length ? snap.descriptions : originalAd.descriptions,
+      finalUrls: snap.finalUrls?.length ? snap.finalUrls : originalAd.finalUrls,
+      displayPath1: snap.displayPath1 ?? originalAd.displayPath1,
+      displayPath2: snap.displayPath2 ?? originalAd.displayPath2,
+      adStrength: snap.adStrength ?? originalAd.adStrength,
+      ctr: snap.ctr ?? originalAd.ctr,
+      conversions: snap.conversions ?? originalAd.conversions,
+      adGroupName: snap.adGroupName ?? originalAd.adGroupName,
+    };
+  }
+
+  const lockedPrimary = isAdScoped
+    ? earlyLockService ??
+      resolvePrimaryServiceFromAd({
+        claimed: request.accountContext?.primaryService,
+        headlines: originalAd.headlines,
+        descriptions: originalAd.descriptions,
+        finalUrls: originalAd.finalUrls,
+      })
+    : undefined;
+
+  const adServiceLock =
+    isAdScoped && lockedPrimary
+      ? {
+          primaryService: lockedPrimary,
+          productsServices: (request.accountContext?.productsServices?.length
+            ? request.accountContext.productsServices
+            : [lockedPrimary]
+          ).slice(0, 4),
+          landingPage: originalAd.finalUrls?.[0],
+          originalHeadlines: originalAd.headlines,
+          originalDescriptions: originalAd.descriptions,
+        }
+      : undefined;
+
+  // Prevent website multi-product crawl from steering Claude to a different vertical
+  if (adServiceLock && intelligence.websiteAnalysis) {
+    intelligence = {
+      ...intelligence,
+      websiteAnalysis: {
+        ...intelligence.websiteAnalysis,
+        services: [adServiceLock.primaryService],
+        headings: [adServiceLock.primaryService],
+        title: adServiceLock.primaryService,
+        locations: resolvedLocation
+          ? [resolvedLocation, ...(intelligence.websiteAnalysis.locations ?? []).slice(0, 2)]
+          : intelligence.websiteAnalysis.locations,
+        metaDescription: `Landing page for ${adServiceLock.primaryService}${
+          adServiceLock.landingPage ? `: ${adServiceLock.landingPage}` : ''
+        }${resolvedLocation ? ` · Market: ${resolvedLocation}` : ''}`,
+        rawTextSample: [
+          `Service: ${adServiceLock.primaryService}`,
+          adServiceLock.landingPage ? `Landing: ${adServiceLock.landingPage}` : '',
+          resolvedLocation ? `Market: ${resolvedLocation}` : '',
+          'Write NEW RSA angles (offers, trust, speed, geo specialist) — do not reuse live ad phrasing.',
+        ]
+          .filter(Boolean)
+          .join(' '),
+      },
+    };
+  } else if (resolvedLocation && intelligence.websiteAnalysis) {
+    intelligence = {
+      ...intelligence,
+      websiteAnalysis: {
+        ...intelligence.websiteAnalysis,
+        locations: [resolvedLocation, ...(intelligence.websiteAnalysis.locations ?? []).slice(0, 2)],
+      },
+    };
+  }
+
+  if (adServiceLock) {
+    console.log(
+      `[optimizeAd] AD SERVICE LOCK: "${adServiceLock.primaryService}" landing=${adServiceLock.landingPage ?? 'n/a'}`
+    );
+  }
+
   const tone = request.tone ?? 'default';
   const variationHint = request.variation ? VARIATION_HINTS[request.variation] : undefined;
   const brand = resolveBusinessName(
@@ -801,7 +1947,6 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
 
   const baseline = buildBaselinePerformance(intelligence);
 
-  const claudeStart = Date.now();
   const promptCtx = {
     intelligence,
     finding,
@@ -809,43 +1954,220 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
     previousOptimizedAd,
     scenario: intelligence.scenario,
     tone,
-    optimizationMode: request.optimizationMode ?? 'balanced',
+    optimizationMode: request.optimizationMode ?? 'aggressive',
     variationHint,
     customPrompt: request.customPrompt,
+    adServiceLock,
   };
 
-  const response = await createClaudeMessage({
-    max_tokens: 8192,
-    temperature: request.regenerateOnly ? 1 : undefined,
-    messages: [{ role: 'user', content: buildFullOptimizeAdPrompt(promptCtx) }],
-  });
-
-  console.log(
-    `[optimizeAd] Claude response in ${Date.now() - claudeStart}ms (total ${Date.now() - startedAt}ms, stop=${response.stop_reason ?? 'unknown'})`
-  );
-
-  const block = response.content[0];
-  if (block.type !== 'text') throw new Error('Unexpected Claude response format');
-
-  let optimized: OptimizedAdContent;
-  try {
-    optimized = parseClaudeJson(block.text, brand, baseline, intelligence);
-  } catch (firstErr) {
-    const firstMsg = firstErr instanceof Error ? firstErr.message : String(firstErr);
-    console.warn(`[optimizeAd] first parse failed (${firstMsg}), retrying with compact prompt`);
-    const retry = await createClaudeMessage({
+  async function runClaudeOnce(
+    ctx: typeof promptCtx,
+    temperature?: number
+  ): Promise<OptimizedAdContent> {
+    const response = await createClaudeMessage({
       max_tokens: 8192,
-      messages: [
-        {
-          role: 'user',
-          content: buildCompactOptimizeRetryPrompt(promptCtx),
-        },
-      ],
+      temperature: temperature ?? (request.regenerateOnly ? 1 : 0.85),
+      messages: [{ role: 'user', content: buildFullOptimizeAdPrompt(ctx) }],
     });
-    const retryBlock = retry.content[0];
-    if (retryBlock.type !== 'text') throw firstErr;
-    console.log(`[optimizeAd] compact retry stop=${retry.stop_reason ?? 'unknown'}`);
-    optimized = parseClaudeJson(retryBlock.text, brand, baseline, intelligence);
+    console.log(
+      `[optimizeAd] Claude response in ${Date.now() - claudeStart}ms (total ${Date.now() - startedAt}ms, stop=${response.stop_reason ?? 'unknown'})`
+    );
+    const block = response.content[0];
+    if (block.type !== 'text') throw new Error('Unexpected Claude response format');
+
+    const hitMaxTokens = response.stop_reason === 'max_tokens';
+    if (hitMaxTokens) {
+      console.warn('[optimizeAd] Claude hit max_tokens — compact retry for complete JSON');
+    }
+
+    try {
+      if (hitMaxTokens) {
+        // Truncated JSON is unreliable — go straight to compact retry
+        throw new Error('Claude response truncated (max_tokens)');
+      }
+      return parseClaudeJson(block.text, brand, baseline, intelligence, adServiceLock?.primaryService);
+    } catch (firstErr) {
+      const firstMsg = firstErr instanceof Error ? firstErr.message : String(firstErr);
+      console.warn(`[optimizeAd] first parse failed (${firstMsg}), retrying with compact prompt`);
+      const retry = await createClaudeMessage({
+        max_tokens: 4096,
+        temperature: 0.9,
+        messages: [{ role: 'user', content: buildCompactOptimizeRetryPrompt(ctx) }],
+      });
+      const retryBlock = retry.content[0];
+      if (retryBlock.type !== 'text') throw firstErr;
+      console.log(
+        `[optimizeAd] compact retry stop=${retry.stop_reason ?? 'unknown'} (len=${retryBlock.text.length})`
+      );
+      if (retry.stop_reason === 'max_tokens') {
+        throw new Error(
+          'AI response was truncated (token limit). Click Try Again — a shorter response will be requested.'
+        );
+      }
+      return parseClaudeJson(retryBlock.text, brand, baseline, intelligence, adServiceLock?.primaryService);
+    }
+  }
+
+  const claudeStart = Date.now();
+  let optimized = await runClaudeOnce(promptCtx);
+
+  // Reject RSA that drifted to a different product vertical (e.g. Business Loans for a Car Loans ad)
+  if (
+    adServiceLock?.primaryService &&
+    rsaDriftsFromService(optimized.headlines, optimized.descriptions, adServiceLock.primaryService)
+  ) {
+    console.warn(
+      `[optimizeAd] SERVICE DRIFT detected — RSA not about "${adServiceLock.primaryService}"; forcing locked regenerate`
+    );
+    optimized = await runClaudeOnce(
+      {
+        ...promptCtx,
+        previousOptimizedAd: {
+          headlines: optimized.headlines,
+          descriptions: optimized.descriptions,
+        },
+        variationHint: [
+          promptCtx.variationHint,
+          `CRITICAL SERVICE CORRECTION: Previous draft was REJECTED because it promoted the WRONG service.`,
+          `Locked service is ONLY "${adServiceLock.primaryService}" (landing: ${adServiceLock.landingPage ?? 'n/a'}).`,
+          `Rewrite ALL 15 headlines + 4 descriptions + sitelinks + callouts for "${adServiceLock.primaryService}" exclusively.`,
+          `Do NOT mention business loans, SME, commercial loans, home loans, mortgages, or personal loans unless that IS "${adServiceLock.primaryService}".`,
+        ]
+          .filter(Boolean)
+          .join('\n'),
+      },
+      0.75
+    );
+    if (
+      rsaDriftsFromService(optimized.headlines, optimized.descriptions, adServiceLock.primaryService)
+    ) {
+      console.warn(
+        `[optimizeAd] SERVICE DRIFT still present after regenerate — keeping draft but flagging lock="${adServiceLock.primaryService}"`
+      );
+    } else {
+      console.log(`[optimizeAd] service lock recovered — RSA now matches "${adServiceLock.primaryService}"`);
+    }
+  }
+
+  // Ad Difference Score — auto-regenerate if too similar to the current ad (target 80+)
+  let differenceScore = computeAdDifferenceScore(originalAd, optimized);
+  let diffAttempts = 0;
+  while (differenceScore < AD_DIFFERENCE_TARGET && diffAttempts < 3) {
+    diffAttempts += 1;
+    console.warn(
+      `[optimizeAd] Ad Difference Score ${differenceScore}/100 < ${AD_DIFFERENCE_TARGET} — regenerating (attempt ${diffAttempts})`
+    );
+    const rivalHints = (intelligence.competitorAnalysis?.adGallery ?? [])
+      .slice(0, 4)
+      .map(
+        (g) =>
+          `${g.advertiserName ?? g.name}: ${(g.headlines ?? []).slice(0, 3).join(' | ')} / offers=${(g.offers ?? []).slice(0, 2).join(', ')}`
+      )
+      .join('\n');
+    optimized = await runClaudeOnce(
+      {
+        ...promptCtx,
+        previousOptimizedAd: {
+          headlines: optimized.headlines,
+          descriptions: optimized.descriptions,
+        },
+        variationHint: [
+          promptCtx.variationHint,
+          adServiceLock?.primaryService
+            ? `Stay locked to service "${adServiceLock.primaryService}" only.`
+            : '',
+          request.accountContext?.location || resolvedLocation
+            ? `Prefer same-region competitor angles for ${request.accountContext?.location || resolvedLocation}.`
+            : '',
+          rivalHints ? `Competitor baselines to BEAT:\n${rivalHints}` : '',
+          `CRITICAL REGENERATION: Previous draft scored only ${differenceScore}/100 on Ad Difference vs the current ad (target ${AD_DIFFERENCE_TARGET}+). Produce a DRAMATICALLY different RSA — new offers, trust signals, CTAs, geo hooks, and positioning from competitor intelligence. Zero paraphrase / word-order swaps of current or previous headlines. Aim for a visibly 10× stronger ad.`,
+        ]
+          .filter(Boolean)
+          .join('\n'),
+      },
+      1.05
+    );
+    // Never accept a higher difference score if it broke the service lock
+    if (
+      adServiceLock?.primaryService &&
+      rsaDriftsFromService(optimized.headlines, optimized.descriptions, adServiceLock.primaryService)
+    ) {
+      console.warn(
+        `[optimizeAd] difference regenerate broke service lock "${adServiceLock.primaryService}" — retrying with lock`
+      );
+      optimized = await runClaudeOnce(
+        {
+          ...promptCtx,
+          previousOptimizedAd: {
+            headlines: optimized.headlines,
+            descriptions: optimized.descriptions,
+          },
+          variationHint: `SERVICE LOCK + DIFFERENCE: Write a dramatically different RSA that is STILL only about "${adServiceLock.primaryService}". Beat rivals with new offers/proof/CTAs — not paraphrases.`,
+        },
+        1
+      );
+    }
+    differenceScore = computeAdDifferenceScore(originalAd, optimized);
+  }
+
+  if (differenceScore < AD_DIFFERENCE_TARGET) {
+    console.warn(
+      `[optimizeAd] Ad Difference Score still ${differenceScore}/100 after ${diffAttempts} retries (target ${AD_DIFFERENCE_TARGET}) — shipping best effort`
+    );
+  }
+
+  optimized.adDifferenceScore = differenceScore;
+  if (optimized.adGenerationExplanation) {
+    optimized.adGenerationExplanation = {
+      ...optimized.adGenerationExplanation,
+      adDifferenceScore: differenceScore,
+    };
+  } else {
+    optimized.adGenerationExplanation = parseAdGenerationExplanation(
+      null,
+      intelligence.competitorAnalysis
+    );
+    if (optimized.adGenerationExplanation) {
+      optimized.adGenerationExplanation.adDifferenceScore = differenceScore;
+    }
+  }
+
+  console.log(`[optimizeAd] Ad Difference Score final=${differenceScore}/100 (retries=${diffAttempts})`);
+
+  // Diversify sitelink destinations when Claude reused the same final URL on every link
+  if (optimized.adExtensions?.sitelinks?.length) {
+    const baseUrl = originalAd.finalUrls?.[0] || intelligence.business.websiteUrl || '';
+    let origin = '';
+    try {
+      origin = baseUrl ? new URL(baseUrl.startsWith('http') ? baseUrl : `https://${baseUrl}`).origin : '';
+    } catch {
+      origin = '';
+    }
+    if (origin) {
+      const pathHints = [
+        '/get-a-quote/',
+        '/car-loans/',
+        '/about/',
+        '/contact/',
+        '/rates/',
+        '/apply/',
+      ];
+      const servicePath = adServiceLock?.primaryService
+        ? `/${adServiceLock.primaryService.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')}/`
+        : '/services/';
+      const urls = optimized.adExtensions.sitelinks.map((s) => {
+        const m = s.match(/\((https?:\/\/[^)]+)\)\s*$/i);
+        return m?.[1]?.toLowerCase() ?? '';
+      });
+      const uniqueUrls = new Set(urls.filter(Boolean));
+      if (uniqueUrls.size <= 1) {
+        optimized.adExtensions.sitelinks = optimized.adExtensions.sitelinks.map((s, i) => {
+          const label = s.replace(/\s*\(https?:\/\/[^)]+\)\s*$/i, '').trim() || `Link ${i + 1}`;
+          const path = i === 0 && servicePath ? servicePath : pathHints[i % pathHints.length]!;
+          return `${finalizeCallout(label, 25)} (${origin}${path})`;
+        });
+      }
+    }
   }
 
   if (originalAd.campaignId) optimized.campaignId = originalAd.campaignId;

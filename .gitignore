@@ -38,8 +38,13 @@ Thumbs.db
 # Legacy local data (may contain OAuth tokens)
 backend/.data/
 
+# Scratch / scrape dumps (never commit)
+backend/tmp-*
+**/tmp-*.html
+
 # Local overrides (secrets)
 docker-compose.override.yml
 
 # Agent / IDE artifacts
 agent-transcripts/
+

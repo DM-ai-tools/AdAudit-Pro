@@ -1,3 +1,6 @@
+# Canonical Railway config (mirrors railway.json).
+# Uses Dockerfile so API + static frontend ship as one service.
+
 [build]
 builder = "dockerfile"
 dockerfilePath = "Dockerfile"
@@ -9,3 +12,4 @@ restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 5
 
 # Schema sync runs on container start via backend/scripts/start-production.mjs
+# App binds to 0.0.0.0 and process.env.PORT (Railway injects PORT).

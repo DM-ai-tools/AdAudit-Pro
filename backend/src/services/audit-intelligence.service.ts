@@ -361,6 +361,9 @@ export async function gatherAuditIntelligence(options: {
     location?: string;
     competitorUrls?: string[];
     productsServices?: string[];
+    optimizationScope?: 'campaign' | 'ad';
+    primaryService?: string;
+    serviceKeywords?: string[];
     campaignId?: string;
     campaignName?: string;
     campaignType?: string;
@@ -509,9 +512,12 @@ export async function gatherAuditIntelligence(options: {
   }
 
   const snap = options.accountContext?.primaryAdSnapshot;
-  if (!ads.length && snap && typeof snap === 'object') {
+  const isAdScoped = options.accountContext?.optimizationScope === 'ad';
+
+  // Ad-level Make This Ad Better: force the selected RSA even when the campaign has many live ads
+  if (snap && typeof snap === 'object') {
     const snapHeadlines = normalizeStringArray((snap as { headlines?: unknown }).headlines);
-    if (snapHeadlines.length) {
+    if (snapHeadlines.length && (isAdScoped || !ads.length)) {
       const s = snap as {
         headlines?: unknown;
         descriptions?: unknown;
@@ -524,7 +530,7 @@ export async function gatherAuditIntelligence(options: {
         adGroupName?: string;
         resourceName?: string;
       };
-      ads = [{
+      const snapAd = {
         campaignId,
         campaignName: options.accountContext?.campaignName,
         headlines: snapHeadlines,
@@ -537,8 +543,33 @@ export async function gatherAuditIntelligence(options: {
         clicks: s.clicks,
         adGroupName: s.adGroupName,
         adGroupAdResourceName: s.resourceName,
-      }];
-      dataSource = 'live';
+      };
+      ads = isAdScoped ? [snapAd] : [...ads.filter((a) => a.adGroupAdResourceName !== s.resourceName), snapAd];
+      if (!ads.length || isAdScoped) dataSource = 'live';
+    }
+  }
+
+  // Resolve product from selected ad landing URL (path wins over campaign/site labels)
+  let adScopedPrimary = options.accountContext?.primaryService?.trim();
+  if (isAdScoped && snap) {
+    const urls = (snap as { finalUrls?: string[] }).finalUrls ?? [];
+    const pathBlob = urls
+      .map((u) => {
+        try {
+          return new URL(u.startsWith('http') ? u : `https://${u}`).pathname.replace(/[-_/]+/g, ' ');
+        } catch {
+          return String(u).replace(/[-_/]+/g, ' ');
+        }
+      })
+      .join(' ');
+    if (/\bcar\s*loans?\b|\bauto\s*loans?\b|\bvehicle\s*(?:loans?|finance)\b/i.test(pathBlob)) {
+      adScopedPrimary = 'Car Loans';
+    } else if (/\bhome\s*loans?\b|\bmortgage\b/i.test(pathBlob)) {
+      adScopedPrimary = 'Home Loans';
+    } else if (/\bpersonal\s*loans?\b/i.test(pathBlob)) {
+      adScopedPrimary = 'Personal Loans';
+    } else if (/\bbusiness\s*loans?\b|\bcommercial\s*loans?\b/i.test(pathBlob)) {
+      adScopedPrimary = 'Business Loans';
     }
   }
 
@@ -576,51 +607,71 @@ export async function gatherAuditIntelligence(options: {
     } : null,
     'website-analysis'
   );
-  const competitorAnalysis = await withTimeoutFallback(
-    analyzeCompetitors({
-      businessName: business.name,
-      websiteUrl,
-      industry: options.accountContext?.industry,
-      location:
-        options.accountContext?.location ??
-        websiteAnalysis?.locations?.[0],
-      productsServices: [
-        ...(options.accountContext?.productsServices ?? []),
-        ...(websiteAnalysis?.services ?? []),
-        ...(websiteAnalysis?.headings?.slice(0, 6) ?? []),
-      ],
-      competitorUrls: options.accountContext?.competitorUrls,
-      websiteIntel: websiteAnalysis,
-      currentAd: options.accountContext?.primaryAdSnapshot
-        ? {
-            headlines: Array.isArray(options.accountContext.primaryAdSnapshot.headlines)
-              ? (options.accountContext.primaryAdSnapshot.headlines as string[])
-              : [],
-            descriptions: Array.isArray(options.accountContext.primaryAdSnapshot.descriptions)
-              ? (options.accountContext.primaryAdSnapshot.descriptions as string[])
-              : [],
-          }
-        : undefined,
-      lightweight: options.lightweight,
-    }),
-    options.lightweight ? 28_000 : 40_000,
-    {
-      competitors: [],
-      insights: [],
-      adGallery: [],
-      gapAnalysis: {
-        rows: [],
-        summary: { messagingGaps: 0, offerGaps: 0, keywordGaps: 0, trustSignalGaps: 0, ctaGaps: 0 },
-      },
-      keywordOpportunities: [],
-      messagingOpportunities: [],
-      missingOffers: [],
-      competitiveAdvantages: [],
-      missingFromYourAds: [],
-      source: 'unavailable' as const,
+  const serviceScopedProducts =
+    isAdScoped && (adScopedPrimary || (options.accountContext?.productsServices?.length ?? 0) > 0)
+      ? [
+          ...(adScopedPrimary ? [adScopedPrimary] : []),
+          ...(options.accountContext?.productsServices ?? []),
+        ].filter((s, i, arr) => {
+          const key = s.trim().toLowerCase();
+          return key && arr.findIndex((x) => x.trim().toLowerCase() === key) === i;
+        }).slice(0, 3)
+      : [
+          ...(options.accountContext?.productsServices ?? []),
+          ...(websiteAnalysis?.services ?? []),
+          ...(websiteAnalysis?.headings?.slice(0, 6) ?? []),
+        ];
+
+  const emptyCompetitorIntel = {
+    competitors: [],
+    insights: [],
+    adGallery: [],
+    gapAnalysis: {
+      rows: [],
+      summary: { messagingGaps: 0, offerGaps: 0, keywordGaps: 0, trustSignalGaps: 0, ctaGaps: 0 },
     },
-    'competitor-analysis'
-  );
+    keywordOpportunities: [],
+    messagingOpportunities: [],
+    missingOffers: [],
+    competitiveAdvantages: [],
+    missingFromYourAds: [],
+    source: 'unavailable' as const,
+  };
+
+  // Ad-scoped Make This Ad Better: skip crawl here — optimizeAd runs a single focused crawl.
+  // Running it twice (gather + refresh) was causing 10–13+ min jobs and UI timeouts.
+  const competitorAnalysis = isAdScoped
+    ? emptyCompetitorIntel
+    : await withTimeoutFallback(
+        analyzeCompetitors({
+          businessName: business.name,
+          websiteUrl,
+          industry: options.accountContext?.industry,
+          location:
+            options.accountContext?.location ??
+            websiteAnalysis?.locations?.[0],
+          monthlySpend: business.monthlySpend ?? options.accountContext?.monthlySpend,
+          productsServices: serviceScopedProducts,
+          competitorUrls: options.accountContext?.competitorUrls,
+          websiteIntel: websiteAnalysis,
+          currentAd: options.accountContext?.primaryAdSnapshot
+            ? {
+                headlines: Array.isArray(options.accountContext.primaryAdSnapshot.headlines)
+                  ? (options.accountContext.primaryAdSnapshot.headlines as string[])
+                  : [],
+                descriptions: Array.isArray(options.accountContext.primaryAdSnapshot.descriptions)
+                  ? (options.accountContext.primaryAdSnapshot.descriptions as string[])
+                  : [],
+              }
+            : undefined,
+          lightweight: options.lightweight,
+          serviceScoped: false,
+          primaryService: options.accountContext?.primaryService,
+        }),
+        options.lightweight ? 90_000 : 180_000,
+        emptyCompetitorIntel,
+        'competitor-analysis'
+      );
 
   const auditHealth = computeAuditHealth(findings.all);
   let campaignPerformance = extractCampaignPerformance(campaigns, qualityScores, campaignId);
@@ -644,9 +695,16 @@ export async function gatherAuditIntelligence(options: {
   if (ads.length > 0) scenario = 'REPLACE_EXISTING';
   else if (campaignId || campaigns.length > 0 || selectedCampaign) scenario = 'CREATE_ADS';
 
+  // Prefer the selected ad snapshot when doing ad-level optimization (never a random campaign RSA)
+  const snapResource = options.accountContext?.primaryAdSnapshot?.resourceName;
   const primaryAd =
     ads.length > 0
-      ? [...ads].sort((a, b) => (b.impressions ?? 0) - (a.impressions ?? 0))[0]
+      ? isAdScoped
+        ? ads[0]! // gather already rewrote ads=[snapAd] for ad-scope
+        : snapResource
+          ? ads.find((a) => a.adGroupAdResourceName === snapResource) ??
+            [...ads].sort((a, b) => (b.impressions ?? 0) - (a.impressions ?? 0))[0]!
+          : [...ads].sort((a, b) => (b.impressions ?? 0) - (a.impressions ?? 0))[0]!
       : null;
 
   return {

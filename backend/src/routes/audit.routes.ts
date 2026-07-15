@@ -15,6 +15,8 @@ import {
 } from '../services/audit.service.js';
 import type { AuditRun } from '../types/index.js';
 import { handleOptimizeAd, handleOptimizeAdStatus } from '../controllers/optimize-ad.controller.js';
+import { getAuditMetrics } from '../audit-engine/index.js';
+import { isAnalysisFailureFinding } from '../utils/finding-module-match.js';
 
 const router = Router();
 
@@ -89,6 +91,65 @@ router.get('/report/:id', async (req, res) => {
   const audit = await getAuditReport(req.params.id);
   if (!audit) return res.status(404).json({ error: 'Audit not found' });
   res.json({ audit: sanitizeAudit(audit) });
+});
+
+router.get('/:id/competitor-ad-library', async (req, res) => {
+  try {
+    const audit = await getAuditStatus(req.params.id);
+    if (!audit) return res.status(404).json({ error: 'Audit not found' });
+    const { buildCompetitorAdLibraryForAudit } = await import(
+      '../services/competitor-ad-library.service.js'
+    );
+    const report = await buildCompetitorAdLibraryForAudit(req.params.id);
+    res.json({ report });
+  } catch (err) {
+    console.error('Competitor Ad Library failed:', err);
+    const message = err instanceof Error ? err.message : 'Failed to load Competitor Ad Library';
+    res.status(message.includes('not found') ? 404 : 500).json({ error: message });
+  }
+});
+
+router.get('/:id/company-services', async (req, res) => {
+  try {
+    const audit = await getAuditStatus(req.params.id);
+    if (!audit) return res.status(404).json({ error: 'Audit not found' });
+    if (!audit.websiteUrl) {
+      return res.json({ services: [], websiteUrl: null, source: 'unavailable' });
+    }
+    const { analyzeWebsite } = await import('../services/website-intelligence.service.js');
+    const { withTimeoutFallback } = await import('../utils/withTimeout.js');
+    const intel = await withTimeoutFallback(
+      analyzeWebsite(audit.websiteUrl),
+      12_000,
+      null,
+      'company-services'
+    );
+
+    // Landing-page services only — never dump marketing headings / FAQs / CTAs
+    const fluff =
+      /^(services we offer|our services|contact|why choose|faqs?|home|about|blog|award|years of|book a|free consult|get started|how it works|testimonials?)/i;
+    const services = [...(intel?.services ?? [])]
+      .map((s) => s.trim())
+      .filter((s) => s.length >= 3 && s.length <= 60 && !fluff.test(s) && !/\?$/.test(s))
+      .slice(0, 14);
+
+    const unique: string[] = [];
+    const seen = new Set<string>();
+    for (const s of services) {
+      const key = s.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      unique.push(s);
+    }
+    res.json({
+      services: unique.slice(0, 12),
+      websiteUrl: audit.websiteUrl,
+      source: intel?.fetched ? 'website' : 'partial',
+    });
+  } catch (err) {
+    console.error('Company services failed:', err);
+    res.json({ services: [], websiteUrl: null, source: 'unavailable' });
+  }
 });
 
 router.get('/logs/:id', async (req, res) => {
@@ -189,28 +250,17 @@ router.get('/optimize-ad/status/:jobId', optionalAuth, (req: AuthRequest, res: R
 
 function sanitizeAudit(audit: AuditRun | null, shared = false) {
   if (!audit) return null;
-  const validFindings = audit.findings.filter((f) => !/analysis incomplete|configure anthropic/i.test(f.title));
-  const metrics = validFindings.reduce(
-    (acc, f) => {
-      acc.totalImpact += f.impactMonthly;
-      if (f.severity === 'CRITICAL') acc.criticalCount++;
-      return acc;
-    },
-    { totalImpact: 0, criticalCount: 0 }
-  );
-
-  const healthScore = audit.healthScores.length
-    ? Math.round(audit.healthScores.reduce((s, h) => s + h.score, 0) / audit.healthScores.length)
-    : 38;
+  const validFindings = audit.findings.filter((f) => !isAnalysisFailureFinding(f.title));
+  const metrics = getAuditMetrics(validFindings, audit.healthScores);
 
   return {
     ...audit,
-    healthScore,
+    healthScore: metrics.healthScore,
     totalImpact: metrics.totalImpact,
     criticalCount: metrics.criticalCount,
-    annualOpportunity: metrics.totalImpact * 12,
+    annualOpportunity: metrics.annualOpportunity,
     findings: shared ? audit.findings.slice(0, 4) : audit.findings,
-    totalFindings: audit.findings.length,
+    totalFindings: validFindings.length,
     hiddenFindings: shared ? Math.max(0, audit.findings.length - 4) : 0,
   };
 }

@@ -74,7 +74,7 @@ export function getFindingsForModule(slug: string, allFindings: Finding[]): Find
 }
 
 export function calculateHealthScore(scores: { score: number }[]): number {
-  if (!scores.length) return 38;
+  if (!scores.length) return 50;
   return Math.round(scores.reduce((s, h) => s + h.score, 0) / scores.length);
 }
 

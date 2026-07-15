@@ -55,8 +55,147 @@ export interface PerformanceEstimates {
 export interface CompetitiveOutperformance {
   messagingImprovements: string;
   keywordImprovements: string;
+  trustSignalImprovements?: string;
   offerImprovements: string;
   conversionImprovements: string;
+  ctaImprovements?: string;
+  competitorStrategiesUsed?: string;
+  competitorGapsExploited?: string;
+}
+
+export interface InfluencingCompetitor {
+  name: string;
+  influencePercent: number;
+  reason: string;
+}
+
+export interface AdGenerationExplanation {
+  competitorSignalsUsed: string[];
+  topCompetitorsInfluencing: InfluencingCompetitor[];
+  offersUsed: string[];
+  trustSignalsUsed: string[];
+  keywordsUsed: string[];
+  reviewInsightsUsed: string[];
+  socialAuthorityInsightsUsed: string[];
+  marketPositioningUsed: string[];
+  adDifferenceScore?: number;
+}
+
+export interface CompetitorBrandReview {
+  score: number;
+  summary: string;
+  detailedReview: string;
+  adActivityReview: string;
+  messagingReview: string;
+  trustReview: string;
+  offerReview: string;
+  howToBeat: string[];
+  strengths: string[];
+  weaknesses: string[];
+  averageRating?: number;
+  reviewCount?: number;
+  trustScore?: number;
+  sentiment?: 'Highly Positive' | 'Positive' | 'Mixed' | 'Negative' | 'Unknown';
+  positiveThemes?: string[];
+  negativeThemes?: string[];
+  reviewVelocity?: string;
+}
+
+export interface CompetitorSocialPresence {
+  brandAuthorityScore: number;
+  employeeCount?: number;
+  employeeCountEstimated?: boolean;
+  linkedInFollowers?: number;
+  facebookFollowers?: number;
+  instagramFollowers?: number;
+  youtubeSubscribers?: number;
+  tiktokFollowers?: number;
+  twitterFollowers?: number;
+  totalSocialReach?: number;
+  socialPresenceScore?: number;
+  profileUrls?: {
+    linkedin?: string;
+    facebook?: string;
+    instagram?: string;
+    youtube?: string;
+    tiktok?: string;
+    twitter?: string;
+  };
+  source: 'sociavault_ad_library' | 'sociavault_social_profiles' | 'unavailable';
+}
+
+export type MarketPositionLabel =
+  | 'Market Leader'
+  | 'Established Competitor'
+  | 'Growing Competitor'
+  | 'Emerging Competitor';
+
+export type CompanySizeLabel = 'Startup' | 'SMB' | 'Mid-Market' | 'Enterprise';
+export type CompetitiveThreatLabel = 'Critical' | 'High' | 'Medium' | 'Low';
+
+export interface CompetitorBrandAuthority {
+  employeeCount?: number;
+  employeeCountEstimated?: boolean;
+  companySize: CompanySizeLabel;
+  yearsInBusiness?: number;
+  yearsInBusinessEstimated?: boolean;
+  brandAuthorityScore: number;
+  marketPosition: MarketPositionLabel;
+  competitiveThreat: CompetitiveThreatLabel;
+  brandStrengthScore: number;
+  competitiveThreatScore: number;
+}
+
+export interface CompetitorAdvertisingStrength {
+  adDurationDays: number;
+  activeAdCount: number;
+  totalAdCount: number;
+  advertisingScore: number;
+}
+
+export interface CompetitorMarketAuthority {
+  domainAuthority?: number;
+  organicKeywords?: number;
+  monthlyTraffic?: number;
+  backlinks?: number;
+  marketShare?: number;
+  authorityScore: number;
+  source: 'sociavault_derived' | 'unavailable';
+}
+
+export interface CompetitorOfferTrustAnalysis {
+  offersUsed: string[];
+  topPromotions: string[];
+  uniqueSellingPoints: string[];
+  trustSignals: string[];
+  trustSignalScore: number;
+  socialProofItems: string[];
+  socialProofScore: number;
+}
+
+export interface CompetitorAiLearning {
+  aiLearningValue: number;
+  competitorScore: number;
+  influencePercent: number;
+  breakdown: {
+    adDuration: number;
+    activeAds: number;
+    totalAds: number;
+    brandReviews: number;
+    trustScore: number;
+    employeeCount: number;
+    socialPresence: number;
+    authorityScore: number;
+    marketPosition: number;
+  };
+}
+
+export interface CompetitiveMarketPatterns {
+  topHeadlines: string[];
+  topOffers: string[];
+  topCtas: string[];
+  topKeywords: string[];
+  topValuePropositions: string[];
 }
 
 export interface CompetitorInsightCard {
@@ -65,6 +204,18 @@ export interface CompetitorInsightCard {
   keyMessages: string[];
   offers: string[];
   keywordOpportunities: string[];
+  adDurationDays?: number;
+  activeAdCount?: number;
+  totalAdCount?: number;
+  firstShown?: string;
+  lastShown?: string;
+  brandReview?: CompetitorBrandReview;
+  confidenceScore?: number;
+  influencePercent?: number;
+  durationLabel?: string;
+  brandAuthorityScore?: number;
+  socialPresence?: CompetitorSocialPresence;
+  advertiserId?: string;
 }
 
 export interface CompetitorAdPreview {
@@ -83,6 +234,38 @@ export interface CompetitorAdPreview {
   adSource?: 'sociavault' | 'transparency_center' | 'website_fallback';
   adLink?: string;
   previewImageUrl?: string;
+  adDurationDays?: number;
+  activeAdCount?: number;
+  totalAdCount?: number;
+  firstShown?: string;
+  lastShown?: string;
+  brandReview?: CompetitorBrandReview;
+  confidenceScore?: number;
+  durationClass?: 'new' | 'growing' | 'established' | 'dominant';
+  durationLabel?: string;
+  influencePercent?: number;
+  industryMatch?: number;
+  serviceMatch?: number;
+  estimatedSuccessScore?: number;
+  brandAuthorityScore?: number;
+  socialPresence?: CompetitorSocialPresence;
+  brandAuthority?: CompetitorBrandAuthority;
+  advertisingStrength?: CompetitorAdvertisingStrength;
+  marketAuthority?: CompetitorMarketAuthority;
+  offerTrustAnalysis?: CompetitorOfferTrustAnalysis;
+  aiLearning?: CompetitorAiLearning;
+  advertisingScore?: number;
+  aiLearningValue?: number;
+  marketPosition?: MarketPositionLabel;
+  competitiveThreat?: CompetitiveThreatLabel;
+  creativeFirstShown?: string;
+  creativeLastShown?: string;
+  isActive?: boolean;
+  cta?: string;
+  offer?: string;
+  /** Landing / destination URL recovered from SociaVault ad-details */
+  destinationUrl?: string;
+  advertiserId?: string;
 }
 
 export type GapCategory = 'messaging' | 'offers' | 'keywords' | 'trust_signals' | 'ctas';
@@ -118,6 +301,30 @@ export interface CompetitorIntelligenceData {
     trustSignals?: string[];
     valuePropositions: string[];
     positioning?: string;
+    adDurationDays?: number;
+    activeAdCount?: number;
+    totalAdCount?: number;
+    firstShown?: string;
+    lastShown?: string;
+    brandReview?: CompetitorBrandReview;
+    confidenceScore?: number;
+    durationClass?: 'new' | 'growing' | 'established' | 'dominant';
+    durationLabel?: string;
+    influencePercent?: number;
+    industryMatch?: number;
+    serviceMatch?: number;
+    brandAuthorityScore?: number;
+    socialPresence?: CompetitorSocialPresence;
+    brandAuthority?: CompetitorBrandAuthority;
+    advertisingStrength?: CompetitorAdvertisingStrength;
+    marketAuthority?: CompetitorMarketAuthority;
+    offerTrustAnalysis?: CompetitorOfferTrustAnalysis;
+    aiLearning?: CompetitorAiLearning;
+    advertisingScore?: number;
+    aiLearningValue?: number;
+    marketPosition?: MarketPositionLabel;
+    competitiveThreat?: CompetitiveThreatLabel;
+    advertiserId?: string;
   }>;
   insights: CompetitorInsightCard[];
   adGallery: CompetitorAdPreview[];
@@ -126,6 +333,13 @@ export interface CompetitorIntelligenceData {
   messagingOpportunities: string[];
   missingOffers: string[];
   missingFromYourAds: string[];
+  influenceWeights?: Array<{
+    name: string;
+    score: number;
+    aiLearningValue?: number;
+    influencePercent: number;
+  }>;
+  marketPatterns?: CompetitiveMarketPatterns;
   source: string;
 }
 
@@ -224,6 +438,8 @@ export interface OptimizedAdContent {
   strategistRecommendations?: StrategistRecommendations;
   competitorInsights?: CompetitorInsightCard[];
   missingCompetitorAdvantages?: string[];
+  adGenerationExplanation?: AdGenerationExplanation;
+  adDifferenceScore?: number;
   keywordImprovements?: string[];
   negativeKeywordSuggestions?: string[];
   landingPageRecommendations?: string[];

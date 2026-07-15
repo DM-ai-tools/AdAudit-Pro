@@ -33,8 +33,8 @@ export function getModuleCatalogName(slug: string): string {
 
 export const AUDIT_DEPTH_OPTIONS = [
   { id: 'quick' as const, title: 'Quick Scan', description: 'Fast overview of top issues and wasted spend', modules: 6, estimatedMinutes: 8 },
-  { id: 'standard' as const, title: 'Standard Audit', description: 'Recommended full forensic audit for your account', modules: 12, estimatedMinutes: 18 },
-  { id: 'deep' as const, title: 'Deep Audit', description: 'Advanced forensic analysis with AI deep-dives', modules: 12, estimatedMinutes: 32 },
+  { id: 'standard' as const, title: 'Standard Audit', description: 'Recommended full forensic audit for your account', modules: 14, estimatedMinutes: 18 },
+  { id: 'deep' as const, title: 'Deep Audit', description: 'Advanced forensic analysis with AI deep-dives', modules: 14, estimatedMinutes: 32 },
 ];
 
 export const AUDIT_WINDOW_OPTIONS = [

@@ -105,11 +105,24 @@ export const auditApi = {
   status: (id: string) => api.get<{ audit: AuditRun }>(`/audit/status/${id}`),
   findings: (id: string) => api.get<{ findings: Finding[] }>(`/audit/findings/${id}`),
   report: (id: string) => api.get<{ audit: AuditRun }>(`/audit/report/${id}`),
+  competitorAdLibrary: (id: string) =>
+    api.get<{ report: import('../types/competitorAdLibrary').CompetitorAdLibraryReport }>(
+      `/audit/${id}/competitor-ad-library`
+    ),
+  companyServices: (id: string) =>
+    api.get<{ services: string[]; websiteUrl: string | null; source: string }>(
+      `/audit/${id}/company-services`
+    ),
   logs: (id: string) => api.get<{ logs: AuditLog[] }>(`/audit/logs/${id}`),
   health: (id: string) =>
-    api.get<{ overallScore: number; scores: HealthScore[]; totalImpact: number; criticalCount: number }>(
-      `/audit/health/${id}`
-    ),
+    api.get<{
+      overallScore: number;
+      scores: HealthScore[];
+      totalImpact: number;
+      criticalCount: number;
+      annualOpportunity?: number;
+      totalFindings?: number;
+    }>(`/audit/health/${id}`),
   share: (auditRunId: string) =>
     api.post<{ report: SharedReport; url: string }>('/audit/share', { auditRunId }),
   shareDemo: (auditRunId: string) =>
@@ -250,6 +263,10 @@ export const aiApi = {
       location?: string;
       competitorUrls?: string[];
       productsServices?: string[];
+      /** Ad-level optimization: discover competitors for this service only */
+      optimizationScope?: 'campaign' | 'ad';
+      primaryService?: string;
+      serviceKeywords?: string[];
       campaignId?: string;
       campaignName?: string;
       campaignType?: string;
@@ -272,6 +289,7 @@ export const aiApi = {
         clicks?: number;
         adGroupName?: string;
         resourceName?: string;
+        adId?: string;
       };
       previousOptimizedSnapshot?: {
         headlines?: string[];
@@ -295,8 +313,8 @@ export const aiApi = {
     const pollOptimizeAdJob = async (jobId: string): Promise<OptimizeAdResponse> => {
       // Primary route only — dual-path polling caused noisy ERR_NAME_NOT_RESOLVED spam in Chrome.
       const statusPath = `/ai/optimize-ad/status/${jobId}`;
-      // Competitor fetch + Claude can exceed 3 minutes; allow ~8 minutes of polling.
-      const maxAttempts = 240;
+      // Competitor discovery + Claude can take several minutes; keep polling safely past Claude.
+      const maxAttempts = 420; // ~14 minutes (1.5s + 419×2s)
       let consecutiveNetworkErrors = 0;
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 1500 : 2000));
@@ -326,7 +344,7 @@ export const aiApi = {
             throw new Error(apiError ?? 'Optimization failed');
           }
           consecutiveNetworkErrors += 1;
-          // Short-circuit after repeated DNS/network failures instead of retrying for 8 minutes.
+          // Short-circuit after repeated DNS/network failures instead of retrying for many minutes.
           if (consecutiveNetworkErrors >= 5) {
             const hint = axios.isAxiosError(err)
               ? (err.code === 'ERR_NETWORK' || err.message?.includes('Network Error')
@@ -338,7 +356,9 @@ export const aiApi = {
           if (attempt === maxAttempts - 1) throw err;
         }
       }
-      throw new Error('Optimization timed out — the AI is still working. Try again in a moment.');
+      throw new Error(
+        'Optimization timed out — please try again. If this keeps happening, the AI may be hitting its token/time limit on a large competitor crawl.'
+      );
     };
 
     const res = await api.post<OptimizeAdResponse | { jobId: string; status: string }>(

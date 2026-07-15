@@ -62,9 +62,27 @@ export function useAuditReport(auditId: string | undefined) {
     if (!auditId) return null;
     try {
       const { data } = await auditApi.report(auditId);
-      setAudit(data.audit);
+      let next = data.audit;
+      // Refresh KPI fields from the dedicated health endpoint (valid findings only)
+      if (next.status === 'COMPLETED') {
+        try {
+          const { data: health } = await auditApi.health(auditId);
+          next = {
+            ...next,
+            healthScore: health.overallScore,
+            healthScores: health.scores?.length ? health.scores : next.healthScores,
+            totalImpact: health.totalImpact,
+            annualOpportunity: health.annualOpportunity ?? health.totalImpact * 12,
+            totalFindings: health.totalFindings ?? next.totalFindings,
+            criticalCount: health.criticalCount,
+          };
+        } catch {
+          /* report sanitize fields already present */
+        }
+      }
+      setAudit(next);
       setError(null);
-      return data.audit;
+      return next;
     } catch {
       setError('Failed to load audit report. Refresh the page or check that the backend is running.');
       return null;

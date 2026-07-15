@@ -11,15 +11,21 @@ import { AIThinkingLoader } from './AIThinkingLoader';
 import { StrategistEnhancementPanels } from './StrategistEnhancementPanels';
 import { CompetitorAdGallery } from './CompetitorAdGallery';
 import { CompetitorGapAnalysisTable } from './CompetitorGapAnalysisTable';
+import { CompetitorIntelligenceDashboard } from './CompetitorIntelligenceDashboard';
 import { CurrentAdSection } from './CurrentAdSection';
 import { AIOptimizedSection } from './AIOptimizedSection';
-import { TONE_OPTIONS, MODE_OPTIONS, normalizeRenderableStrings, asDisplayText } from './utils';
+import { WhyThisAdWasGenerated } from './WhyThisAdWasGenerated';
+import { TONE_OPTIONS, MODE_OPTIONS, normalizeRenderableStrings, asDisplayText, finalizeHeadline, finalizeDescription } from './utils';
 import { OptimizationErrorBoundary } from './OptimizationErrorBoundary';
 import { PublishWorkflow } from './PublishWorkflow';
 import { aiApi, googleAdsApi } from '../../services/api';
 import type { Finding } from '../../types';
-import type { GoogleAdsCampaign } from '../../types/connect';
+import type { GoogleAdsCampaign, GoogleAdsCampaignAd } from '../../types/connect';
 import { resolveDisplayHost, resolveBusinessName } from '../../utils/business-identity';
+import {
+  inferServiceFromAd,
+  inferLocationFromAd,
+} from '../../utils/adServiceInference';
 import type {
   CurrentAdData,
   OptimizedAdContent,
@@ -36,12 +42,22 @@ import type {
   CompetitorIntelligenceData,
 } from '../../types/optimization';
 
-function buildCampaignAccountContext(campaign?: GoogleAdsCampaign | null) {
+function buildCampaignAccountContext(
+  campaign?: GoogleAdsCampaign | null,
+  selectedAd?: GoogleAdsCampaignAd | null
+) {
   if (!campaign) return {};
   const hasAds = campaign.adCount > 0 || campaign.ads.length > 0;
-  const primaryAd = campaign.ads?.length
-    ? [...campaign.ads].sort((a, b) => b.impressions - a.impressions)[0]
-    : undefined;
+  const primaryAd =
+    selectedAd ??
+    (campaign.ads?.length
+      ? [...campaign.ads].sort((a, b) => b.impressions - a.impressions)[0]
+      : undefined);
+
+  const serviceInference = primaryAd ? inferServiceFromAd(primaryAd) : null;
+  const isAdScoped = !!selectedAd;
+  const inferredLocation = primaryAd ? inferLocationFromAd(primaryAd) : undefined;
+
   return {
     campaignName: campaign.name,
     campaignType: campaign.type,
@@ -49,6 +65,7 @@ function buildCampaignAccountContext(campaign?: GoogleAdsCampaign | null) {
     biddingStrategyType: campaign.biddingStrategyType,
     hasExistingAds: hasAds,
     adCount: campaign.adCount,
+    ...(inferredLocation ? { location: inferredLocation } : {}),
     campaignMetrics: {
       impressions: campaign.impressions,
       clicks: campaign.clicks,
@@ -60,6 +77,17 @@ function buildCampaignAccountContext(campaign?: GoogleAdsCampaign | null) {
       cost: campaign.cost,
       budgetDaily: campaign.budgetDaily,
     },
+    ...(isAdScoped
+      ? {
+          optimizationScope: 'ad' as const,
+          primaryService: serviceInference?.primaryService,
+          // Ad-scoped: ONLY the selected ad's product — never campaign/site mix
+          productsServices: serviceInference?.primaryService
+            ? [serviceInference.primaryService]
+            : serviceInference?.services ?? [],
+          serviceKeywords: serviceInference?.keywords ?? [],
+        }
+      : {}),
     primaryAdSnapshot: primaryAd
       ? {
           headlines: primaryAd.headlines,
@@ -74,6 +102,7 @@ function buildCampaignAccountContext(campaign?: GoogleAdsCampaign | null) {
           clicks: primaryAd.clicks,
           adGroupName: primaryAd.adGroupName,
           resourceName: primaryAd.resourceName,
+          adId: primaryAd.id,
         }
       : undefined,
   };
@@ -93,8 +122,12 @@ function normalizeOptimizedContent(data: OptimizeAdResponse['optimized']): Optim
           ? {
               messagingImprovements: asDisplayText(data.strategistReasoning.competitiveOutperformance.messagingImprovements),
               keywordImprovements: asDisplayText(data.strategistReasoning.competitiveOutperformance.keywordImprovements),
+              trustSignalImprovements: asDisplayText(data.strategistReasoning.competitiveOutperformance.trustSignalImprovements),
               offerImprovements: asDisplayText(data.strategistReasoning.competitiveOutperformance.offerImprovements),
+              ctaImprovements: asDisplayText(data.strategistReasoning.competitiveOutperformance.ctaImprovements),
               conversionImprovements: asDisplayText(data.strategistReasoning.competitiveOutperformance.conversionImprovements),
+              competitorStrategiesUsed: asDisplayText(data.strategistReasoning.competitiveOutperformance.competitorStrategiesUsed),
+              competitorGapsExploited: asDisplayText(data.strategistReasoning.competitiveOutperformance.competitorGapsExploited),
             }
           : undefined,
       }
@@ -114,8 +147,10 @@ function normalizeOptimizedContent(data: OptimizeAdResponse['optimized']): Optim
 
   return {
     ...data,
-    headlines: normalizeRenderableStrings(data.headlines),
-    descriptions: normalizeRenderableStrings(data.descriptions),
+    headlines: normalizeRenderableStrings(data.headlines).map((h) => finalizeHeadline(h, 30)),
+    descriptions: normalizeRenderableStrings(data.descriptions).map((d) =>
+      finalizeDescription(d, 90)
+    ),
     ctaSuggestions: normalizeRenderableStrings(data.ctaSuggestions),
     keywordSuggestions: normalizeRenderableStrings(data.keywordSuggestions),
     improvementReasoning: asDisplayText(data.improvementReasoning, 'Optimization complete.'),
@@ -133,12 +168,50 @@ function normalizeOptimizedContent(data: OptimizeAdResponse['optimized']): Optim
       : data.adExtensions,
     strategistReasoning,
     strategistRecommendations,
+    adDifferenceScore: data.adDifferenceScore,
+    adGenerationExplanation: data.adGenerationExplanation
+      ? {
+          competitorSignalsUsed: normalizeRenderableStrings(
+            data.adGenerationExplanation.competitorSignalsUsed
+          ),
+          topCompetitorsInfluencing: (data.adGenerationExplanation.topCompetitorsInfluencing ?? []).map(
+            (c) => ({
+              name: asDisplayText(c.name, 'Competitor'),
+              influencePercent: Number(c.influencePercent) || 0,
+              reason: asDisplayText(c.reason, 'High AI Learning Value'),
+            })
+          ),
+          offersUsed: normalizeRenderableStrings(data.adGenerationExplanation.offersUsed),
+          trustSignalsUsed: normalizeRenderableStrings(data.adGenerationExplanation.trustSignalsUsed),
+          keywordsUsed: normalizeRenderableStrings(data.adGenerationExplanation.keywordsUsed),
+          reviewInsightsUsed: normalizeRenderableStrings(
+            data.adGenerationExplanation.reviewInsightsUsed
+          ),
+          socialAuthorityInsightsUsed: normalizeRenderableStrings(
+            data.adGenerationExplanation.socialAuthorityInsightsUsed
+          ),
+          marketPositioningUsed: normalizeRenderableStrings(
+            data.adGenerationExplanation.marketPositioningUsed
+          ),
+          adDifferenceScore:
+            data.adGenerationExplanation.adDifferenceScore ?? data.adDifferenceScore,
+        }
+      : data.adGenerationExplanation,
     competitorInsights: data.competitorInsights?.map((c) => ({
       name: asDisplayText(c.name, 'Competitor'),
       url: c.url,
       keyMessages: normalizeRenderableStrings(c.keyMessages),
       offers: normalizeRenderableStrings(c.offers),
       keywordOpportunities: normalizeRenderableStrings(c.keywordOpportunities),
+      adDurationDays: c.adDurationDays,
+      activeAdCount: c.activeAdCount,
+      totalAdCount: c.totalAdCount,
+      firstShown: c.firstShown,
+      lastShown: c.lastShown,
+      brandReview: c.brandReview,
+      confidenceScore: c.confidenceScore,
+      influencePercent: c.influencePercent,
+      durationLabel: c.durationLabel,
     })),
     missingCompetitorAdvantages: normalizeRenderableStrings(data.missingCompetitorAdvantages),
     campaignStrategy: data.campaignStrategy
@@ -174,6 +247,8 @@ interface AIOptimizationModalProps {
   competitorUrls?: string[];
   initialCampaignId?: string;
   initialCampaign?: GoogleAdsCampaign | null;
+  /** When set, optimize this RSA only with service-scoped competitors */
+  initialAd?: GoogleAdsCampaignAd | null;
   lockCampaignScope?: boolean;
 }
 
@@ -193,6 +268,7 @@ export function AIOptimizationModal({
   competitorUrls,
   initialCampaignId,
   initialCampaign = null,
+  initialAd = null,
   lockCampaignScope = false,
 }: AIOptimizationModalProps) {
   const [loading, setLoading] = useState(false);
@@ -295,13 +371,14 @@ export function AIOptimizationModal({
     if (requestInFlight.current) return;
 
     const campaignKey = resolveCampaignKey(campaignIdOverride);
+    const cacheKey = initialAd?.id ? `${campaignKey}:${initialAd.id}` : campaignKey;
     if (isRegenerate) {
       setRegenerating(true);
       setError(null);
       setEditMode(false);
-      optimizationCache.current.delete(campaignKey);
-    } else if (optimizationCache.current.has(campaignKey) && !promptOverride) {
-      applyOptimizationResponse(optimizationCache.current.get(campaignKey)!);
+      optimizationCache.current.delete(cacheKey);
+    } else if (optimizationCache.current.has(cacheKey) && !promptOverride) {
+      applyOptimizationResponse(optimizationCache.current.get(cacheKey)!);
       return;
     } else if (campaignKey && !isRegenerate && optimized) {
       setCampaignSwitching(true);
@@ -353,11 +430,11 @@ export function AIOptimizationModal({
                 },
               }
             : {}),
-          ...buildCampaignAccountContext(campaignMeta),
+          ...buildCampaignAccountContext(campaignMeta, initialAd),
         },
       });
       if (generation !== requestGeneration.current) return;
-      optimizationCache.current.set(campaignKey, data);
+      optimizationCache.current.set(cacheKey, data);
       applyOptimizationResponse(data);
     } catch (err) {
       if (generation !== requestGeneration.current) return;
@@ -393,7 +470,7 @@ export function AIOptimizationModal({
       setRegenerating(false);
       setCampaignSwitching(false);
     }
-  }, [auditId, finding, auditFindings, businessName, goal, monthlySpend, googleAdsCustomerId, websiteUrl, userId, industry, competitorUrls, customPrompt, activeTone, activeMode, applyOptimizationResponse, resolveCampaignKey, resolveCampaignMeta, optimized, editedHeadlines, editedDescriptions]);
+  }, [auditId, finding, auditFindings, businessName, goal, monthlySpend, googleAdsCustomerId, websiteUrl, userId, industry, competitorUrls, customPrompt, activeTone, activeMode, applyOptimizationResponse, resolveCampaignKey, resolveCampaignMeta, optimized, editedHeadlines, editedDescriptions, initialAd]);
 
   useEffect(() => {
     if (!open || !googleAdsCustomerId) {
@@ -424,6 +501,8 @@ export function AIOptimizationModal({
       setAnalysisSources(undefined);
       setCampaignPerformance(undefined);
       setAuditHealthScore(undefined);
+      setCompetitorAnalysis(null);
+      setIntelligenceSummary(null);
       setCampaignSwitching(false);
       return;
     }
@@ -680,6 +759,9 @@ export function AIOptimizationModal({
                 campaignPerformance={campaignPerformance}
                 selectedCampaign={selectedCampaign}
                 auditHealthScore={auditHealthScore}
+                primaryService={
+                  initialAd ? inferServiceFromAd(initialAd).primaryService : undefined
+                }
               />
 
               {/* Campaign scope + custom AI prompt */}
@@ -689,9 +771,22 @@ export function AIOptimizationModal({
                     {lockCampaignScope ? 'Optimizing this campaign' : 'Campaign scope (whole account audit)'}
                   </label>
                   {lockCampaignScope && selectedCampaign ? (
-                    <div className="w-full bg-navy border border-orange/30 rounded-lg px-3 py-2 text-sm text-white">
-                      {selectedCampaign.name}
-                      <span className="text-muted text-xs ml-2">({selectedCampaign.status})</span>
+                    <div className="w-full bg-navy border border-orange/30 rounded-lg px-3 py-2 text-sm text-white space-y-1">
+                      <div>
+                        {selectedCampaign.name}
+                        <span className="text-muted text-xs ml-2">({selectedCampaign.status})</span>
+                      </div>
+                      {initialAd && (
+                        <div className="text-[11px] text-teal border-t border-border/40 pt-1.5 mt-1">
+                          Ad-level: {inferServiceFromAd(initialAd).primaryService}
+                          <span className="text-muted block mt-0.5 truncate">
+                            {initialAd.headlines[0] ?? initialAd.adGroupName}
+                          </span>
+                          <span className="text-muted block">
+                            Competitors discovered for this service only (not campaign-wide).
+                          </span>
+                        </div>
+                      )}
                     </div>
                   ) : (
                   <select
@@ -711,7 +806,9 @@ export function AIOptimizationModal({
                   )}
                   <p className="text-muted text-[10px]">
                     {lockCampaignScope && selectedCampaign
-                      ? selectedCampaign.adCount > 0
+                      ? initialAd
+                        ? `Improving this ${inferServiceFromAd(initialAd).primaryService} ad with service-specific SociaVault competitors.`
+                        : selectedCampaign.adCount > 0
                         ? `Improving ads for ${selectedCampaign.name}.`
                         : isPmaxScope
                           ? `No responsive search ads in this Performance Max campaign — AI will recommend asset group copy and strategy.`
@@ -859,17 +956,24 @@ export function AIOptimizationModal({
                 }
               />
 
+              {/* Competitor Intelligence 2.0 dashboard */}
+              <CompetitorIntelligenceDashboard competitorAnalysis={competitorAnalysis} />
+
               {/* Competitor ads from Transparency Center */}
               <CompetitorAdGallery
                 competitors={competitorAnalysis?.adGallery ?? []}
                 previewDevice={previewDevice}
                 onDeviceChange={setPreviewDevice}
                 source={competitorAnalysis?.source}
+                primaryService={
+                  initialAd ? inferServiceFromAd(initialAd).primaryService : undefined
+                }
               />
 
-              {competitorAnalysis?.gapAnalysis && (
-                <CompetitorGapAnalysisTable gapAnalysis={competitorAnalysis.gapAnalysis} />
-              )}
+              <CompetitorGapAnalysisTable
+                gapAnalysis={competitorAnalysis?.gapAnalysis}
+                competitorAnalysis={competitorAnalysis}
+              />
 
               {/* AI optimized — separate section */}
               <AIOptimizedSection
@@ -882,6 +986,8 @@ export function AIOptimizationModal({
                 previewDevice={previewDevice}
                 onDeviceChange={setPreviewDevice}
               />
+
+              <WhyThisAdWasGenerated optimized={optimized} />
 
               {/* Manual edit */}
               {editMode && (

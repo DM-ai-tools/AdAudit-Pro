@@ -2,6 +2,8 @@
 
 AdAudit Pro ships as a **single Docker service**: Express API + built React frontend on one port.
 
+Config: `Dockerfile` + `railway.toml` / `railway.json` (Dockerfile builder, `/api/health` checks).
+
 ### Railway setup
 
 1. Create a new Railway project and connect this repository.
@@ -13,6 +15,7 @@ AdAudit Pro ships as a **single Docker service**: Express API + built React fron
    (Open `/api/auth/config` on your deployed app to see the exact URI.)
 6. Deploy — Railway sets `PORT` and `RAILWAY_PUBLIC_DOMAIN`.
 
+The app listens on `0.0.0.0:$PORT`. Do not hardcode a port in Railway.
 ### Required production variables
 
 | Variable | Description |

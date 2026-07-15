@@ -27,7 +27,20 @@ export function AIOptimizedSection({
           <span className="w-2 h-2 rounded-full bg-teal animate-pulse" />
           AI Optimized Ad
         </h3>
-        <span className="text-[10px] uppercase tracking-wider text-teal/80">Recommended for publish</span>
+        <div className="flex items-center gap-2">
+          {optimized.adDifferenceScore != null && (
+            <span
+              className={
+                optimized.adDifferenceScore >= 80
+                  ? 'text-[10px] px-2 py-0.5 rounded-full border border-teal/40 text-teal bg-teal/10'
+                  : 'text-[10px] px-2 py-0.5 rounded-full border border-amber-400/40 text-amber-300 bg-amber-400/10'
+              }
+            >
+              Difference {optimized.adDifferenceScore}/100
+            </span>
+          )}
+          <span className="text-[10px] uppercase tracking-wider text-teal/80">Recommended for publish</span>
+        </div>
       </div>
 
       <AdPreviewPanel

@@ -46,6 +46,12 @@ export const CATEGORY_FILTERS = [
   { id: 'Budget', categories: ['BUDGET'], slugs: ['budget'] },
   { id: 'Geo', categories: ['GEO'], slugs: ['geo'] },
   { id: 'Quality Score', categories: ['QUALITY_SCORE'], slugs: ['quality-score'] },
+  { id: 'Landing Pages', categories: ['LANDING_PAGES'], slugs: ['landing-pages'] },
+  { id: 'Conversion', categories: ['CAMPAIGN'], slugs: ['conversion'] },
+  { id: 'Device', categories: ['CAMPAIGN'], slugs: ['device'] },
+  { id: 'Impression Share', categories: ['IMPRESSION_SHARE'], slugs: ['impression-share'] },
+  { id: 'PMax', categories: ['PMAX'], slugs: ['pmax'] },
+  { id: 'Campaign', categories: ['CAMPAIGN'], slugs: ['campaign'] },
 ] as const;
 
 export type SeverityFilter = (typeof SEVERITY_FILTERS)[number];
@@ -130,11 +136,13 @@ export function filterFindings(
   if (options.categoryFilter) {
     const def = CATEGORY_FILTERS.find((c) => c.id === options.categoryFilter);
     if (def) {
-      items = items.filter(
-        (f) =>
-          (def.categories as readonly string[]).includes(f.category) ||
-          def.slugs.some((slug) => findingMatchesModuleSlug(f, slug))
-      );
+      items = items.filter((f) => {
+        // Prefer exact module slug match so overlapping CAMPAIGN categories stay distinct
+        if (def.slugs.some((slug) => findingMatchesModuleSlug(f, slug))) return true;
+        const overlapping = def.slugs.some((s) => s === 'campaign' || s === 'device' || s === 'conversion');
+        if (overlapping) return false;
+        return (def.categories as readonly string[]).includes(f.category);
+      });
     }
   }
 

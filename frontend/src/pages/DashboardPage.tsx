@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import {
   Share2, Download, ArrowLeft, Link2, ChevronRight,
   AlertTriangle, TrendingUp, Target, Heart, Megaphone,
-  Search, Globe, Users, FileText, BarChart3, MapPin, Eye, Sparkles, History,
+  Search, Globe, Users, FileText, BarChart3, MapPin, Eye, Sparkles, History, Library,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { Logo } from '../components/layout/Logo';
@@ -33,6 +33,7 @@ import { AIOptimizationModal, MakeItBetterButton, isOptimizableFinding } from '.
 import { CampaignAuditsSection } from '../components/dashboard/CampaignAuditsSection';
 import { AccountPerformanceStats } from '../components/dashboard/AccountPerformanceStats';
 import { PreviousAuditsList } from '../components/dashboard/PreviousAuditsList';
+import { CompetitorAdLibrarySection } from '../components/dashboard/CompetitorAdLibrarySection';
 import { usePreviousAudits } from '../hooks/usePreviousAudits';
 import { ClaudeText } from '../components/ui/ClaudeText';
 import { useAuthStore } from '../store';
@@ -70,13 +71,28 @@ const baseNavItems: Array<{
   { id: 'findings', label: 'All Findings', icon: AlertTriangle, badge: true, sectionId: 'findings' },
   { id: 'roadmap', label: 'Growth Roadmap', icon: TrendingUp, sub: '30/60/90d', sectionId: 'roadmap' },
   { id: 'health', label: 'Account Health', icon: Heart, sectionId: 'health' },
-  ...FINDINGS_NAV_MODULES.map((m) => ({
-    id: m.id,
-    label: m.label,
-    icon: MODULE_NAV_ICONS[m.id] ?? FileText,
-    sectionId: 'findings' as const,
-    moduleSlug: m.slug,
-  })),
+  ...(() => {
+    const modules = FINDINGS_NAV_MODULES.map((m) => ({
+      id: m.id,
+      label: m.label,
+      icon: MODULE_NAV_ICONS[m.id] ?? FileText,
+      sectionId: 'findings' as const,
+      moduleSlug: m.slug,
+    }));
+    const searchTermsIdx = modules.findIndex((m) => m.id === 'search-terms');
+    const competitorNav = {
+      id: 'competitor-ad-library',
+      label: 'Competitor Ad Library',
+      icon: Library,
+      sectionId: 'competitor-ad-library',
+    };
+    if (searchTermsIdx < 0) return [...modules, competitorNav];
+    return [
+      ...modules.slice(0, searchTermsIdx + 1),
+      competitorNav,
+      ...modules.slice(searchTermsIdx + 1),
+    ];
+  })(),
 ];
 
 export default function DashboardPage() {
@@ -96,6 +112,7 @@ export default function DashboardPage() {
   const [optimizeFinding, setOptimizeFinding] = useState<Finding | null>(null);
   const [optimizeCampaignId, setOptimizeCampaignId] = useState<string | undefined>();
   const [optimizeInitialCampaign, setOptimizeInitialCampaign] = useState<GoogleAdsCampaign | null>(null);
+  const [optimizeInitialAd, setOptimizeInitialAd] = useState<import('../types/connect').GoogleAdsCampaignAd | null>(null);
   const [optimizeSnapshot, setOptimizeSnapshot] = useState<{
     auditId: string;
     auditFindings: Finding[];
@@ -113,7 +130,11 @@ export default function DashboardPage() {
     [audit]
   );
 
-  const openOptimization = useCallback((finding: Finding, campaign?: GoogleAdsCampaign) => {
+  const openOptimization = useCallback((
+    finding: Finding,
+    campaign?: GoogleAdsCampaign,
+    ad?: import('../types/connect').GoogleAdsCampaignAd | null
+  ) => {
     if (!auditId || !audit) return;
     const snapshotFindings = (audit.findings ?? []).filter((f) => !isFailureFinding(f));
     setOptimizeSnapshot({
@@ -128,6 +149,7 @@ export default function DashboardPage() {
     });
     setOptimizeCampaignId(campaign?.id);
     setOptimizeInitialCampaign(campaign ?? null);
+    setOptimizeInitialAd(ad ?? null);
     setOptimizeFinding(finding);
   }, [auditId, audit, authUser?.id]);
 
@@ -135,6 +157,7 @@ export default function DashboardPage() {
     setOptimizeFinding(null);
     setOptimizeCampaignId(undefined);
     setOptimizeInitialCampaign(null);
+    setOptimizeInitialAd(null);
     setOptimizeSnapshot(null);
   }, []);
 
@@ -158,6 +181,8 @@ export default function DashboardPage() {
       ? Math.round(audit.healthScores.reduce((s, h) => s + h.score, 0) / audit.healthScores.length)
       : null);
   const totalImpact = audit?.totalImpact ?? validFindings.reduce((s, f) => s + f.impactMonthly, 0);
+  const annualOpportunity = audit?.annualOpportunity ?? totalImpact * 12;
+  const totalFindingsCount = audit?.totalFindings ?? validFindings.length;
   const healthLabel = getHealthLabel(healthScore ?? 50);
 
   const navItems = useMemo(() => {
@@ -285,6 +310,7 @@ export default function DashboardPage() {
             userId={optimizeSnapshot.userId}
             initialCampaignId={optimizeCampaignId}
             initialCampaign={optimizeInitialCampaign}
+            initialAd={optimizeInitialAd}
             lockCampaignScope={!!optimizeInitialCampaign}
           />
         )}
@@ -449,9 +475,9 @@ export default function DashboardPage() {
 
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               {[
-                { label: 'TOTAL FINDINGS', value: validFindings.length, color: 'text-red-400' },
+                { label: 'TOTAL FINDINGS', value: totalFindingsCount, color: 'text-red-400' },
                 { label: 'MONTHLY IMPACT', value: formatCurrency(totalImpact), color: 'text-orange' },
-                { label: 'ANNUAL OPPORTUNITY', value: formatCurrency(totalImpact * 12), color: 'text-teal' },
+                { label: 'ANNUAL OPPORTUNITY', value: formatCurrency(annualOpportunity), color: 'text-teal' },
                 { label: 'ACCOUNT HEALTH /100', value: healthScore ?? '—', color: 'text-teal' },
               ].map((m) => (
                 <motion.div key={m.label} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="bg-panel border border-border rounded-xl p-4 text-center">
@@ -492,7 +518,9 @@ export default function DashboardPage() {
               auditScope={audit.auditScope}
               parentAuditId={audit.parentAuditId}
               campaignName={audit.campaignName}
-              onOptimizeCampaign={(finding, campaignId) => openOptimization(finding, campaignId)}
+              websiteUrl={audit.websiteUrl}
+              onOptimizeCampaign={(finding, campaign) => openOptimization(finding, campaign)}
+              onOptimizeAd={(finding, campaign, ad) => openOptimization(finding, campaign, ad)}
             />
           )}
 
@@ -517,6 +545,10 @@ export default function DashboardPage() {
               </>
             )}
           </section>
+
+          {audit.status === 'COMPLETED' && auditId && (
+            <CompetitorAdLibrarySection auditId={auditId} enabled />
+          )}
 
           <section id="findings" className="scroll-mt-24">
             <div className="mb-4">
@@ -585,13 +617,24 @@ export default function DashboardPage() {
 
             <div className="space-y-3">
               {filteredFindings.length === 0 ? (
-                <p className="text-muted text-sm py-8 text-center">
-                  {activeModuleSlug
-                    ? `No findings for ${moduleLabelForSlug(activeModuleSlug)} in this audit.`
-                    : activeCategory
-                      ? `No findings in the ${activeCategory} category for this audit.`
-                      : 'No findings match the current filters.'}
-                </p>
+                <div className="text-center py-10 space-y-2">
+                  <p className="text-muted text-sm">
+                    {activeModuleSlug
+                      ? `No findings for ${moduleLabelForSlug(activeModuleSlug)} in this audit yet.`
+                      : activeCategory
+                        ? `No findings in the ${activeCategory} category for this audit.`
+                        : 'No findings match the current filters.'}
+                  </p>
+                  {activeModuleSlug && backfilling && (
+                    <p className="text-orange text-xs">Generating missing module analysis…</p>
+                  )}
+                  {activeModuleSlug && !backfilling && (
+                    <p className="text-muted text-xs max-w-md mx-auto">
+                      This section only shows findings from the {moduleLabelForSlug(activeModuleSlug)} module.
+                      Open All Findings to see the full report, or re-run the audit if this module was skipped.
+                    </p>
+                  )}
+                </div>
               ) : (
                 filteredFindings.map((finding, i) => (
                   <FindingRow
@@ -609,7 +652,7 @@ export default function DashboardPage() {
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-white font-bold text-xl">30 / 60 / 90-Day Growth Roadmap</h2>
               <span className="text-muted text-sm">
-                Total impact: {formatImpact(totalImpact)} • {formatCurrency(totalImpact * 12)}/yr
+                Total impact: {formatImpact(totalImpact)} • {formatCurrency(annualOpportunity)}/yr
               </span>
             </div>
             <div className="grid md:grid-cols-3 gap-4">
@@ -647,6 +690,7 @@ export default function DashboardPage() {
           userId={optimizeSnapshot.userId}
           initialCampaignId={optimizeCampaignId}
           initialCampaign={optimizeInitialCampaign}
+          initialAd={optimizeInitialAd}
           lockCampaignScope={!!optimizeInitialCampaign}
         />
       )}

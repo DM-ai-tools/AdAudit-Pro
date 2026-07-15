@@ -29,8 +29,11 @@ function mapOptimizeAdError(err: unknown): { status: number; message: string } {
   if (message.includes('not found') || message.includes('Not found')) {
     return { status: 404, message };
   }
-  if (message.includes('JSON') || message.includes('parse') || message.includes('Incomplete')) {
-    return { status: 502, message: 'AI returned an invalid response. Click Try Again.' };
+  if (message.includes('JSON') || message.includes('parse') || message.includes('Incomplete') || message.includes('truncated') || message.includes('max_tokens') || message.includes('token limit')) {
+    return {
+      status: 502,
+      message: 'AI response was truncated (token limit). Click Try Again.',
+    };
   }
   if (message.includes('Anthropic') || message.includes('API keys')) {
     return {
@@ -91,7 +94,7 @@ function buildOptimizeAdRequest(
     auditId,
     findingId,
     tone,
-    optimizationMode: optimizationMode ?? 'balanced',
+    optimizationMode: optimizationMode ?? 'aggressive',
     variation,
     customPrompt,
     regenerateOnly,

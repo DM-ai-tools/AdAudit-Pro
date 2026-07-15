@@ -1,6 +1,7 @@
 # Dependencies
 **/node_modules
 **/npm-debug.log*
+**/package-lock.json.md
 
 # Build output (rebuilt inside image)
 backend/dist
@@ -12,22 +13,29 @@ frontend/dist
 !.env.example
 backend/.env
 backend/.env.*
+frontend/.env
+frontend/.env.*
+
+# Local / scratch data
+backend/.data
+backend/tmp-*
+**/tmp-*.html
 
 # Git & IDE
 .git
 .gitignore
 .vscode
 .idea
+.cursor
+agent-transcripts
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Docs & local assets
+# Docs (keep README for image metadata readers if needed)
 **/*.md
 !README.md
-.cursor
-agent-transcripts
 
 # Puppeteer cache
 .cache

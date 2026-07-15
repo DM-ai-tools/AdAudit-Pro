@@ -17,6 +17,7 @@ export interface FullOptimizeAdContext {
     ctr?: number;
     conversions?: number;
     adStrength?: string;
+    finalUrls?: string[];
   };
   previousOptimizedAd?: {
     headlines: string[];
@@ -27,15 +28,31 @@ export interface FullOptimizeAdContext {
   optimizationMode?: OptimizationMode;
   variationHint?: string;
   customPrompt?: string;
+  /** Ad-level Make This Ad Better — hard lock RSA to this service */
+  adServiceLock?: {
+    primaryService: string;
+    productsServices: string[];
+    landingPage?: string;
+    originalHeadlines: string[];
+    originalDescriptions: string[];
+  };
 }
 
 const MODE_INSTRUCTIONS: Record<OptimizationMode, string> = {
   conservative:
-    'CONSERVATIVE MODE: Refine the current ad for clarity and QS, but still incorporate competitor Transparency Center angles where the client is clearly losing. At least 40% of headlines must use new phrasing vs the existing ad.',
+    'CONSERVATIVE MODE: Refine the current ad for clarity and QS, but still incorporate competitor Transparency Center angles where the client is clearly losing. At least 50% of headlines must use new phrasing vs the existing ad.',
   balanced:
-    'BALANCED MODE: Study competitor Transparency Center ads (adGallery) and produce an ad that beats them on offers, trust, and keywords — while being clearly different from the EXISTING AD. Do NOT paraphrase current headlines; borrow competitor winning angles and improve them.',
+    'BALANCED MODE: Study competitor Transparency Center ads (adGallery) and produce an ad that beats them on offers, trust, and keywords — while being clearly different from the EXISTING AD. Do NOT paraphrase current headlines; borrow competitor winning angles and improve them. Target Ad Difference Score 70+.',
   aggressive:
-    'AGGRESSIVE MODE: Generate a radically different ad from the EXISTING AD. Heavily mine competitor Transparency Center ads for positioning, offers, trust signals, and keywords — then out-position the set with bold, distinct copy. Zero headline overlap with the current ad’s top messages.',
+    `AGGRESSIVE MODE (DEFAULT — AI OPTIMIZED AD GENERATION 2.0):
+You are a senior Google Ads RSA strategist. Your job is to make the AI Optimized Ad OBVIOUSLY 10× stronger than the EXISTING AD and clearly better than every rival in adGallery.
+DO NOT rewrite, polish, paraphrase, or rearrange the EXISTING AD. Treat it as a failing baseline to LEAVE BEHIND.
+Study competitor Transparency ads: steal their winning OFFERS / TRUST / CTAs / PROOF angles (never verbatim copy), then invent stronger client-branded versions.
+At least 90% of headlines must be net-new ideas (new benefits, new offers, new social proof, new geo hooks, new urgency) — not synonym swaps of the current ad.
+Descriptions must introduce NEW commercial hooks (rate compare, approval speed, no-deposit, broker vs lender, local specialist, review proof) not present in the existing ad.
+Include local/regional intent when the market/location is known (e.g. Melbourne car finance) WITHOUT cloning the current "City + Product" headline pattern.
+Sitelinks must have DISTINCT labels AND DISTINCT destination URLs (quote, rates, about, contact) — never four copies of the same final URL.
+Target Ad Difference Score 80+ (server-scored). Similar drafts are rejected and regenerated.`,
 };
 
 const TONE_INSTRUCTIONS: Record<OptimizationTone, string> = {
@@ -78,11 +95,60 @@ function formatWebsiteIntel(intelligence: AuditIntelligence): string {
 function formatCompetitorIntel(intelligence: AuditIntelligence): string {
   const c = intelligence.competitorAnalysis;
   if (!c) return 'Competitor analysis unavailable.';
+
+  const beatBrief = (c.adGallery ?? [])
+    .slice(0, 6)
+    .map((x) => {
+      const name = x.advertiserName ?? x.name;
+      const heads = (x.headlines ?? []).slice(0, 4).filter(Boolean);
+      const descs = (x.descriptions ?? []).slice(0, 2).filter(Boolean);
+      const offers = (x.offers ?? []).slice(0, 3).filter(Boolean);
+      const trust = (x.trustSignals ?? []).slice(0, 3).filter(Boolean);
+      return {
+        competitor: name,
+        influencePercent: x.influencePercent,
+        adDurationDays: x.adDurationDays,
+        activeAdCount: x.activeAdCount,
+        winningHeadlines: heads,
+        winningDescriptions: descs,
+        offers,
+        trustSignals: trust,
+        beatInstruction: `Create 2–3 stronger client headlines that beat "${name}" on offer/trust/CTA without copying: ${heads.join(' | ') || 'use their positioning'}`,
+      };
+    });
+
   return JSON.stringify({
     source: c.source,
+    selectionCriteria:
+      'Competitors ranked by AI Learning Value. SAME-REGION peers preferred when location is known. Higher influencePercent rivals must shape more headlines/offers/CTAs. Adapt their winning angles to the client brand — never copy verbatim.',
+    mandatoryCompetitorBeatBrief: beatBrief,
+    influenceWeights: c.influenceWeights ?? c.competitors?.slice(0, 4).map((x) => ({
+      name: x.name,
+      score: x.confidenceScore ?? 0,
+      aiLearningValue: x.aiLearningValue ?? x.aiLearning?.aiLearningValue,
+      influencePercent: x.influencePercent ?? 0,
+    })),
+    marketPatterns: c.marketPatterns,
     competitors: c.competitors?.slice(0, 4).map((x) => ({
       name: x.name,
       url: x.url,
+      confidenceScore: x.confidenceScore,
+      aiLearningValue: x.aiLearningValue ?? x.aiLearning?.aiLearningValue,
+      influencePercent: x.influencePercent,
+      durationClass: x.durationClass,
+      durationLabel: x.durationLabel,
+      industryMatch: x.industryMatch,
+      serviceMatch: x.serviceMatch,
+      brandAuthorityScore: x.brandAuthorityScore ?? x.brandAuthority?.brandAuthorityScore,
+      advertisingScore: x.advertisingScore ?? x.advertisingStrength?.advertisingScore,
+      marketPosition: x.marketPosition ?? x.brandAuthority?.marketPosition,
+      competitiveThreat: x.competitiveThreat ?? x.brandAuthority?.competitiveThreat,
+      brandAuthority: x.brandAuthority,
+      socialPresence: x.socialPresence,
+      advertisingStrength: x.advertisingStrength,
+      marketAuthority: x.marketAuthority,
+      offerTrustAnalysis: x.offerTrustAnalysis,
+      aiLearning: x.aiLearning,
       headlines: x.headlines?.slice(0, 8),
       offers: x.offers,
       services: x.services,
@@ -91,6 +157,13 @@ function formatCompetitorIntel(intelligence: AuditIntelligence): string {
       keyMessages: x.keyMessages,
       valuePropositions: x.valuePropositions,
       positioning: x.positioning,
+      trustSignals: x.trustSignals,
+      adDurationDays: x.adDurationDays,
+      activeAdCount: x.activeAdCount,
+      totalAdCount: x.totalAdCount,
+      firstShown: x.firstShown,
+      lastShown: x.lastShown,
+      brandReview: x.brandReview,
     })),
     insights: c.insights,
     keywordOpportunities: c.keywordOpportunities,
@@ -103,9 +176,47 @@ function formatCompetitorIntel(intelligence: AuditIntelligence): string {
       advertiserName: x.advertiserName,
       headlines: x.headlines,
       descriptions: x.descriptions,
+      offers: x.offers,
+      ctas: x.ctas,
+      trustSignals: x.trustSignals,
       creativeUrl: x.creativeUrl,
       transparencyUrl: x.transparencyUrl,
       adSource: x.adSource,
+      adDurationDays: x.adDurationDays,
+      activeAdCount: x.activeAdCount,
+      totalAdCount: x.totalAdCount,
+      firstShown: x.firstShown,
+      lastShown: x.lastShown,
+      confidenceScore: x.confidenceScore,
+      aiLearningValue: x.aiLearningValue,
+      influencePercent: x.influencePercent,
+      durationLabel: x.durationLabel,
+      estimatedSuccessScore: x.estimatedSuccessScore,
+      advertisingScore: x.advertisingScore,
+      brandAuthority: x.brandAuthority,
+      marketAuthority: x.marketAuthority,
+      offerTrustAnalysis: x.offerTrustAnalysis,
+      brandReview: x.brandReview
+        ? {
+            score: x.brandReview.score,
+            summary: x.brandReview.summary,
+            detailedReview: x.brandReview.detailedReview,
+            adActivityReview: x.brandReview.adActivityReview,
+            messagingReview: x.brandReview.messagingReview,
+            trustReview: x.brandReview.trustReview,
+            offerReview: x.brandReview.offerReview,
+            howToBeat: x.brandReview.howToBeat,
+            strengths: x.brandReview.strengths,
+            weaknesses: x.brandReview.weaknesses,
+            trustScore: x.brandReview.trustScore,
+            averageRating: x.brandReview.averageRating,
+            reviewCount: x.brandReview.reviewCount,
+            sentiment: x.brandReview.sentiment,
+            positiveThemes: x.brandReview.positiveThemes,
+            negativeThemes: x.brandReview.negativeThemes,
+            reviewVelocity: x.brandReview.reviewVelocity,
+          }
+        : undefined,
     })),
     gapAnalysisSummary: c.gapAnalysis?.summary,
   }, null, 0);
@@ -122,8 +233,9 @@ export function buildFullOptimizeAdPrompt(ctx: FullOptimizeAdContext): string {
     optimizationMode,
     variationHint,
     customPrompt,
+    adServiceLock,
   } = ctx;
-  const mode = optimizationMode ?? 'balanced';
+  const mode = optimizationMode ?? 'aggressive';
   const modeInstruction = MODE_INSTRUCTIONS[mode];
   const biz = intelligence.business;
   const brandName = resolveBusinessName(biz.name, biz.websiteUrl);
@@ -145,6 +257,13 @@ export function buildFullOptimizeAdPrompt(ctx: FullOptimizeAdContext): string {
         : 'CASE 3 — NO CAMPAIGNS: Propose campaign strategy plus full RSA copy.';
 
   return `You are a Senior Google Ads Strategist — not a copywriter. Analyze the FULL account intelligence below, then produce publishable RSA ads AND strategic recommendations tied to real performance data.
+
+AI OPTIMIZED AD GENERATION 2.0 — NON-NEGOTIABLE
+- The AI Optimized Ad must NOT be a simple rewrite of the current ad
+- Users must immediately notice a major difference between Current Ad and AI Optimized Ad
+- Do not be conservative: change messaging, CTAs, positioning, and offer strategy when competitor intelligence supports it
+- Learn from the strongest competitors (AI Learning Value / influencePercent) — advertising success, trust, market authority, social presence, brand strength — then generate ads that outperform BOTH the current ad AND the competition
+- Never copy competitors verbatim; synthesize stronger client-branded copy
 
 YOUR ROLE
 - Diagnose weak headlines, descriptions, CTAs, keyword relevance, quality score issues, wasted search terms, and landing page gaps
@@ -210,21 +329,76 @@ ${formatWebsiteIntel(intelligence)}
 COMPETITOR INTELLIGENCE (use aggressively — do NOT produce generic headline rewrites)
 ${formatCompetitorIntel(intelligence)}
 
-COMPETITIVE DIFFERENTIATION REQUIREMENTS
-- The adGallery contains EXACT competitor ads from Google Transparency Center — treat these as the benchmark to beat
-- Your output MUST be substantially different from the EXISTING AD above (no paraphrasing, no swapping word order)
+MANDATORY USE OF COMPETITOR SUGGESTIONS
+- Read mandatoryCompetitorBeatBrief carefully — each rival lists winningHeadlines / offers / trustSignals
+- Across the 15 RSA headlines you MUST cover DISTINCT competitor-beating angles:
+  (1) Offer they push that you lack (from missingOffers / gallery offers)
+  (2) Trust / proof they use (reviews, licensed, years, broker status)
+  (3) Speed / approval path they advertise
+  (4) Geo specialist angle that beats their city headline (keep geo intent, change the hook)
+  (5) Compare-and-win / rate advantage angle
+  (6) Vehicle type / eligibility angle (new & used, no deposit, bad credit — only if true for the client)
+- For each high-influence rival, name them in competitorInsightsUsed / topCompetitorsInfluencing and state which of their angles you adapted
+- If missingFromYourAds is non-empty, convert at least 3 of those gaps into concrete headlines or description lines
+- Do NOT output a near-twin of the current ad that merely reorders City + Product words
+
+COMPETITIVE DIFFERENTIATION REQUIREMENTS (GENERATION 2.0 — 10× BETTER BAR)
+- If optimizing a SINGLE AD for one service (e.g. Business Loan vs Car Loan), ONLY learn from competitors/gallery ads for that same service — never blend unrelated service messaging from campaign-wide rivals
+- Prefer SAME-REGION rivals when location is known (e.g. Melbourne / VIC peers over generic national fluff) while still using strong national peers as offer benchmarks
+- Identify Top Competitor Offers, Messaging, CTAs, Keywords, Trust Signals, Positioning, and Value Propositions from adGallery + marketPatterns + offerTrustAnalysis
+- Ask: What is missing from the current ad? What are competitors doing better? What messaging wins consistently? What would make a shopper click THIS ad instead of theirs?
+- The adGallery contains EXACT competitor ads from Google Transparency Center via SociaVault — treat these as the benchmark to BEAT, not templates to echo
+- Do NOT treat competitors equally. Use influenceWeights / influencePercent (driven by aiLearningValue): a 40% influence rival should shape more headlines/offers than a 20% rival
+- Prefer learning from competitors with higher aiLearningValue, advertisingScore, brandAuthorityScore, trustScore, longer adDurationDays, socialPresence, and market authority
+- Use brandReview.strengths / positiveThemes / offerTrustAnalysis as angles to match or exceed; use brandReview.weaknesses / negativeThemes as gaps you can win
+- Your output MUST look like a DIFFERENT campaign to any human comparing Current vs AI Optimized side-by-side
+- FORBIDDEN patterns vs EXISTING AD: same headline with words reordered; "City Product" ↔ "Product City"; swapping "compares lenders" for "compares top lenders"; shallow synonym rewrites
+- REQUIRED angles (include several of these across the 15 headlines): concrete offer, proof/trust, speed, local specialist, compare-to-win, approval path, fees transparency, vehicle type (new/used) when relevant
 - Generate copy to outrank EACH competitor in adGallery — use their headlines/descriptions as the competitive baseline
 - competitorInsights in JSON must ONLY name competitors from adGallery (exact same names)
-- At least 70% of headlines must be net-new vs the existing ad; descriptions must introduce new value props or proof points
+- At least 90% of headlines must be net-new vs the existing ad; descriptions must introduce new value props or proof points
 - Ads must out-position competitors while remaining unmistakably on-brand for the client
+- In competitiveOutperformance / strategistReasoning / adGenerationExplanation, explain WHY Claude learned from each high-influence rival and WHY the new ad should outperform
+- Fill adGenerationExplanation completely — users must see competitor signals, offers, trust, keywords, reviews, social authority, and market positioning used
 
-${scenario === 'REPLACE_EXISTING' ? `EXISTING AD (live in Google Ads — benchmark only)
+${adServiceLock?.primaryService ? `
+═══════════════════════════════════════════════════════════════════
+AD-LEVEL SERVICE LOCK (HIGHEST PRIORITY — OVERRIDES CAMPAIGN / WEBSITE MIX)
+═══════════════════════════════════════════════════════════════════
+You are optimizing ONE selected RSA, NOT the whole campaign and NOT every product on the website.
+
+LOCKED SERVICE (only product allowed in ALL RSA copy): "${adServiceLock.primaryService}"
+Landing page / final URL for this ad: ${adServiceLock.landingPage ?? 'from selected ad'}
+FORBIDDEN near-duplicates of the live ad (do NOT paraphrase these — invent stronger alternatives):
+${adServiceLock.originalHeadlines.slice(0, 15).map((h) => `- ${h}`).join('\n')}
+${adServiceLock.originalDescriptions.slice(0, 4).map((d) => `- ${d}`).join('\n')}
+
+MANDATORY:
+- Read the selected ad + landing URL and understand its motive: promote "${adServiceLock.primaryService}" only
+- EVERY headline (all 15), EVERY description (all 4), sitelinks, callouts, and structured snippets MUST be about "${adServiceLock.primaryService}"
+- displayPaths must reflect this service (e.g. car-loans / car-finance) — never another product path
+- Learn ONLY from competitor adGallery creatives that advertise "${adServiceLock.primaryService}" (or the same family: car/auto/vehicle finance)
+- When geo is present in the live ad or market context, keep geo INTENT but change the HOOK (offer/proof/CTA) so it is not a twin of the current ad
+
+FORBIDDEN (will cause rejection):
+- Business loans, SME loans, commercial loans, home loans, mortgages, personal loans, credit cards, insurance — unless the locked service IS that product
+- Writing "business loans" when locked service is car/auto/vehicle loans (or vice versa)
+- Campaign-wide messaging that ignores this ad's service
+- Using website homepage fluff that pulls in other products
+- Four sitelinks that all use the identical destination URL — each sitelink needs a distinct useful path (quote / rates / about / contact) under the same domain when possible
+
+If the locked service is Car Loans / Auto / Vehicle finance: talk about cars, auto finance, vehicle loans, repayments, used/new cars, broker comparison for CAR finance — NEVER SME/business lending.
+` : ''}
+${scenario === 'REPLACE_EXISTING' ? `EXISTING AD (live in Google Ads — WEAK BASELINE TO BEAT, NOT A TEMPLATE)
 - Headlines: ${JSON.stringify(currentAd.headlines)}
 - Descriptions: ${JSON.stringify(currentAd.descriptions)}
+- Final URLs: ${JSON.stringify(currentAd.finalUrls ?? [])}
 - CTR: ${currentAd.ctr ?? perf?.ctr ?? 'Unknown'}%
 - Quality Score: ${currentAd.qualityScore ?? perf?.avgQualityScore ?? 'Unknown'}
 - Conversions: ${currentAd.conversions ?? perf?.conversions ?? 'Unknown'}
 - Ad strength: ${currentAd.adStrength ?? 'Unknown'}
+- A human must instantly see the AI Optimized Ad as a major upgrade: richer offers, sharper CTAs, stronger trust/proof, clearer regional/service hooks from competitor intel
+- FORBIDDEN: producing headlines that are paraphrases or near-duplicates of the above
 ` : ''}
 ${previousOptimizedAd?.headlines?.length ? `
 PREVIOUS AI OPTIMIZATION (DO NOT REPEAT — generate fresh competitor-driven alternatives)
@@ -240,10 +414,13 @@ ${variationHint ? `VARIATION: ${variationHint}` : ''}
 ${customPrompt?.trim() ? `\nUSER INSTRUCTIONS:\n${customPrompt.trim()}\n` : ''}
 ${websiteNote}
 
-COMPLIANCE
-- Headlines: max 30 chars, exactly 15 unique
-- Descriptions: max 90 chars, exactly 4 unique — each a COMPLETE sentence (ends . ! ?), 70-90 chars, never truncated mid-word
-- Display paths: max 15 chars each
+COMPLIANCE (PUBLISHABLE COPY — NON-NEGOTIABLE)
+- Headlines: max 30 chars EACH, exactly 15 unique — every headline must be a COMPLETE phrase with COMPLETE words (never "Approv", "Consultati", mid-word cuts, or dangling hyphens)
+- If a phrase cannot fit in 30 chars with full words, rewrite shorter (e.g. "Fast Approvals" not "Commercial Loans - Fast Approv")
+- Descriptions: max 90 chars, exactly 4 unique — each a COMPLETE sentence (ends . ! ?), ideally 70-90 chars, never truncated mid-word
+- Callouts: max 25 chars, complete words only
+- Sitelinks: max 25 chars link text, COMPLETE words; return 4 objects {"label":"...","url":"..."} with DISTINCT destination URLs under the client domain when possible (e.g. /car-loans/, /get-a-quote/, /about/, /contact/) — never four sitelinks pointing at the identical URL
+- Display paths: max 15 chars each, real site path segments
 - Google Ads compliant, publishable today
 - Keep ALL string fields concise (1-2 sentences max). Limit arrays to the counts shown — do not exceed.
 
@@ -253,7 +430,7 @@ Return ONLY valid JSON (no markdown). Competitor profile cards are derived serve
   "descriptions": ["exactly 4 descriptions"],
   "displayPaths": ["path1", "path2"],
   "callouts": ["4 callouts max"],
-  "sitelinks": ["4 sitelinks max"],
+  "sitelinks": [{"label":"Get a Quote","url":"https://example.com/quote"},{"label":"Compare Rates","url":"https://example.com/rates"},{"label":"About Us","url":"https://example.com/about"},{"label":"Contact","url":"https://example.com/contact"}],
   "structuredSnippets": ["4 snippet values max"],
   "reasoning": "2-3 sentence executive summary",
   "strategistReasoning": {
@@ -264,14 +441,30 @@ Return ONLY valid JSON (no markdown). Competitor profile cards are derived serve
     "conversionPotential": "1-2 sentences",
     "auditFindingsAddressed": ["max 4 bullets"],
     "competitorInsightsUsed": ["max 4 specific competitor insights applied"],
-    "competitiveOutperformance": {
+      "competitiveOutperformance": {
       "messagingImprovements": "1-2 sentences vs competitors",
       "keywordImprovements": "1-2 sentences",
+      "trustSignalImprovements": "1-2 sentences",
       "offerImprovements": "1-2 sentences",
-      "conversionImprovements": "1-2 sentences"
+      "ctaImprovements": "1-2 sentences",
+      "conversionImprovements": "1-2 sentences",
+      "competitorStrategiesUsed": "which high-influence competitors shaped the copy",
+      "competitorGapsExploited": "gaps you exploited vs top rivals"
     }
   },
-  "missingCompetitorAdvantages": ["max 5 gaps vs competitors"],
+  "missingCompetitorAdvantages": ["max 5 gaps vs competitors — each with why it matters"],
+  "adGenerationExplanation": {
+    "competitorSignalsUsed": ["max 5 signals learned from rivals"],
+    "topCompetitorsInfluencing": [
+      { "name": "exact competitor name from adGallery", "influencePercent": 40, "reason": "1 short reason e.g. Highest Ad Duration + Strong Reviews" }
+    ],
+    "offersUsed": ["max 5 offers/angles used in the new ad"],
+    "trustSignalsUsed": ["max 5 trust/proof angles used"],
+    "keywordsUsed": ["max 6 keyword themes used"],
+    "reviewInsightsUsed": ["max 4 review/sentiment themes used"],
+    "socialAuthorityInsightsUsed": ["max 3 social/brand authority insights used"],
+    "marketPositioningUsed": ["max 3 market positioning angles used"]
+  },
   "recommendedKeywords": ["max 8 keywords"],
   "negativeKeywordSuggestions": ["max 10 negatives"],
   "recommendedExtensions": ["max 4"],
@@ -281,8 +474,8 @@ Return ONLY valid JSON (no markdown). Competitor profile cards are derived serve
   "audienceRecommendations": ["max 2"],
   "performanceEstimates": {
     "label": "AI Estimated Impact",
-    "current": { "ctr": "", "qualityScore": "", "conversionRate": "", "cpa": "" },
-    "estimated": { "ctr": "", "qualityScore": "", "conversionRate": "", "cpa": "" }
+    "current": { "ctr": "", "qualityScore": "", "conversionRate": "", "cpa": "", "roas": "", "monthlyLeads": "" },
+    "estimated": { "ctr": "", "qualityScore": "", "conversionRate": "", "cpa": "", "roas": "", "monthlyLeads": "" }
   },
   "campaignHealth": { "currentScore": 0, "predictedScore": 0, "explanation": "1 sentence" },
   "predictedImprovements": { "ctr": "", "qualityScore": "", "conversionRate": "" }
@@ -295,14 +488,34 @@ export function buildCompactOptimizeRetryPrompt(ctx: FullOptimizeAdContext): str
   const prevBlock = ctx.previousOptimizedAd?.headlines?.length
     ? `\nDo NOT repeat previous AI headlines: ${JSON.stringify(ctx.previousOptimizedAd.headlines.slice(0, 8))}. Use fresh competitor-driven angles from adGallery.`
     : '';
+  const health = ctx.intelligence.auditHealth?.score ?? 50;
+  const lock = ctx.adServiceLock;
+  const serviceLock = lock?.primaryService
+    ? `
+SERVICE LOCK (CRITICAL): This is ONE ad for "${lock.primaryService}" only (landing: ${lock.landingPage ?? 'n/a'}).
+Original ad: ${JSON.stringify(lock.originalHeadlines.slice(0, 8))} / ${JSON.stringify(lock.originalDescriptions.slice(0, 2))}
+ALL 15 headlines + 4 descriptions + sitelinks + callouts MUST promote "${lock.primaryService}" only.
+FORBIDDEN: any other loan vertical (business/home/personal/SME) unless that IS the locked service.
+If locked service is Car Loans: write about car/auto/vehicle finance only — never business loans.
+`
+    : '';
   return `Return ONLY compact valid JSON for Google Ads RSA optimization. Brand: ${brandName}.
-Scenario: ${ctx.scenario}. Finding: ${ctx.finding.title}.${prevBlock}
+Scenario: ${ctx.scenario}. Finding: ${ctx.finding.title}. Mode: AGGRESSIVE Generation 2.0.${prevBlock}
+${serviceLock}
+CRITICAL: Produce a dramatically different ad from the existing/current copy — not a rewrite. Mine competitor adGallery for offers, trust, CTAs, keywords FOR THE LOCKED SERVICE ONLY. Prefer same-city rivals when location is known. At least 90% of headlines must be net-new vs the live ad. Sitelinks need distinct labels AND distinct URLs.
 
-Required: exactly 15 headlines (≤30 chars), 4 descriptions (≤90 chars), displayPaths [path1,path2].
-Include brief strategistReasoning with competitiveOutperformance (4 one-sentence fields) and competitorInsightsUsed (max 3).
-Include missingCompetitorAdvantages (max 4), recommendedKeywords (max 6), negativeKeywordSuggestions (max 8).
-Include callouts (4), sitelinks (4), reasoning (2 sentences), predictedImprovements {ctr, qualityScore, conversionRate}.
-NO markdown. NO extra text. Stay under 3500 tokens total output.`;
+Required fields (all must be present — Make It Better UI depends on them):
+- exactly 15 headlines (≤30 chars, COMPLETE words), 4 descriptions (≤90 chars), displayPaths [path1,path2] matching the locked service
+- callouts (4), sitelinks (4 objects with label+url), reasoning (2 sentences)
+- predictedImprovements {ctr, qualityScore, conversionRate} with values like "+18% est."
+- performanceEstimates: { label:"AI Estimated Impact", current:{ctr,qualityScore,conversionRate,cpa,roas,monthlyLeads,monthlySavings}, estimated:{same keys with uplift strings} }
+- campaignHealth: { currentScore:${health}, predictedScore:${Math.min(100, health + 18)}, explanation:"one sentence" }
+- accountImpact: { currentAccountHealth:${health}, predictedAccountHealth:${Math.min(100, health + 18)}, currentMonthlyLeads, estimatedMonthlyLeads, currentWastedSpend, estimatedWastedSpend, currentRoas, estimatedRoas }
+- strategistReasoning with competitiveOutperformance (short one-sentence fields) and competitorInsightsUsed (max 3)
+- adGenerationExplanation with topCompetitorsInfluencing (max 3), offersUsed, trustSignalsUsed, competitorSignalsUsed, keywordsUsed
+- missingCompetitorAdvantages (max 4), recommendedKeywords (max 6), negativeKeywordSuggestions (max 8)
+- strategistRecommendations: { keywords, negativeKeywords, extensions, landingPage, budget, bidding, audience } — 2-4 short bullets each
+NO markdown. NO empty strings for metrics (use "—" only if truly unknown). Keep JSON under 3500 tokens.`;
 }
 
 export function liveAdToCurrentAd(ad: LiveAdRow | null, fallbackBrand: string, websiteUrl?: string) {
@@ -330,5 +543,6 @@ export function liveAdToCurrentAd(ad: LiveAdRow | null, fallbackBrand: string, w
     ctr: ad.ctr,
     conversions: ad.conversions,
     adStrength: ad.adStrength,
+    finalUrls: ad.finalUrls,
   };
 }

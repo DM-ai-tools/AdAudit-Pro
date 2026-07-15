@@ -105,6 +105,15 @@ export async function completeOptimizeAdJob(jobId: string, result: OptimizeAdRes
     existing.status = 'completed';
     existing.result = result;
     existing.updatedAt = Date.now();
+  } else {
+    memoryJobs.set(jobId, {
+      id: jobId,
+      userId: '',
+      status: 'completed',
+      result,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
   }
 
   try {
@@ -118,12 +127,11 @@ export async function completeOptimizeAdJob(jobId: string, result: OptimizeAdRes
       },
     });
   } catch (err) {
-    if (!existing) {
-      console.warn(
-        '[optimize-ad-jobs] DB complete failed:',
-        err instanceof Error ? err.message : err
-      );
-    }
+    // Table may be missing locally — memory job is already completed for same-process polling
+    console.warn(
+      '[optimize-ad-jobs] DB complete skipped (memory job is updated):',
+      err instanceof Error ? err.message.split('\n')[0] : err
+    );
   }
 }
 

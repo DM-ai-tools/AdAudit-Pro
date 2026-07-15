@@ -1,4 +1,5 @@
 import clsx from 'clsx';
+import { Sparkles } from 'lucide-react';
 import type { GoogleAdsCampaignAd } from '../../types/connect';
 import { formatCurrencyPrecise, formatNumber, formatPercent } from '../../utils/helpers';
 
@@ -6,6 +7,9 @@ interface CampaignAdPreviewProps {
   ad: GoogleAdsCampaignAd;
   currency?: string;
   compact?: boolean;
+  /** Ad-level Make This Ad Better */
+  onOptimizeAd?: () => void;
+  inferredService?: string;
 }
 
 function displayHost(urls: string[]): string {
@@ -18,7 +22,13 @@ function displayHost(urls: string[]): string {
   }
 }
 
-export function CampaignAdPreview({ ad, currency = 'AUD', compact = false }: CampaignAdPreviewProps) {
+export function CampaignAdPreview({
+  ad,
+  currency = 'AUD',
+  compact = false,
+  onOptimizeAd,
+  inferredService,
+}: CampaignAdPreviewProps) {
   const host = displayHost(ad.finalUrls);
   const pathLine = ad.displayPath1
     ? `${host} › ${ad.displayPath1}${ad.displayPath2 ? ` › ${ad.displayPath2}` : ''}`
@@ -35,16 +45,20 @@ export function CampaignAdPreview({ ad, currency = 'AUD', compact = false }: Cam
             {ad.adType.replace(/_/g, ' ')}
             {ad.adStrength ? ` · ${ad.adStrength.replace(/_/g, ' ')}` : ''}
           </p>
+          {inferredService && (
+            <p className="text-teal text-[10px] mt-0.5 truncate">Service: {inferredService}</p>
+          )}
         </div>
-        <span className={clsx(
-          'text-[9px] font-bold uppercase px-1.5 py-0.5 rounded shrink-0',
-          ad.status === 'ENABLED' ? 'bg-teal/15 text-teal' : 'bg-panel text-muted'
-        )}>
+        <span
+          className={clsx(
+            'text-[9px] font-bold uppercase px-1.5 py-0.5 rounded shrink-0',
+            ad.status === 'ENABLED' ? 'bg-teal/15 text-teal' : 'bg-panel text-muted'
+          )}
+        >
           {ad.status}
         </span>
       </div>
 
-      {/* Google-style SERP preview */}
       <div className="rounded-lg border border-border/60 bg-navy/60 p-3 mb-3">
         <span className="text-[9px] font-bold text-teal bg-teal/15 px-1.5 py-0.5 rounded">Sponsored</span>
         <p className="text-[10px] text-muted mt-1.5 truncate">{pathLine}</p>
@@ -58,6 +72,25 @@ export function CampaignAdPreview({ ad, currency = 'AUD', compact = false }: Cam
         <Stat label="CTR" value={formatPercent(ad.ctr)} />
         <Stat label="Avg. CPC" value={formatCurrencyPrecise(ad.avgCpc, currency)} />
       </div>
+
+      {onOptimizeAd && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOptimizeAd();
+          }}
+          className={clsx(
+            'mt-3 w-full inline-flex items-center justify-center gap-1.5 font-semibold rounded-lg transition-all',
+            'bg-gradient-to-r from-orange/20 to-purple-500/10 border border-orange/40 text-orange',
+            'hover:from-orange/30 hover:to-purple-500/20 hover:border-orange/60',
+            'px-3 py-1.5 text-xs'
+          )}
+        >
+          <Sparkles size={12} />
+          Make This Ad Better
+        </button>
+      )}
     </div>
   );
 }

@@ -38,11 +38,14 @@ export function CurrentAdSection({
         finalUrl={finalUrl}
         simpleAdView
       />
-      {originalAd && (originalAd.ctr != null || originalAd.qualityScore || originalAd.adStrength) && (
+      {originalAd && (
         <div className="grid grid-cols-3 gap-2 text-center text-xs max-w-md">
           {[
             { l: 'CTR', v: originalAd.ctr != null ? `${originalAd.ctr}%` : '—' },
-            { l: 'QS', v: originalAd.qualityScore ?? '—' },
+            {
+              l: originalAd.qualityScore != null ? 'Campaign QS' : 'QS',
+              v: originalAd.qualityScore != null ? String(originalAd.qualityScore) : '—',
+            },
             { l: 'Strength', v: originalAd.adStrength ?? '—' },
           ].map((m) => (
             <div key={m.l} className="bg-navy rounded-lg p-2 border border-border">

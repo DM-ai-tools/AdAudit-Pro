@@ -12,6 +12,8 @@ import {
 import { dateRangeForWindow, estimateMinutes } from '../audit-engine/module-queries.js';
 import { ALL_AUDIT_MODULE_IDS, getModuleCatalogName } from '../data/audit-module-catalog.js';
 import type { AuditModule, Finding, RoadmapItem } from '../types/index.js';
+import { findingMatchesModuleSlug, isAnalysisFailureFinding } from '../utils/finding-module-match.js';
+import { getAuditMetrics } from './index.js';
 
 export interface LiveAuditConfig {
   accountName: string;
@@ -58,7 +60,7 @@ function chunkSequential<T>(arr: T[], chunkSize: number): T[][] {
 
 function createRoadmapFromFindings(findings: Finding[]): RoadmapItem[] {
   const sorted = [...findings]
-    .filter((f) => !/analysis incomplete|configure anthropic/i.test(f.title))
+    .filter((f) => !isAnalysisFailureFinding(f.title))
     .sort((a, b) => b.impactMonthly - a.impactMonthly)
     .slice(0, 10);
   const phases: Array<'DAY_30' | 'DAY_60' | 'DAY_90'> = [
@@ -76,6 +78,51 @@ function createRoadmapFromFindings(findings: Finding[]): RoadmapItem[] {
     owner: 'AGENCY' as const,
     impactMonthly: f.impactMonthly,
   }));
+}
+
+/** Rebuild health scores, roadmap, and executive summary from current findings. */
+async function refreshAuditSummaries(
+  auditId: string,
+  config: Pick<
+    LiveAuditConfig,
+    'accountName' | 'auditScope' | 'campaignName'
+  >
+): Promise<void> {
+  const finalAudit = await auditStore.getAudit(auditId);
+  if (!finalAudit) return;
+
+  const summaryKey = getPrimaryApiKey();
+  const healthScores = await generateHealthScoresFromFindings(
+    finalAudit.findings,
+    config.accountName,
+    summaryKey
+  );
+  let roadmap = await generateRoadmapWithClaude(
+    finalAudit.findings,
+    config.accountName,
+    summaryKey,
+    { auditScope: config.auditScope, campaignName: config.campaignName }
+  );
+  if (!roadmap.length) {
+    roadmap = createRoadmapFromFindings(finalAudit.findings);
+  }
+
+  const validFindings = finalAudit.findings.filter((f) => !isAnalysisFailureFinding(f.title));
+  const { healthScore } = getAuditMetrics(validFindings, healthScores);
+
+  await auditStore.setHealthScores(auditId, healthScores);
+  await auditStore.setRoadmap(auditId, roadmap);
+
+  const summary = await generateExecutiveSummary(
+    config.accountName,
+    finalAudit.findings,
+    healthScore,
+    { auditScope: config.auditScope, campaignName: config.campaignName }
+  );
+
+  await auditStore.updateAudit(auditId, {
+    executiveSummary: summary,
+  });
 }
 
 async function refreshAuditProgress(auditId: string, totalModules: number, depth: string) {
@@ -334,28 +381,6 @@ export function runLiveAudit(auditId: string, userId: string, config: LiveAuditC
       const finalAudit = await auditStore.getAudit(auditId);
       if (!finalAudit) return;
 
-      const summaryKey = getPrimaryApiKey() || parallelKeys[0];
-      const healthScores = await generateHealthScoresFromFindings(
-        finalAudit.findings,
-        config.accountName,
-        summaryKey
-      );
-      let roadmap = await generateRoadmapWithClaude(
-        finalAudit.findings,
-        config.accountName,
-        summaryKey,
-        { auditScope: config.auditScope, campaignName: config.campaignName }
-      );
-      if (!roadmap.length) {
-        roadmap = createRoadmapFromFindings(finalAudit.findings);
-      }
-      const healthScore = healthScores.length
-        ? Math.round(healthScores.reduce((s, h) => s + h.score, 0) / healthScores.length)
-        : 50;
-
-      await auditStore.setHealthScores(auditId, healthScores);
-      await auditStore.setRoadmap(auditId, roadmap);
-
       await auditStore.addLog(auditId, {
         id: generateId('log_'),
         message: 'Generating executive summary with Claude...',
@@ -363,19 +388,17 @@ export function runLiveAudit(auditId: string, userId: string, config: LiveAuditC
         createdAt: new Date().toISOString(),
       });
 
-      const summary = await generateExecutiveSummary(
-        config.accountName,
-        finalAudit.findings,
-        healthScore,
-        { auditScope: config.auditScope, campaignName: config.campaignName }
-      );
+      await refreshAuditSummaries(auditId, {
+        accountName: config.accountName,
+        auditScope: config.auditScope,
+        campaignName: config.campaignName,
+      });
 
       await auditStore.updateAudit(auditId, {
         status: 'COMPLETED',
         progress: 100,
         modulesComplete: finalAudit.totalModules,
         completedAt: new Date().toISOString(),
-        executiveSummary: summary,
         estimatedMinutes: 0,
       });
 
@@ -398,19 +421,6 @@ export function runLiveAudit(auditId: string, userId: string, config: LiveAuditC
       activeRuns.delete(auditId);
     }
   })();
-}
-
-function isSkippedFinding(f: Finding): boolean {
-  return /analysis incomplete|configure anthropic/i.test(f.title);
-}
-
-function findingMatchesModuleSlug(finding: Finding, slug: string): boolean {
-  if (isSkippedFinding(finding)) return false;
-  const evidenceSlug = finding.evidence?.module;
-  if (typeof evidenceSlug === 'string' && evidenceSlug === slug) return true;
-  const name = getModuleCatalogName(slug);
-  if (finding.dimension === name || finding.dimension.startsWith(name)) return true;
-  return false;
 }
 
 function slugsMissingFindings(findings: Finding[], scopeSlugs?: string[]): string[] {
@@ -493,6 +503,20 @@ export async function backfillMissingModules(
     level: 'success',
     createdAt: new Date().toISOString(),
   });
+
+  if (added > 0) {
+    await auditStore.addLog(auditRunId, {
+      id: generateId('log_'),
+      message: 'Refreshing health scores, roadmap, and executive summary…',
+      level: 'info',
+      createdAt: new Date().toISOString(),
+    });
+    await refreshAuditSummaries(auditRunId, {
+      accountName: audit.accountName,
+      auditScope: audit.auditScope,
+      campaignName: audit.campaignName,
+    });
+  }
 
   return { added, slugs: missingSlugs };
 }

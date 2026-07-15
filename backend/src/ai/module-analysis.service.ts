@@ -3,6 +3,8 @@ import { getPrimaryApiKey } from './anthropic-pool.js';
 import { createClaudeMessage, isAnalysisFailureFinding } from './anthropic-client.js';
 import type { RoadmapItem } from '../types/index.js';
 import { generateId } from '../services/mock-store.js';
+import { ALL_AUDIT_MODULE_IDS, getModuleCatalogName } from '../data/audit-module-catalog.js';
+import { findingMatchesModuleSlug } from '../utils/finding-module-match.js';
 
 export interface ModuleAnalysisInput {
   moduleSlug: string;
@@ -222,38 +224,77 @@ function scoreDimension(findings: Finding[], dimension: string): { dimension: st
   return { dimension, score: Math.max(15, 88 - penalty), label: 'AI scored' };
 }
 
+function scoreModuleFindings(
+  findings: Finding[],
+  slug: string,
+  dimensionLabel: string
+): { dimension: string; score: number; label: string } {
+  const modFindings = findings.filter((f) => findingMatchesModuleSlug(f, slug));
+  const penalty = modFindings.filter((f) => f.severity === 'CRITICAL').length * 15
+    + modFindings.filter((f) => f.severity === 'HIGH').length * 8
+    + modFindings.filter((f) => f.severity === 'MEDIUM').length * 3;
+  // Modules with no issues score healthier
+  const base = modFindings.length ? 88 : 78;
+  return { dimension: dimensionLabel, score: Math.max(15, base - penalty), label: 'Module scored' };
+}
+
 export async function generateHealthScoresFromFindings(
   findings: Finding[],
   accountName: string,
   apiKey?: string
 ): Promise<{ dimension: string; score: number; label?: string }[]> {
   const validFindings = findings.filter((f) => !isAnalysisFailureFinding(f.title));
-  const dimensions = [...new Set(validFindings.map((f) => f.dimension))];
-  if (!dimensions.length) return [];
+  if (!validFindings.length) return [];
 
-  const key = apiKey || getPrimaryApiKey();
-  if (!key || !validFindings.length) {
+  // One health card per audit module that produced findings (catalog label)
+  const moduleScores = ALL_AUDIT_MODULE_IDS
+    .filter((slug) => validFindings.some((f) => findingMatchesModuleSlug(f, slug)))
+    .map((slug) => scoreModuleFindings(validFindings, slug, getModuleCatalogName(slug)));
+
+  if (!moduleScores.length) {
+    const dimensions = [...new Set(validFindings.map((f) => f.dimension))];
     return dimensions.map((d) => scoreDimension(validFindings, d));
   }
 
+  const key = apiKey || getPrimaryApiKey();
+  if (!key) return moduleScores;
+
   try {
     const response = await createClaudeMessage({
-      max_tokens: 600,
+      max_tokens: 800,
       messages: [{
         role: 'user',
-        content: `Score each audit dimension 0-100 for ${accountName}. Return ONLY JSON array: [{"dimension":"...","score":number,"label":"..."}]
+        content: `Score each Google Ads audit module 0-100 for ${accountName}. Return ONLY JSON array matching these dimension labels exactly:
+${moduleScores.map((m) => m.dimension).join(', ')}
+Format: [{"dimension":"...","score":number,"label":"..."}]
 Findings summary: ${validFindings.map((f) => `${f.dimension}: ${f.severity} - ${f.title}`).join('; ')}`,
       }],
     }, apiKey);
     const block = response.content[0];
     if (block.type === 'text') {
       const match = block.text.match(/\[[\s\S]*\]/);
-      if (match) return JSON.parse(match[0]);
+      if (match) {
+        const parsed = JSON.parse(match[0]) as Array<{ dimension?: string; score?: number; label?: string }>;
+        const byDim = new Map(
+          parsed
+            .filter((p) => p.dimension && typeof p.score === 'number')
+            .map((p) => [String(p.dimension).toLowerCase(), p])
+        );
+        return moduleScores.map((m) => {
+          const hit = byDim.get(m.dimension.toLowerCase());
+          if (!hit?.score) return m;
+          return {
+            dimension: m.dimension,
+            score: Math.max(5, Math.min(100, Math.round(hit.score))),
+            label: hit.label?.trim() || m.label,
+          };
+        });
+      }
     }
   } catch {
     /* fallback below */
   }
-  return dimensions.map((d) => scoreDimension(validFindings, d));
+  return moduleScores;
 }
 
 export async function generateRoadmapWithClaude(

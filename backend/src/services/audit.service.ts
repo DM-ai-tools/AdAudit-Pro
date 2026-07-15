@@ -210,10 +210,14 @@ export async function getAuditLogs(id: string) {
 export async function getAuditHealth(id: string) {
   const audit = await auditStore.getAudit(id);
   if (!audit) return null;
-  const metrics = getAuditMetrics(audit.findings, audit.healthScores);
+  const validFindings = audit.findings.filter(
+    (f) => !/analysis incomplete|configure anthropic|configure API keys/i.test(f.title)
+  );
+  const metrics = getAuditMetrics(validFindings, audit.healthScores);
   return {
     overallScore: metrics.healthScore,
     scores: audit.healthScores,
+    totalFindings: validFindings.length,
     ...metrics,
   };
 }
