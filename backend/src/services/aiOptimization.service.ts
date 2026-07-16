@@ -1,4 +1,8 @@
 import { createClaudeMessage } from '../ai/anthropic-client.js';
+import {
+  ANTHROPIC_OPTIMIZE_MAX_TOKENS,
+  ANTHROPIC_OPTIMIZE_MODEL_FALLBACKS,
+} from '../ai/anthropic-models.js';
 import { env } from '../config/env.js';
 import type { OptimizationMode } from '../ai/prompts/full-optimize-ad.prompt.js';
 import {
@@ -1964,47 +1968,71 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
     ctx: typeof promptCtx,
     temperature?: number
   ): Promise<OptimizedAdContent> {
-    const response = await createClaudeMessage({
-      max_tokens: 8192,
-      temperature: temperature ?? (request.regenerateOnly ? 1 : 0.85),
-      messages: [{ role: 'user', content: buildFullOptimizeAdPrompt(ctx) }],
-    });
+    const response = await createClaudeMessage(
+      {
+        max_tokens: ANTHROPIC_OPTIMIZE_MAX_TOKENS,
+        temperature: temperature ?? (request.regenerateOnly ? 1 : 0.85),
+        messages: [{ role: 'user', content: buildFullOptimizeAdPrompt(ctx) }],
+      },
+      undefined,
+      ANTHROPIC_OPTIMIZE_MODEL_FALLBACKS
+    );
     console.log(
-      `[optimizeAd] Claude response in ${Date.now() - claudeStart}ms (total ${Date.now() - startedAt}ms, stop=${response.stop_reason ?? 'unknown'})`
+      `[optimizeAd] Claude response in ${Date.now() - claudeStart}ms (total ${Date.now() - startedAt}ms, stop=${response.stop_reason ?? 'unknown'}, model=${response.model})`
     );
     const block = response.content[0];
     if (block.type !== 'text') throw new Error('Unexpected Claude response format');
 
     const hitMaxTokens = response.stop_reason === 'max_tokens';
     if (hitMaxTokens) {
-      console.warn('[optimizeAd] Claude hit max_tokens — compact retry for complete JSON');
+      console.warn(
+        '[optimizeAd] Claude hit max_tokens — attempting truncated JSON repair before compact retry'
+      );
     }
 
     try {
-      if (hitMaxTokens) {
-        // Truncated JSON is unreliable — go straight to compact retry
-        throw new Error('Claude response truncated (max_tokens)');
-      }
+      // Always attempt parse first (includes truncated-JSON repair). Only compact-retry if that fails.
       return parseClaudeJson(block.text, brand, baseline, intelligence, adServiceLock?.primaryService);
     } catch (firstErr) {
       const firstMsg = firstErr instanceof Error ? firstErr.message : String(firstErr);
       console.warn(`[optimizeAd] first parse failed (${firstMsg}), retrying with compact prompt`);
-      const retry = await createClaudeMessage({
-        max_tokens: 4096,
-        temperature: 0.9,
-        messages: [{ role: 'user', content: buildCompactOptimizeRetryPrompt(ctx) }],
-      });
+      const retry = await createClaudeMessage(
+        {
+          max_tokens: ANTHROPIC_OPTIMIZE_MAX_TOKENS,
+          temperature: 0.75,
+          messages: [{ role: 'user', content: buildCompactOptimizeRetryPrompt(ctx) }],
+        },
+        undefined,
+        ANTHROPIC_OPTIMIZE_MODEL_FALLBACKS
+      );
       const retryBlock = retry.content[0];
       if (retryBlock.type !== 'text') throw firstErr;
       console.log(
-        `[optimizeAd] compact retry stop=${retry.stop_reason ?? 'unknown'} (len=${retryBlock.text.length})`
+        `[optimizeAd] compact retry stop=${retry.stop_reason ?? 'unknown'} model=${retry.model} (len=${retryBlock.text.length})`
       );
       if (retry.stop_reason === 'max_tokens') {
-        throw new Error(
-          'AI response was truncated (token limit). Click Try Again — a shorter response will be requested.'
-        );
+        // Last chance: repair truncated compact JSON
+        try {
+          return parseClaudeJson(
+            retryBlock.text,
+            brand,
+            baseline,
+            intelligence,
+            adServiceLock?.primaryService
+          );
+        } catch {
+          throw new Error(
+            'AI response was truncated (token limit). Click Try Again — a shorter response will be requested.'
+          );
+        }
       }
-      return parseClaudeJson(retryBlock.text, brand, baseline, intelligence, adServiceLock?.primaryService);
+      return parseClaudeJson(
+        retryBlock.text,
+        brand,
+        baseline,
+        intelligence,
+        adServiceLock?.primaryService
+      );
     }
   }
 

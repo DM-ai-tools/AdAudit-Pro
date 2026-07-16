@@ -71,7 +71,7 @@ function summarizeFindings(intelligence: AuditIntelligence): string {
   return top.length ? top.join('\n') : 'No critical findings — optimize for growth.';
 }
 
-function trimJson(data: unknown[], max = 15): string {
+function trimJson(data: unknown[], max = 8): string {
   return JSON.stringify(data.slice(0, max), null, 0);
 }
 
@@ -96,127 +96,97 @@ function formatCompetitorIntel(intelligence: AuditIntelligence): string {
   const c = intelligence.competitorAnalysis;
   if (!c) return 'Competitor analysis unavailable.';
 
+  // Keep this payload lean — oversized competitor dumps cause Claude max_tokens truncations.
   const beatBrief = (c.adGallery ?? [])
-    .slice(0, 6)
+    .slice(0, 4)
     .map((x) => {
       const name = x.advertiserName ?? x.name;
-      const heads = (x.headlines ?? []).slice(0, 4).filter(Boolean);
-      const descs = (x.descriptions ?? []).slice(0, 2).filter(Boolean);
-      const offers = (x.offers ?? []).slice(0, 3).filter(Boolean);
-      const trust = (x.trustSignals ?? []).slice(0, 3).filter(Boolean);
+      const heads = (x.headlines ?? []).slice(0, 3).filter(Boolean);
+      const offers = (x.offers ?? []).slice(0, 2).filter(Boolean);
+      const trust = (x.trustSignals ?? []).slice(0, 2).filter(Boolean);
       return {
         competitor: name,
         influencePercent: x.influencePercent,
         adDurationDays: x.adDurationDays,
-        activeAdCount: x.activeAdCount,
         winningHeadlines: heads,
-        winningDescriptions: descs,
         offers,
         trustSignals: trust,
-        beatInstruction: `Create 2–3 stronger client headlines that beat "${name}" on offer/trust/CTA without copying: ${heads.join(' | ') || 'use their positioning'}`,
+        beatInstruction: `Beat "${name}" with stronger offer/trust/CTA (do not copy): ${heads.join(' | ') || 'use their positioning'}`,
       };
     });
 
   return JSON.stringify({
     source: c.source,
     selectionCriteria:
-      'Competitors ranked by AI Learning Value. SAME-REGION peers preferred when location is known. Higher influencePercent rivals must shape more headlines/offers/CTAs. Adapt their winning angles to the client brand — never copy verbatim.',
+      'Ranked by AI Learning Value. Prefer same-region peers. Higher influencePercent rivals shape more copy. Never copy verbatim.',
     mandatoryCompetitorBeatBrief: beatBrief,
-    influenceWeights: c.influenceWeights ?? c.competitors?.slice(0, 4).map((x) => ({
+    influenceWeights: (c.influenceWeights ?? c.competitors?.slice(0, 4).map((x) => ({
       name: x.name,
       score: x.confidenceScore ?? 0,
       aiLearningValue: x.aiLearningValue ?? x.aiLearning?.aiLearningValue,
       influencePercent: x.influencePercent ?? 0,
-    })),
-    marketPatterns: c.marketPatterns,
+    }))).slice(0, 4),
+    marketPatterns: c.marketPatterns
+      ? {
+          topHeadlines: c.marketPatterns.topHeadlines?.slice(0, 4),
+          topOffers: c.marketPatterns.topOffers?.slice(0, 4),
+          topCtas: c.marketPatterns.topCtas?.slice(0, 3),
+          topKeywords: c.marketPatterns.topKeywords?.slice(0, 6),
+          topValuePropositions: c.marketPatterns.topValuePropositions?.slice(0, 3),
+        }
+      : undefined,
     competitors: c.competitors?.slice(0, 4).map((x) => ({
       name: x.name,
-      url: x.url,
       confidenceScore: x.confidenceScore,
       aiLearningValue: x.aiLearningValue ?? x.aiLearning?.aiLearningValue,
       influencePercent: x.influencePercent,
-      durationClass: x.durationClass,
-      durationLabel: x.durationLabel,
-      industryMatch: x.industryMatch,
-      serviceMatch: x.serviceMatch,
       brandAuthorityScore: x.brandAuthorityScore ?? x.brandAuthority?.brandAuthorityScore,
       advertisingScore: x.advertisingScore ?? x.advertisingStrength?.advertisingScore,
       marketPosition: x.marketPosition ?? x.brandAuthority?.marketPosition,
       competitiveThreat: x.competitiveThreat ?? x.brandAuthority?.competitiveThreat,
-      brandAuthority: x.brandAuthority,
-      socialPresence: x.socialPresence,
-      advertisingStrength: x.advertisingStrength,
-      marketAuthority: x.marketAuthority,
-      offerTrustAnalysis: x.offerTrustAnalysis,
-      aiLearning: x.aiLearning,
-      headlines: x.headlines?.slice(0, 8),
-      offers: x.offers,
-      services: x.services,
-      ctas: x.ctas,
-      keywords: x.keywords?.slice(0, 12),
-      keyMessages: x.keyMessages,
-      valuePropositions: x.valuePropositions,
-      positioning: x.positioning,
-      trustSignals: x.trustSignals,
+      headlines: x.headlines?.slice(0, 5),
+      offers: x.offers?.slice(0, 4),
+      ctas: x.ctas?.slice(0, 3),
+      trustSignals: x.trustSignals?.slice(0, 4),
+      keyMessages: x.keyMessages?.slice(0, 4),
       adDurationDays: x.adDurationDays,
       activeAdCount: x.activeAdCount,
       totalAdCount: x.totalAdCount,
-      firstShown: x.firstShown,
-      lastShown: x.lastShown,
-      brandReview: x.brandReview,
-    })),
-    insights: c.insights,
-    keywordOpportunities: c.keywordOpportunities,
-    messagingOpportunities: c.messagingOpportunities,
-    missingOffers: c.missingOffers,
-    competitiveAdvantages: c.competitiveAdvantages,
-    missingFromYourAds: c.missingFromYourAds,
-    adGallery: c.adGallery?.slice(0, 6).map((x) => ({
-      name: x.name,
-      advertiserName: x.advertiserName,
-      headlines: x.headlines,
-      descriptions: x.descriptions,
-      offers: x.offers,
-      ctas: x.ctas,
-      trustSignals: x.trustSignals,
-      creativeUrl: x.creativeUrl,
-      transparencyUrl: x.transparencyUrl,
-      adSource: x.adSource,
-      adDurationDays: x.adDurationDays,
-      activeAdCount: x.activeAdCount,
-      totalAdCount: x.totalAdCount,
-      firstShown: x.firstShown,
-      lastShown: x.lastShown,
-      confidenceScore: x.confidenceScore,
-      aiLearningValue: x.aiLearningValue,
-      influencePercent: x.influencePercent,
-      durationLabel: x.durationLabel,
-      estimatedSuccessScore: x.estimatedSuccessScore,
-      advertisingScore: x.advertisingScore,
-      brandAuthority: x.brandAuthority,
-      marketAuthority: x.marketAuthority,
-      offerTrustAnalysis: x.offerTrustAnalysis,
+      offerTrustAnalysis: x.offerTrustAnalysis
+        ? {
+            offersUsed: x.offerTrustAnalysis.offersUsed?.slice(0, 4),
+            trustSignals: x.offerTrustAnalysis.trustSignals?.slice(0, 4),
+            uniqueSellingPoints: x.offerTrustAnalysis.uniqueSellingPoints?.slice(0, 3),
+          }
+        : undefined,
       brandReview: x.brandReview
         ? {
             score: x.brandReview.score,
-            summary: x.brandReview.summary,
-            detailedReview: x.brandReview.detailedReview,
-            adActivityReview: x.brandReview.adActivityReview,
-            messagingReview: x.brandReview.messagingReview,
-            trustReview: x.brandReview.trustReview,
-            offerReview: x.brandReview.offerReview,
-            howToBeat: x.brandReview.howToBeat,
-            strengths: x.brandReview.strengths,
-            weaknesses: x.brandReview.weaknesses,
-            trustScore: x.brandReview.trustScore,
-            averageRating: x.brandReview.averageRating,
-            reviewCount: x.brandReview.reviewCount,
-            sentiment: x.brandReview.sentiment,
-            positiveThemes: x.brandReview.positiveThemes,
-            negativeThemes: x.brandReview.negativeThemes,
-            reviewVelocity: x.brandReview.reviewVelocity,
+            summary: x.brandReview.summary?.slice(0, 180),
+            howToBeat: x.brandReview.howToBeat?.slice(0, 3),
+            strengths: x.brandReview.strengths?.slice(0, 3),
+            weaknesses: x.brandReview.weaknesses?.slice(0, 3),
+            positiveThemes: x.brandReview.positiveThemes?.slice(0, 3),
+            negativeThemes: x.brandReview.negativeThemes?.slice(0, 2),
           }
         : undefined,
+    })),
+    missingOffers: c.missingOffers?.slice(0, 6),
+    missingFromYourAds: c.missingFromYourAds?.slice(0, 6),
+    keywordOpportunities: c.keywordOpportunities?.slice(0, 8),
+    adGallery: c.adGallery?.slice(0, 4).map((x) => ({
+      advertiserName: x.advertiserName ?? x.name,
+      headlines: (x.headlines ?? []).slice(0, 5),
+      descriptions: (x.descriptions ?? []).slice(0, 2),
+      offers: (x.offers ?? []).slice(0, 3),
+      ctas: (x.ctas ?? []).slice(0, 3),
+      trustSignals: (x.trustSignals ?? []).slice(0, 3),
+      adDurationDays: x.adDurationDays,
+      activeAdCount: x.activeAdCount,
+      totalAdCount: x.totalAdCount,
+      influencePercent: x.influencePercent,
+      aiLearningValue: x.aiLearningValue,
+      confidenceScore: x.confidenceScore,
     })),
     gapAnalysisSummary: c.gapAnalysis?.summary,
   }, null, 0);
@@ -422,7 +392,8 @@ COMPLIANCE (PUBLISHABLE COPY — NON-NEGOTIABLE)
 - Sitelinks: max 25 chars link text, COMPLETE words; return 4 objects {"label":"...","url":"..."} with DISTINCT destination URLs under the client domain when possible (e.g. /car-loans/, /get-a-quote/, /about/, /contact/) — never four sitelinks pointing at the identical URL
 - Display paths: max 15 chars each, real site path segments
 - Google Ads compliant, publishable today
-- Keep ALL string fields concise (1-2 sentences max). Limit arrays to the counts shown — do not exceed.
+- Keep ALL string fields concise (1 sentence max). Limit arrays to the counts shown — do not exceed.
+- CRITICAL OUTPUT BUDGET: Return compact JSON only. No markdown. No prose outside JSON. Prefer short strings so the full object fits under ~6k tokens.
 
 Return ONLY valid JSON (no markdown). Competitor profile cards are derived server-side — do NOT repeat full competitor crawl data.
 {
@@ -432,43 +403,43 @@ Return ONLY valid JSON (no markdown). Competitor profile cards are derived serve
   "callouts": ["4 callouts max"],
   "sitelinks": [{"label":"Get a Quote","url":"https://example.com/quote"},{"label":"Compare Rates","url":"https://example.com/rates"},{"label":"About Us","url":"https://example.com/about"},{"label":"Contact","url":"https://example.com/contact"}],
   "structuredSnippets": ["4 snippet values max"],
-  "reasoning": "2-3 sentence executive summary",
+  "reasoning": "2 sentence executive summary",
   "strategistReasoning": {
-    "headlineChanges": "1-2 sentences",
-    "descriptionChanges": "1-2 sentences",
-    "keywordRelevance": "1-2 sentences",
+    "headlineChanges": "1 sentence",
+    "descriptionChanges": "1 sentence",
+    "keywordRelevance": "1 sentence",
     "qualityScore": "1 sentence",
-    "conversionPotential": "1-2 sentences",
-    "auditFindingsAddressed": ["max 4 bullets"],
-    "competitorInsightsUsed": ["max 4 specific competitor insights applied"],
-      "competitiveOutperformance": {
-      "messagingImprovements": "1-2 sentences vs competitors",
-      "keywordImprovements": "1-2 sentences",
-      "trustSignalImprovements": "1-2 sentences",
-      "offerImprovements": "1-2 sentences",
-      "ctaImprovements": "1-2 sentences",
-      "conversionImprovements": "1-2 sentences",
-      "competitorStrategiesUsed": "which high-influence competitors shaped the copy",
-      "competitorGapsExploited": "gaps you exploited vs top rivals"
+    "conversionPotential": "1 sentence",
+    "auditFindingsAddressed": ["max 3 bullets"],
+    "competitorInsightsUsed": ["max 3 insights"],
+    "competitiveOutperformance": {
+      "messagingImprovements": "1 sentence",
+      "keywordImprovements": "1 sentence",
+      "trustSignalImprovements": "1 sentence",
+      "offerImprovements": "1 sentence",
+      "ctaImprovements": "1 sentence",
+      "conversionImprovements": "1 sentence",
+      "competitorStrategiesUsed": "short",
+      "competitorGapsExploited": "short"
     }
   },
-  "missingCompetitorAdvantages": ["max 5 gaps vs competitors — each with why it matters"],
+  "missingCompetitorAdvantages": ["max 4"],
   "adGenerationExplanation": {
-    "competitorSignalsUsed": ["max 5 signals learned from rivals"],
+    "competitorSignalsUsed": ["max 4"],
     "topCompetitorsInfluencing": [
-      { "name": "exact competitor name from adGallery", "influencePercent": 40, "reason": "1 short reason e.g. Highest Ad Duration + Strong Reviews" }
+      { "name": "exact gallery name", "influencePercent": 40, "reason": "short" }
     ],
-    "offersUsed": ["max 5 offers/angles used in the new ad"],
-    "trustSignalsUsed": ["max 5 trust/proof angles used"],
-    "keywordsUsed": ["max 6 keyword themes used"],
-    "reviewInsightsUsed": ["max 4 review/sentiment themes used"],
-    "socialAuthorityInsightsUsed": ["max 3 social/brand authority insights used"],
-    "marketPositioningUsed": ["max 3 market positioning angles used"]
+    "offersUsed": ["max 4"],
+    "trustSignalsUsed": ["max 4"],
+    "keywordsUsed": ["max 5"],
+    "reviewInsightsUsed": ["max 3"],
+    "socialAuthorityInsightsUsed": ["max 2"],
+    "marketPositioningUsed": ["max 2"]
   },
-  "recommendedKeywords": ["max 8 keywords"],
-  "negativeKeywordSuggestions": ["max 10 negatives"],
-  "recommendedExtensions": ["max 4"],
-  "landingPageRecommendations": ["max 3"],
+  "recommendedKeywords": ["max 6"],
+  "negativeKeywordSuggestions": ["max 8"],
+  "recommendedExtensions": ["max 3"],
+  "landingPageRecommendations": ["max 2"],
   "budgetRecommendations": ["max 2"],
   "biddingRecommendations": ["max 2"],
   "audienceRecommendations": ["max 2"],
@@ -515,7 +486,7 @@ Required fields (all must be present — Make It Better UI depends on them):
 - adGenerationExplanation with topCompetitorsInfluencing (max 3), offersUsed, trustSignalsUsed, competitorSignalsUsed, keywordsUsed
 - missingCompetitorAdvantages (max 4), recommendedKeywords (max 6), negativeKeywordSuggestions (max 8)
 - strategistRecommendations: { keywords, negativeKeywords, extensions, landingPage, budget, bidding, audience } — 2-4 short bullets each
-NO markdown. NO empty strings for metrics (use "—" only if truly unknown). Keep JSON under 3500 tokens.`;
+NO markdown. NO empty strings for metrics (use "—" only if truly unknown). Keep the ENTIRE JSON under 5500 output tokens — short sentences only.`;
 }
 
 export function liveAdToCurrentAd(ad: LiveAdRow | null, fallbackBrand: string, websiteUrl?: string) {

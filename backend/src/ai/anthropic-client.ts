@@ -13,23 +13,30 @@ export function allApiKeysForRequest(preferredKey?: string): string[] {
 
 export async function createClaudeMessage(
   params: Omit<Parameters<Anthropic['messages']['create']>[0], 'model'> & { model?: string },
-  preferredKey?: string
+  preferredKey?: string,
+  modelFallbacks?: string[]
 ): Promise<Anthropic.Message> {
   const keys = allApiKeysForRequest(preferredKey);
   if (!keys.length) {
     throw new Error('No Anthropic API keys configured');
   }
 
+  const models = (
+    modelFallbacks?.length
+      ? modelFallbacks
+      : [params.model, ...ANTHROPIC_MODEL_FALLBACKS]
+  ).filter((v, i, a): v is string => Boolean(v) && a.indexOf(v) === i);
+
   let lastError: unknown;
   for (const apiKey of keys) {
     const client = getAnthropicClientForKey(apiKey);
-    for (const model of ANTHROPIC_MODEL_FALLBACKS) {
+    for (const model of models) {
       try {
-        return await client.messages.create({
+        return (await client.messages.create({
           ...params,
-          model: params.model ?? model,
+          model,
           stream: false,
-        } as Parameters<Anthropic['messages']['create']>[0]) as Anthropic.Message;
+        } as Parameters<Anthropic['messages']['create']>[0])) as Anthropic.Message;
       } catch (err) {
         lastError = err;
         const msg = err instanceof Error ? err.message : String(err);
