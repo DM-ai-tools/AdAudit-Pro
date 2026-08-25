@@ -1,4 +1,4 @@
-import { createClaudeMessage } from '../ai/anthropic-client.js';
+import { claudeTextFromMessage, createClaudeMessage } from '../ai/anthropic-client.js';
 import { ANTHROPIC_OPTIMIZE_MODEL_FALLBACKS } from '../ai/anthropic-models.js';
 import { firecrawlScrapeUrl, isFirecrawlConfigured } from './firecrawl.service.js';
 
@@ -537,11 +537,7 @@ Return format:
     messages: [{ role: 'user', content: prompt }],
   });
 
-  const text =
-    response.content
-      .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-      .map((b) => b.text)
-      .join('') || '';
+  const text = claudeTextFromMessage(response);
 
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) return null;

@@ -1,4 +1,4 @@
-import { createClaudeMessage } from '../ai/anthropic-client.js';
+import { claudeTextFromMessage, createClaudeMessage } from '../ai/anthropic-client.js';
 import { extractJsonFromClaudeText } from './claude-json.js';
 import { withTimeoutFallback } from './withTimeout.js';
 
@@ -108,10 +108,7 @@ ${JSON.stringify(compact)}`,
           },
         ],
       });
-      const text = response.content
-        .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-        .map((b) => b.text)
-        .join('\n');
+      const text = claudeTextFromMessage(response);
       return extractJsonFromClaudeText(text) as {
         ads?: Array<{ id?: string; relevant?: boolean; score?: number }>;
       };

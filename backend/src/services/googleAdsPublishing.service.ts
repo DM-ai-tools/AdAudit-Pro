@@ -669,7 +669,10 @@ async function createCampaignBudget(
     success: result.success,
     resourceName: result.resourceNames?.[0],
     error: result.error,
-    loginCustomerId: 'loginCustomerId' in result ? result.loginCustomerId : loginCustomerId,
+    loginCustomerId:
+      'loginCustomerId' in result
+        ? (result.loginCustomerId as string | null | undefined)
+        : loginCustomerId,
   };
 }
 

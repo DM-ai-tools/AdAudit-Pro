@@ -28,7 +28,7 @@ import {
   type CompetitorIntelligence,
 } from './competitor-intelligence.service.js';
 import { adMatchesServiceAndSeeds, filterSeedKeywordsForService, looksLikeEducationalCompetitorName } from '../utils/service-seed-match.js';
-import { createClaudeMessage } from '../ai/anthropic-client.js';
+import { claudeTextFromMessage, createClaudeMessage } from '../ai/anthropic-client.js';
 import { ANTHROPIC_OPTIMIZE_MODEL_FALLBACKS } from '../ai/anthropic-models.js';
 import { extractJsonFromClaudeText } from '../utils/claude-json.js';
 import { withTimeoutFallback } from '../utils/withTimeout.js';
@@ -146,11 +146,7 @@ Return ONLY the JSON array.`;
       messages: [{ role: 'user', content: prompt }],
     });
 
-    const text =
-      response.content
-        .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-        .map((b) => b.text)
-        .join('') || '';
+    const text = claudeTextFromMessage(response);
 
     const parsed = extractJsonFromClaudeText(text);
     if (!Array.isArray(parsed)) return [];
@@ -187,7 +183,7 @@ export async function getKeywordClusters(
   }
 ): Promise<KeywordClusterResult> {
   const country = opts?.country ?? 'au';
-  const dailyBudget = Number(opts?.dailyBudget) > 0 ? Number(opts.dailyBudget) : undefined;
+  const dailyBudget = Number(opts?.dailyBudget) > 0 ? Number(opts?.dailyBudget) : undefined;
   const rankingBudget = dailyBudget ?? 40;
   const ahrefsAvailable = isAhrefsConfigured();
   const selectedServices = [...new Set(services.map((s) => s.trim()).filter(Boolean))];
@@ -377,7 +373,7 @@ export async function recommendKeywordBids(opts: {
     Number(opts.dailyBudget) > 0
       ? Number(opts.dailyBudget)
       : Number(opts.budgetContext?.enabledDailyBudget) > 0
-        ? Number(opts.budgetContext.enabledDailyBudget)
+        ? Number(opts.budgetContext?.enabledDailyBudget)
         : 0;
   const sizingBudget = dailyBudget > 0 ? dailyBudget : 40;
   const currency = opts.budgetContext?.currency || 'AUD';
@@ -1298,11 +1294,7 @@ Return ONLY the JSON array, no markdown.`;
       messages: [{ role: 'user', content: prompt }],
     });
 
-    const text =
-      response.content
-        .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-        .map((b) => b.text)
-        .join('') || '';
+    const text = claudeTextFromMessage(response);
 
     const parsed = extractJsonFromClaudeText(text);
     if (Array.isArray(parsed)) {
@@ -1388,11 +1380,7 @@ Return ONLY JSON:
       messages: [{ role: 'user', content: prompt }],
     });
 
-    const text =
-      response.content
-        .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-        .map((b) => b.text)
-        .join('') || '';
+    const text = claudeTextFromMessage(response);
 
     const parsed = extractJsonFromClaudeText(text) as {
       reply?: string;

@@ -140,7 +140,7 @@ export async function getCachedCompetitorDiscovery(
       return null;
     }
 
-    const payload = row.payload as CompetitorIntelligence;
+    const payload = row.payload as unknown as CompetitorIntelligence;
     MEMORY.set(cacheKey, { expires: Date.now() + MEMORY_TTL_MS, payload });
     console.log(
       `[competitor-cache] db hit ${row.companyHost} · ${row.service} (${row.source}) — returning stored competitors + ads`

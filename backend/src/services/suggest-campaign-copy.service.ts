@@ -1,4 +1,4 @@
-import { createClaudeMessage } from '../ai/anthropic-client.js';
+import { claudeTextFromMessage, createClaudeMessage } from '../ai/anthropic-client.js';
 import {
   ANTHROPIC_OPTIMIZE_MAX_TOKENS,
   ANTHROPIC_OPTIMIZE_MODEL_FALLBACKS,
@@ -406,10 +406,7 @@ JSON SCHEMA:
     ANTHROPIC_OPTIMIZE_MODEL_FALLBACKS
   );
 
-  const text = response.content
-    .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n');
+  const text = claudeTextFromMessage(response);
 
   const parsed = extractJsonFromClaudeText(text) as Record<string, unknown>;
   const primaryRaw = (parsed.primary ?? parsed) as Record<string, unknown>;
@@ -432,27 +429,26 @@ JSON SCHEMA:
   };
 
   const variationsRaw = Array.isArray(parsed.variations) ? parsed.variations : [];
-  const variationsParsed: CampaignCopySuggestion[] = variationsRaw
-    .map((v, i) => {
-      const row = (v ?? {}) as Record<string, unknown>;
-      const headlines = normalizeList(row.headlines, 15, 30);
-      const descriptions = normalizeList(row.descriptions, 4, 90);
-      if (headlines.length < 3 || descriptions.length < 2) return null;
-      const focused = String(row.focusedCompetitor ?? competitorNames[i] ?? '').trim();
-      return {
-        id: `variation-${i}`,
-        label: String(row.label ?? (focused ? `Inspired by ${focused}` : `Variation ${i + 2}`)),
-        focusedCompetitor: focused || undefined,
-        headlines,
-        descriptions,
-        displayPaths: {
-          path1: clip(String(row.path1 ?? ''), 15) || undefined,
-          path2: clip(String(row.path2 ?? ''), 15) || undefined,
-        },
-      } satisfies CampaignCopySuggestion;
-    })
-    .filter((v): v is CampaignCopySuggestion => Boolean(v))
-    .slice(0, 3);
+  const variationsParsed: CampaignCopySuggestion[] = [];
+  for (const [i, v] of variationsRaw.entries()) {
+    const row = (v ?? {}) as Record<string, unknown>;
+    const headlines = normalizeList(row.headlines, 15, 30);
+    const descriptions = normalizeList(row.descriptions, 4, 90);
+    if (headlines.length < 3 || descriptions.length < 2) continue;
+    const focused = String(row.focusedCompetitor ?? competitorNames[i] ?? '').trim();
+    variationsParsed.push({
+      id: `variation-${i}`,
+      label: String(row.label ?? (focused ? `Inspired by ${focused}` : `Variation ${i + 2}`)),
+      focusedCompetitor: focused || undefined,
+      headlines,
+      descriptions,
+      displayPaths: {
+        path1: clip(String(row.path1 ?? ''), 15) || undefined,
+        path2: clip(String(row.path2 ?? ''), 15) || undefined,
+      },
+    });
+    if (variationsParsed.length >= 3) break;
+  }
 
   // Always stamp real discovered brand names — Claude often invents "Competitor A/B/C"
   const variations = applyRealCompetitorLabels(variationsParsed, competitorNames);

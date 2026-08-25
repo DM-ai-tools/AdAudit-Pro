@@ -221,9 +221,11 @@ function computeRates(metrics: {
   impressions: number;
   clicks: number;
   conversions: number;
-  cost: number;
+  cost?: number;
+  spend?: number;
 }): { ctr: number; avgCpc: number; conversionRate: number; costPerConversion: number } {
-  const { impressions, clicks, conversions, cost } = metrics;
+  const { impressions, clicks, conversions } = metrics;
+  const cost = metrics.cost ?? metrics.spend ?? 0;
   return {
     ctr: impressions > 0 ? round2((clicks / impressions) * 100) : 0,
     avgCpc: clicks > 0 ? round2(cost / clicks) : 0,

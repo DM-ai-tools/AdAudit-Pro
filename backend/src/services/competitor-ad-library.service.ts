@@ -167,6 +167,12 @@ const SUGGESTED_ACTIONS: Record<CompetitorCampaignTypeKey, string[]> = {
     'Align service categories',
     'Respond to lead quality issues',
   ],
+  call_ads: [
+    'Add a dedicated call-only campaign',
+    'Confirm call tracking and conversion actions',
+    'Align call ads to high-intent keywords',
+    'Set call hours to match business availability',
+  ],
 };
 
 const EXPECTED_BENEFITS: Record<CompetitorCampaignTypeKey, string[]> = {
@@ -178,6 +184,7 @@ const EXPECTED_BENEFITS: Record<CompetitorCampaignTypeKey, string[]> = {
   demand_gen: ['Upper-funnel demand', 'Visual engagement', 'Audience expansion'],
   app: ['Install growth', 'In-app engagement', 'Mobile acquisition'],
   local_services: ['Qualified local leads', 'Trust via Google Guaranteed', 'Service-area coverage'],
+  call_ads: ['Direct phone leads', 'High-intent call traffic', 'Faster local response'],
 };
 
 function emptyInsights(): CampaignTypeInsights {

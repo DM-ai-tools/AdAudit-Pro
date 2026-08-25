@@ -74,6 +74,12 @@ export async function createClaudeMessage(
   throw lastError instanceof Error ? lastError : new Error('All Claude API attempts failed');
 }
 
+export function claudeTextFromMessage(message: Anthropic.Message): string {
+  return message.content
+    .map((block) => (block.type === 'text' ? block.text : ''))
+    .join('\n');
+}
+
 export function isAnalysisFailureFinding(title: string): boolean {
   return /analysis incomplete|configure anthropic|configure API keys/i.test(title);
 }

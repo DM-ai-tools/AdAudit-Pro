@@ -447,7 +447,7 @@ export async function fetchTransparencyAdsForCompetitor(options: {
     })
   );
 
-  const ads = decoded.filter((ad): ad is TransparencySearchAd => Boolean(ad));
+  const ads = decoded.filter((ad): ad is NonNullable<typeof ad> => ad != null);
   if (!ads.length) return null;
 
   return { advertiser, ads, source: 'transparency_center' };
