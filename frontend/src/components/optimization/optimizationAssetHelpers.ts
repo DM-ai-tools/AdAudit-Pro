@@ -63,8 +63,6 @@ export function applyEditableAssetsToContent(
     keywordSuggestions: keywords,
     negativeKeywordSuggestions: negativeKeywords,
     strategistRecommendations: {
-      keywords: [],
-      negativeKeywords: [],
       extensions: content.strategistRecommendations?.extensions ?? [],
       landingPage: content.strategistRecommendations?.landingPage ?? [],
       budget: content.strategistRecommendations?.budget ?? [],

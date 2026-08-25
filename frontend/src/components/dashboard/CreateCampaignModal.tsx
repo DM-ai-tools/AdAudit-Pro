@@ -394,7 +394,6 @@ export function CreateCampaignModal({
     Record<string, WizardCompetitor[]>
   >({});
   const [competitorLoading, setCompetitorLoading] = useState<string | null>(null);
-  const [allCompetitorAds, setAllCompetitorAds] = useState<CompetitorAdPreview[]>([]);
   const [fetchLog, setFetchLog] = useState<string[]>([]);
   const [fetchingLive, setFetchingLive] = useState(false);
   const fetchAbortRef = useRef<AbortController | null>(null);
@@ -1280,7 +1279,6 @@ export function CreateCampaignModal({
 
     setCompetitorLoading(null);
     setFetchingLive(false);
-    setAllCompetitorAds(allAds);
     if (ac.signal.aborted) {
       setSuccess('Competitor fetch stopped. Any ads already found are shown below.');
       return;
@@ -2848,6 +2846,8 @@ export function CreateCampaignModal({
                                   descriptions: c.descriptions,
                                   previewImageUrl: c.previewImageUrl,
                                   syntheticCopy: false,
+                                  creativeUrl: undefined as string | undefined,
+                                  adLink: undefined as string | undefined,
                                 },
                               ]
                           ).filter(isDisplayableCompetitorAd);
