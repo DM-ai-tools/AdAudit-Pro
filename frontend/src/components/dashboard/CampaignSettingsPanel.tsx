@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { AlertTriangle, Loader2, Settings } from 'lucide-react';
+import { AlertTriangle, Settings } from 'lucide-react';
 import type { GoogleAdsCampaign } from '../../types/connect';
 import { googleAdsApi } from '../../services/api';
 import {
