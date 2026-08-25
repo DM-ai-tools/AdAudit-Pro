@@ -5,6 +5,23 @@ import type { PreviewDevice } from '../../types/optimization';
 import { normalizeRenderableStrings } from './utils';
 import { decodeHtmlEntities } from './html-entities';
 
+/** Display-only split when SociaVault returns one long headline string (Transparency-style layout). */
+function transparencyTitleSubtext(title: string, subtext: string): { title: string; subtext: string } {
+  if (subtext.trim() || title.length <= 72) return { title, subtext };
+  const dot = title.search(/\.\s+(?=[A-Z0-9"«])/);
+  if (dot > 18 && dot < 140) {
+    return {
+      title: title.slice(0, dot + 1).trim(),
+      subtext: title.slice(dot + 1).trim(),
+    };
+  }
+  const space = title.lastIndexOf(' ', 78);
+  if (space > 28) {
+    return { title: title.slice(0, space).trim(), subtext: title.slice(space).trim() };
+  }
+  return { title, subtext: '' };
+}
+
 interface AdPreviewPanelProps {
   headlines: string[];
   descriptions: string[];
@@ -43,6 +60,26 @@ export function AdPreviewPanel({
   const safeCallouts = normalizeRenderableStrings(callouts);
   const safeSnippets = normalizeRenderableStrings(structuredSnippets);
 
+  /** Google Transparency / SERP: one blue title line, white description below (display only). */
+  const transparencyLayout = variant === 'competitor' || simpleAdView;
+  const previewTitle = transparencyLayout
+    ? (safeHeadlines[0] || 'Your Headline Here')
+    : (safeHeadlines[headlineIdx] || safeHeadlines[0] || 'Your Headline Here');
+  let previewSubtext: string;
+  if (transparencyLayout) {
+    const fromDesc = safeDescriptions[0] || safeDescriptions.slice(1).join(' ');
+    previewSubtext = fromDesc || safeHeadlines.slice(1).join(' ') || '';
+  } else {
+    previewSubtext =
+      safeDescriptions[descIdx] ||
+      safeDescriptions[0] ||
+      'Your ad description will appear here.';
+  }
+
+  const serpLines = transparencyLayout
+    ? transparencyTitleSubtext(previewTitle, previewSubtext)
+    : { title: previewTitle, subtext: previewSubtext };
+
   const cleanUrl = displayUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
   const path1 = displayPaths?.path1;
   const path2 = displayPaths?.path2;
@@ -50,8 +87,8 @@ export function AdPreviewPanel({
     ? `${cleanUrl}${path2 ? ` › ${path1} › ${path2}` : ` › ${path1}`}`
     : cleanUrl;
 
-  const headline = safeHeadlines[headlineIdx] ?? safeHeadlines[0] ?? 'Your Headline Here';
-  const description = safeDescriptions[descIdx] ?? safeDescriptions[0] ?? 'Your ad description will appear here.';
+  const headline = serpLines.title;
+  const description = serpLines.subtext;
 
   return (
     <div className="space-y-4">
@@ -108,18 +145,22 @@ export function AdPreviewPanel({
           </div>
           <h3
             className={clsx(
-              'text-blue-400 font-medium leading-snug mb-1.5 hover:underline cursor-default',
-              device === 'mobile' ? 'text-[15px]' : 'text-lg'
+              'text-[#8ab4f8] font-normal leading-snug mb-1 hover:underline cursor-default line-clamp-3',
+              device === 'mobile' ? 'text-[15px]' : 'text-xl'
             )}
           >
             {headline}
           </h3>
-          <p className={clsx(
-            'text-gray-300 leading-relaxed break-words whitespace-normal',
-            device === 'mobile' ? 'text-xs' : 'text-sm'
-          )}>
-            {description}
-          </p>
+          {description ? (
+            <p
+              className={clsx(
+                'text-white leading-relaxed break-words whitespace-normal line-clamp-4',
+                device === 'mobile' ? 'text-xs' : 'text-sm'
+              )}
+            >
+              {description}
+            </p>
+          ) : null}
           {finalUrl && (
             <p className="text-[10px] text-teal/80 mt-2 flex items-center gap-1 break-all">
               <Link2 size={10} /> {finalUrl}

@@ -57,47 +57,68 @@ export function useAuditReport(auditId: string | undefined) {
   const [backfillProgress, setBackfillProgress] = useState<string | null>(null);
   const [backfillError, setBackfillError] = useState<string | null>(null);
   const backfillStarted = useRef(false);
+  const hasLoadedAudit = useRef(false);
+  const loadedAuditId = useRef<string | undefined>(undefined);
 
   const load = useCallback(async () => {
     if (!auditId) return null;
-    try {
-      const { data } = await auditApi.report(auditId);
-      let next = data.audit;
-      // Refresh KPI fields from the dedicated health endpoint (valid findings only)
-      if (next.status === 'COMPLETED') {
-        try {
-          const { data: health } = await auditApi.health(auditId);
-          next = {
-            ...next,
-            healthScore: health.overallScore,
-            healthScores: health.scores?.length ? health.scores : next.healthScores,
-            totalImpact: health.totalImpact,
-            annualOpportunity: health.annualOpportunity ?? health.totalImpact * 12,
-            totalFindings: health.totalFindings ?? next.totalFindings,
-            criticalCount: health.criticalCount,
-          };
-        } catch {
-          /* report sanitize fields already present */
+    const maxAttempts = 4;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const { data } = await auditApi.report(auditId);
+        let next = data.audit;
+        // Refresh KPI fields from the dedicated health endpoint (valid findings only)
+        if (next.status === 'COMPLETED') {
+          try {
+            const { data: health } = await auditApi.health(auditId);
+            next = {
+              ...next,
+              healthScore: health.overallScore,
+              healthScores: health.scores?.length ? health.scores : next.healthScores,
+              totalImpact: health.totalImpact,
+              annualOpportunity: health.annualOpportunity ?? health.totalImpact * 12,
+              totalFindings: health.totalFindings ?? next.totalFindings,
+              criticalCount: health.criticalCount,
+            };
+          } catch {
+            /* report sanitize fields already present */
+          }
         }
+        hasLoadedAudit.current = true;
+        loadedAuditId.current = auditId;
+        setAudit(next);
+        setError(null);
+        setLoading(false);
+        return next;
+      } catch {
+        // Backend often restarts briefly during Make It Better / file watch — retry before failing the page.
+        if (attempt < maxAttempts) {
+          await new Promise((r) => setTimeout(r, 600 * attempt));
+          continue;
+        }
+        // Keep any previously loaded audit so Make It Better / dashboard stay mounted.
+        setError('Failed to load audit report. Refresh the page or check that the backend is running.');
+        setLoading(false);
+        return null;
       }
-      setAudit(next);
-      setError(null);
-      return next;
-    } catch {
-      setError('Failed to load audit report. Refresh the page or check that the backend is running.');
-      return null;
-    } finally {
-      setLoading(false);
     }
+    setLoading(false);
+    return null;
   }, [auditId]);
 
   useEffect(() => {
     backfillStarted.current = false;
-    setLoading(true);
+    if (loadedAuditId.current !== auditId) {
+      hasLoadedAudit.current = false;
+      loadedAuditId.current = auditId;
+      setAudit(null);
+    }
+    // Only full-page load when we have no report yet — never unmount dashboard mid Make It Better.
+    if (!hasLoadedAudit.current) setLoading(true);
     setError(null);
     setBackfillError(null);
     void load();
-  }, [load]);
+  }, [load, auditId]);
 
   useEffect(() => {
     if (!auditId || !audit || backfillStarted.current || !auditNeedsModuleBackfill(audit)) return;
@@ -105,7 +126,7 @@ export function useAuditReport(auditId: string | undefined) {
     backfillStarted.current = true;
     setBackfilling(true);
     setBackfillError(null);
-    setBackfillProgress('Claude is analyzing remaining audit modules…');
+    setBackfillProgress('Analyzing remaining audit modules…');
 
     void (async () => {
       try {

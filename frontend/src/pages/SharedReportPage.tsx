@@ -76,7 +76,7 @@ export default function SharedReportPage() {
               <Link2 size={14} /> Shared link
             </Button>
             <Button size="sm" variant="secondary" onClick={() => audit.id && auditApi.downloadPdf(audit.id, audit.accountName).catch(() => window.open(`${auditApi.pdfUrl(audit.id)}?inline=1`, '_blank'))}>
-              <Download size={14} /> Download PDF
+              <Download size={14} /> Download Report
             </Button>
             <Link to="/"><Button size="sm">Run your own audit</Button></Link>
           </div>
@@ -252,11 +252,13 @@ export default function SharedReportPage() {
       {/* Footer */}
       <footer className="border-t border-border py-8 mt-12">
         <div className="max-w-5xl mx-auto px-6 flex flex-col md:flex-row items-center justify-between gap-4">
-          <Logo size="sm" />
+          <Link to="/" className="hover:opacity-90 transition-opacity">
+            <Logo size="sm" />
+          </Link>
           <div className="flex gap-6 text-muted text-xs">
-            <a href="#" className="hover:text-white">HOW IT WORKS</a>
-            <a href="#" className="hover:text-white">PRIVACY</a>
-            <a href="#" className="hover:text-white">TERMS</a>
+            <Link to="/#how-it-works" className="hover:text-white">HOW IT WORKS</Link>
+            <Link to="/privacy" className="hover:text-white">PRIVACY</Link>
+            <Link to="/terms" className="hover:text-white">TERMS</Link>
           </div>
           <span className="text-muted text-xs">Melbourne, AU</span>
         </div>

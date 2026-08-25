@@ -1,6 +1,5 @@
 import clsx from 'clsx';
-import { motion } from 'framer-motion';
-import { Check, Megaphone, ArrowRight, Sparkles, ChevronDown, ChevronUp } from 'lucide-react';
+import { Check, Megaphone, ArrowRight, Sparkles, ChevronDown, ChevronUp, Plus, Settings } from 'lucide-react';
 import { useState } from 'react';
 import type { GoogleAdsCampaign, GoogleAdsCampaignAd } from '../../types/connect';
 import {
@@ -9,8 +8,10 @@ import {
   formatPercent,
 } from '../../utils/helpers';
 import { Button } from '../ui/Button';
-import { CampaignAdPreview } from '../dashboard/CampaignAdPreview';
+import { CampaignAdPreview, type AdCompetitorUpload } from '../dashboard/CampaignAdPreview';
+import { CampaignSettingsPanel } from '../dashboard/CampaignSettingsPanel';
 import { inferServiceFromAd } from '../../utils/adServiceInference';
+import { campaignBidLabel } from '../../utils/campaignBidding';
 
 interface CampaignCardProps {
   campaign: GoogleAdsCampaign;
@@ -19,10 +20,18 @@ interface CampaignCardProps {
   onAudit?: () => void;
   onOptimize?: () => void;
   /** Per-ad Make This Ad Better */
-  onOptimizeAd?: (ad: GoogleAdsCampaignAd) => void;
+  onOptimizeAd?: (ad: GoogleAdsCampaignAd, competitors?: AdCompetitorUpload) => void;
+  /** Create a new RSA in this campaign (same research flow as Create Campaign) */
+  onCreateAd?: () => void;
+  googleAdsCustomerId?: string;
+  onSettingsUpdated?: () => void;
   auditing?: boolean;
   variant?: 'select' | 'action';
   currency?: string;
+  /** When set, only ads matching this service are listed */
+  serviceFilter?: string | 'all';
+  competitorUploads?: Record<string, AdCompetitorUpload>;
+  onCompetitorUploadChange?: (adId: string, upload: AdCompetitorUpload | null) => void;
 }
 
 function formatType(type: string): string {
@@ -45,8 +54,24 @@ function formatType(type: string): string {
 }
 
 function formatBidding(strategy?: string): string {
-  if (!strategy) return '—';
-  return strategy.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  return campaignBidLabel(strategy);
+}
+
+function adMatchesService(ad: GoogleAdsCampaignAd, service: string): boolean {
+  const needle = service.toLowerCase().trim();
+  if (!needle) return true;
+  const inferred = inferServiceFromAd(ad).primaryService?.toLowerCase() ?? '';
+  if (inferred && (inferred.includes(needle) || needle.includes(inferred))) return true;
+  const hay = [
+    ...(ad.headlines ?? []),
+    ...(ad.descriptions ?? []),
+    ...(ad.finalUrls ?? []),
+  ]
+    .join(' ')
+    .toLowerCase();
+  const tokens = needle.split(/\W+/).filter((t) => t.length > 2);
+  if (!tokens.length) return hay.includes(needle);
+  return tokens.every((t) => hay.includes(t));
 }
 
 export function CampaignCard({
@@ -56,11 +81,18 @@ export function CampaignCard({
   onAudit,
   onOptimize,
   onOptimizeAd,
+  onCreateAd,
+  googleAdsCustomerId,
+  onSettingsUpdated,
   auditing = false,
   variant = 'select',
   currency = 'AUD',
+  serviceFilter = 'all',
+  competitorUploads = {},
+  onCompetitorUploadChange,
 }: CampaignCardProps) {
   const [adsExpanded, setAdsExpanded] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const statusColor = campaign.status === 'ENABLED' ? 'text-teal' : 'text-muted';
   const isAction = variant === 'action';
   const windowLabel = campaign.metricsWindowDays >= 365
@@ -69,11 +101,15 @@ export function CampaignCard({
       ? '90d'
       : '30d';
 
+  const visibleAds =
+    serviceFilter !== 'all'
+      ? campaign.ads.filter((ad) => adMatchesService(ad, serviceFilter))
+      : campaign.ads;
+
   return (
-    <motion.div
-      whileHover={{ scale: isAction ? 1.005 : 1.005 }}
+    <div
       className={clsx(
-        'w-full text-left rounded-xl border transition-all',
+        'w-full text-left rounded-xl border',
         isAction
           ? 'bg-navy border-border hover:border-orange/30'
           : clsx(
@@ -133,7 +169,7 @@ export function CampaignCard({
         </div>
       </div>
 
-      {campaign.ads.length > 0 && (
+      {visibleAds.length > 0 && (
         <div className="border-t border-border/50 mx-4 mb-4">
           <button
             type="button"
@@ -141,13 +177,17 @@ export function CampaignCard({
             className="w-full flex items-center justify-between py-3 text-left"
           >
             <span className="text-white text-xs font-semibold">
-              Ads in this campaign ({campaign.ads.length})
+              Ads in this campaign ({visibleAds.length}
+              {serviceFilter !== 'all' && visibleAds.length !== campaign.ads.length
+                ? ` of ${campaign.ads.length}`
+                : ''}
+              )
             </span>
             {adsExpanded ? <ChevronUp size={16} className="text-muted" /> : <ChevronDown size={16} className="text-muted" />}
           </button>
           {adsExpanded && (
             <div className="space-y-3 pb-1">
-              {campaign.ads.map((ad) => {
+              {visibleAds.map((ad) => {
                 const inferred = inferServiceFromAd(ad);
                 return (
                   <CampaignAdPreview
@@ -156,7 +196,18 @@ export function CampaignCard({
                     currency={currency}
                     compact
                     inferredService={inferred.primaryService}
-                    onOptimizeAd={onOptimizeAd ? () => onOptimizeAd(ad) : undefined}
+                    enableCompetitorUpload={isAction}
+                    competitorUpload={competitorUploads[ad.id] ?? null}
+                    onCompetitorUploadChange={
+                      onCompetitorUploadChange
+                        ? (upload) => onCompetitorUploadChange(ad.id, upload)
+                        : undefined
+                    }
+                    onOptimizeAd={
+                      onOptimizeAd
+                        ? (competitors) => onOptimizeAd(ad, competitors ?? competitorUploads[ad.id])
+                        : undefined
+                    }
                   />
                 );
               })}
@@ -166,7 +217,23 @@ export function CampaignCard({
       )}
 
       {campaign.adCount === 0 && (
-        <p className="text-muted text-xs px-4 pb-3">No responsive search ads found for this campaign in the selected window.</p>
+        <p className="text-muted text-xs px-4 pb-3">
+          No responsive search ads found for this campaign in the selected window.
+          {onCreateAd && (
+            <>
+              {' '}
+              <button type="button" className="text-orange hover:underline" onClick={onCreateAd}>
+                Create an ad
+              </button>
+            </>
+          )}
+        </p>
+      )}
+
+      {campaign.ads.length > 0 && visibleAds.length === 0 && serviceFilter !== 'all' && (
+        <p className="text-muted text-xs px-4 pb-3">
+          No ads in this campaign match the “{serviceFilter}” service filter.
+        </p>
       )}
 
       {isAction && (
@@ -180,9 +247,35 @@ export function CampaignCard({
               <Sparkles size={14} /> Make It Better
             </Button>
           )}
+          {onCreateAd && (
+            <Button variant="outline" size="sm" disabled={auditing} onClick={() => onCreateAd()}>
+              <Plus size={14} /> Create Ad
+            </Button>
+          )}
+          {googleAdsCustomerId && (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={auditing}
+              onClick={() => setSettingsOpen((v) => !v)}
+            >
+              <Settings size={14} /> Settings
+            </Button>
+          )}
         </div>
       )}
-    </motion.div>
+
+      {isAction && settingsOpen && googleAdsCustomerId && (
+        <div className="px-4 pb-4">
+          <CampaignSettingsPanel
+            campaign={campaign}
+            googleAdsCustomerId={googleAdsCustomerId}
+            currency={currency}
+            onUpdated={onSettingsUpdated}
+          />
+        </div>
+      )}
+    </div>
   );
 }
 

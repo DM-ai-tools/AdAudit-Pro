@@ -1,4 +1,6 @@
 /** Canonical Google Ads campaign buckets for Your Campaigns. */
+import { inferServiceFromAd } from './adServiceInference';
+
 export type AccountCampaignTypeKey =
   | 'search'
   | 'display'
@@ -154,34 +156,72 @@ function isUsefulServiceLabel(label: string): boolean {
 }
 
 /**
- * Service chips come from the audited landing page / website services only.
- * Campaign copy is used for matching, not for inventing service labels.
+ * Service chips for Your Campaigns:
+ * 1) audited landing-page / website services (preferred)
+ * 2) inferred services from campaign ads (landing path + ad copy)
  */
 export function deriveServiceFilters(
   websiteServices: string[],
-  _campaigns?: Array<{
+  campaigns?: Array<{
     name: string;
-    ads?: Array<{ headlines?: string[]; descriptions?: string[]; finalUrls?: string[] }>;
+    ads?: Array<{
+      headlines?: string[];
+      descriptions?: string[];
+      finalUrls?: string[];
+      displayPath1?: string;
+      displayPath2?: string;
+      adGroupName?: string;
+    }>;
   }>
 ): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
-  for (const raw of websiteServices) {
+
+  const push = (raw: string) => {
     const s = raw.replace(/\s+/g, ' ').trim();
-    if (!isUsefulServiceLabel(s)) continue;
+    if (!isUsefulServiceLabel(s)) return;
+    if (/^(core service|general|other)$/i.test(s)) return;
     const key = s.toLowerCase();
-    if (seen.has(key)) continue;
+    if (seen.has(key)) return;
     seen.add(key);
     out.push(s);
-    if (out.length >= 12) break;
+  };
+
+  for (const raw of websiteServices) {
+    push(raw);
+    if (out.length >= 12) return out;
   }
-  return out;
+
+  for (const campaign of campaigns ?? []) {
+    for (const ad of campaign.ads ?? []) {
+      const inferred = inferServiceFromAd({
+        headlines: ad.headlines ?? [],
+        descriptions: ad.descriptions ?? [],
+        finalUrls: ad.finalUrls ?? [],
+        displayPath1: ad.displayPath1,
+        displayPath2: ad.displayPath2,
+        adGroupName: ad.adGroupName ?? '',
+      });
+      push(inferred.primaryService);
+      for (const s of inferred.services) push(s);
+      if (out.length >= 12) return out;
+    }
+  }
+
+  return out.slice(0, 12);
 }
 
 export function campaignMatchesService(
   campaign: {
     name: string;
-    ads?: Array<{ headlines?: string[]; descriptions?: string[]; finalUrls?: string[] }>;
+    ads?: Array<{
+      headlines?: string[];
+      descriptions?: string[];
+      finalUrls?: string[];
+      displayPath1?: string;
+      displayPath2?: string;
+      adGroupName?: string;
+    }>;
   },
   service: string
 ): boolean {
@@ -190,6 +230,22 @@ export function campaignMatchesService(
   const tokens = needle
     .split(/\W+/)
     .filter((t) => t.length > 2 && !STOP_WORDS.has(t));
+
+  // Match inferred ad services first (same labels shown in the filter chips)
+  for (const ad of campaign.ads ?? []) {
+    const inferred = inferServiceFromAd({
+      headlines: ad.headlines ?? [],
+      descriptions: ad.descriptions ?? [],
+      finalUrls: ad.finalUrls ?? [],
+      displayPath1: ad.displayPath1,
+      displayPath2: ad.displayPath2,
+      adGroupName: ad.adGroupName ?? '',
+    });
+    const labels = [inferred.primaryService, ...inferred.services].map((s) => s.toLowerCase());
+    if (labels.some((l) => l === needle || l.includes(needle) || needle.includes(l))) {
+      return true;
+    }
+  }
 
   // Prefer landing-page / final URL match, then campaign name + ad copy
   const landingHay = (campaign.ads ?? [])

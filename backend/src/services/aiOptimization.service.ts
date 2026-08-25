@@ -20,10 +20,17 @@ import type { Finding } from '../types/index.js';
 import { prisma } from '../lib/prisma.js';
 import type { CompetitorIntelligence } from './competitor-intelligence.service.js';
 import { analyzeCompetitors } from './competitor-intelligence.service.js';
+import type { CompetitorDiscoverySource } from './competitor-discovery-cache.service.js';
+import { getCachedCompetitorDiscovery } from './competitor-discovery-cache.service.js';
+import {
+  inferCountryFromLocation,
+  resolveMarketCountry,
+} from '../utils/region-codes.js';
 import { extractJsonFromClaudeText } from '../utils/claude-json.js';
 import {
   AD_DIFFERENCE_TARGET,
   computeAdDifferenceScore,
+  listNearDuplicateHeadlines,
 } from '../utils/ad-difference-score.js';
 import {
   displayPathFromWebsite,
@@ -214,6 +221,9 @@ export interface OptimizedAdContent {
   keywordImprovements?: string[];
   negativeKeywordSuggestions?: string[];
   landingPageRecommendations?: string[];
+  /** UI label when this RSA is a competitor-focused alternate */
+  variationLabel?: string;
+  focusedCompetitor?: string;
 }
 
 export interface OptimizeAdRequest {
@@ -236,6 +246,19 @@ export interface OptimizeAdRequest {
     industry?: string;
     location?: string;
     competitorUrls?: string[];
+    /** Competitor brand names from user document upload (when URLs missing) */
+    competitorNames?: string[];
+    /** Paired name+url rows from the uploaded document (preferred over separate lists) */
+    competitorEntries?: Array<{ name: string; url?: string }>;
+    /**
+     * Competitor discovery mode after client confirm:
+     * - uploaded_only: client list only (no auto-discovery)
+     * - auto: SociaVault / Transparency discovery only
+     * - both: client list + AI discovery (default when upload present)
+     */
+    competitorDiscoveryMode?: 'uploaded_only' | 'auto' | 'both';
+    /** Promo/offer — part of competitor cache key */
+    offer?: string;
     productsServices?: string[];
     /** When 'ad', competitor discovery is scoped to primaryService / productsServices only */
     optimizationScope?: 'campaign' | 'ad';
@@ -245,6 +268,8 @@ export interface OptimizeAdRequest {
     campaignId?: string;
     campaignName?: string;
     campaignType?: string;
+    /** Normalized bucket: search | display | video | performance_max | … */
+    preferredCampaignType?: string;
     campaignStatus?: string;
     biddingStrategyType?: string;
     hasExistingAds?: boolean;
@@ -304,6 +329,7 @@ export interface OptimizeAdResult {
   campaignPerformance?: import('./audit-intelligence.service.js').CampaignPerformanceSummary | null;
   auditHealthScore?: number;
   competitorAnalysis?: CompetitorIntelligence | null;
+  optimizedVariations?: OptimizedAdContent[];
 }
 
 const VARIATION_HINTS: Record<string, string> = {
@@ -488,15 +514,30 @@ function isIncompleteTrailingWord(word: string): string | null {
   return null;
 }
 
+/** Light grammar cleanup — complete sentences, spacing, common article fixes. */
+function fixGrammarIssues(text: string): string {
+  let s = text.replace(/\s+/g, ' ').trim();
+  if (!s) return s;
+  s = s.replace(/\s+([,.!?;:])/g, '$1');
+  s = s.replace(/([a-z])\.([A-Z])/g, '$1. $2');
+  s = s.replace(/\ba ([aeiouAEIOU])/g, 'an $1');
+  s = s.replace(/\ban ([bcdfghjklmnpqrstvwxyzBCDFGHJKLMNPQRSTVWXYZ])/g, 'a $1');
+  // Drop dangling conjunctions at end of headlines/descriptions
+  s = s.replace(/\b(and|or|with|for|to|the|a|an)\s*$/i, '').trim();
+  return s;
+}
+
 /**
  * Enforce ≤30 chars with COMPLETE words only — never mid-word cuts like "Fast Approv".
  */
 export function finalizeHeadline(text: string, max = 30): string {
-  let s = text
-    .trim()
-    .replace(/\s+/g, ' ')
-    .replace(/[–—]/g, '-')
-    .replace(/\s*-\s*/g, ' - ');
+  let s = fixGrammarIssues(
+    text
+      .trim()
+      .replace(/\s+/g, ' ')
+      .replace(/[–—]/g, '-')
+      .replace(/\s*-\s*/g, ' - ')
+  );
   if (!s) return s;
 
   const fitComplete = (candidate: string): string => {
@@ -544,7 +585,7 @@ export function finalizeHeadline(text: string, max = 30): string {
 }
 
 function finalizeDescription(text: string): string {
-  let s = text.trim().replace(/\s+/g, ' ').replace(/[–—]/g, '-');
+  let s = fixGrammarIssues(text.trim().replace(/\s+/g, ' ').replace(/[–—]/g, '-'));
   if (!s) return s;
   if (s.length > 90) {
     s = s.slice(0, 90);
@@ -1221,6 +1262,33 @@ function parseClaudeJson(
     intelligence.competitorAnalysis
   );
 
+  // Stick strictly to rivals present in competitorAnalysis (already document-only when uploaded)
+  const analysisNames = new Set(
+    [
+      ...(intelligence.competitorAnalysis?.competitors ?? []).map((c) => c.name),
+      ...(intelligence.competitorAnalysis?.adGallery ?? []).map((g) => g.advertiserName ?? g.name),
+      ...(intelligence.competitorAnalysis?.insights ?? []).map((i) => i.name),
+    ]
+      .filter(Boolean)
+      .map((n) =>
+        String(n)
+          .toLowerCase()
+          .replace(/[^a-z0-9]/g, '')
+      )
+  );
+  if (analysisNames.size > 0) {
+    competitorInsights = competitorInsights.filter((c) => {
+      const key = c.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, '');
+      if (!key) return false;
+      if (analysisNames.has(key)) return true;
+      return [...analysisNames].some(
+        (a) => a.length >= 4 && key.length >= 4 && (a.includes(key) || key.includes(a))
+      );
+    });
+  }
+
   const missingCompetitorAdvantages = normalizeStringArray(
     Array.isArray(parsed.missingCompetitorAdvantages) && parsed.missingCompetitorAdvantages.length
       ? parsed.missingCompetitorAdvantages
@@ -1585,17 +1653,42 @@ const FAMILY_LABEL: Record<string, string> = {
   home_loan: 'Home Loans',
   personal_loan: 'Personal Loans',
   business_loan: 'Business Loans',
+  commercial_mortgage: 'Commercial Mortgage',
   insurance: 'Insurance',
   real_estate: 'Real Estate',
 };
 
-/** Landing path wins — campaign/site mix must not override the selected ad's product. */
+function isSpecificServiceLabel(label: string): boolean {
+  const t = label.trim();
+  if (!t || /^(core service|general|other|services)$/i.test(t)) return false;
+  if (/landing page$/i.test(t) && !/\b(mortgage|broker|loan|finance)\b/i.test(t)) return false;
+  if (/\b(commercial|business|car|auto|home|personal|mortgage|broker|finance|loan)\b/i.test(t)) {
+    return true;
+  }
+  return t.split(/\s+/).length >= 2;
+}
+
+function canonicalPrimaryServiceLabel(label: string): string {
+  const t = label.trim();
+  if (!t) return t;
+  const lower = t.toLowerCase();
+  if (/\bcommercial\b/.test(lower) && /\b(mortgage|property)\b/.test(lower)) {
+    if (/\bbroker\b/.test(lower)) return 'Commercial Mortgage Broker';
+    return 'Commercial Mortgage';
+  }
+  return t;
+}
+
+/** User-selected / inferred service wins over URL path when path maps to a rival vertical. */
 function resolvePrimaryServiceFromAd(opts: {
   claimed?: string;
   headlines: string[];
   descriptions: string[];
   finalUrls?: string[];
 }): string {
+  const claimed = opts.claimed?.trim();
+  const claimedCanonical = claimed ? canonicalPrimaryServiceLabel(claimed) : '';
+
   const urlBlob = (opts.finalUrls ?? [])
     .map((u) => {
       try {
@@ -1606,19 +1699,36 @@ function resolvePrimaryServiceFromAd(opts: {
     })
     .join(' ');
   const pathFamilies = detectServiceFamilies(urlBlob).filter((f) => f !== 'generic');
+  const copyFamilies = detectServiceFamilies(
+    [...opts.headlines, ...opts.descriptions].join(' ')
+  ).filter((f) => f !== 'generic');
+
+  if (claimedCanonical && isSpecificServiceLabel(claimedCanonical)) {
+    const claimedFamilies = detectServiceFamilies(claimedCanonical).filter((f) => f !== 'generic');
+    const pathFamily = pathFamilies[0];
+    if (
+      claimedFamilies.length &&
+      pathFamily &&
+      !claimedFamilies.includes(pathFamily)
+    ) {
+      return claimedCanonical;
+    }
+    if (copyFamilies.some((f) => claimedFamilies.includes(f))) {
+      return claimedCanonical;
+    }
+    // Ad copy / inferred service wins over generic family labels (e.g. "Commercial Mortgage Broker" not "Business Loans")
+    return claimedCanonical;
+  }
+
   if (pathFamilies[0] && FAMILY_LABEL[pathFamilies[0]]) {
     return FAMILY_LABEL[pathFamilies[0]]!;
   }
 
-  const copyFamilies = detectServiceFamilies(
-    [...opts.headlines, ...opts.descriptions].join(' ')
-  ).filter((f) => f !== 'generic');
   if (copyFamilies[0] && FAMILY_LABEL[copyFamilies[0]]) {
     return FAMILY_LABEL[copyFamilies[0]]!;
   }
 
-  const claimed = opts.claimed?.trim();
-  if (claimed) return claimed;
+  if (claimedCanonical) return claimedCanonical;
   return opts.headlines[0]?.trim().slice(0, 40) || 'Core Service';
 }
 
@@ -1646,7 +1756,34 @@ function rsaDriftsFromService(
   return false;
 }
 
-export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAdResult> {
+export type OptimizeAdProgressUpdate = {
+  progress: number;
+  stage: string;
+  originalAd?: OptimizeAdResult['originalAd'];
+  competitorAnalysis?: OptimizeAdResult['competitorAnalysis'];
+  optimized?: OptimizeAdResult['optimized'];
+  optimizedVariations?: OptimizeAdResult['optimizedVariations'];
+  intelligenceSummary?: OptimizeAdResult['intelligenceSummary'];
+  analysisSources?: OptimizeAdResult['analysisSources'];
+  campaignPerformance?: OptimizeAdResult['campaignPerformance'];
+  auditHealthScore?: OptimizeAdResult['auditHealthScore'];
+  scenario?: OptimizeAdResult['scenario'];
+  dataSource?: OptimizeAdResult['dataSource'];
+  finding?: OptimizeAdResult['finding'];
+};
+
+export async function optimizeAd(
+  request: OptimizeAdRequest,
+  onProgress?: (update: OptimizeAdProgressUpdate) => void | Promise<void>
+): Promise<OptimizeAdResult> {
+  const emit = async (update: OptimizeAdProgressUpdate) => {
+    try {
+      await onProgress?.(update);
+    } catch (err) {
+      console.warn('[optimizeAd] progress emit failed:', err instanceof Error ? err.message : err);
+    }
+  };
+
   const startedAt = Date.now();
   const stored = await getAuditReport(request.auditId);
   if (!stored && !request.accountContext?.accountName) {
@@ -1656,6 +1793,7 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
   const finding = await resolveFinding(request.auditId, request.findingId, request.findingSnapshot);
 
   console.log(`[optimizeAd] start audit=${request.auditId} finding=${request.findingId} campaign=${request.accountContext?.campaignId ?? 'all'}${request.regenerateOnly ? ' (regenerate-only)' : ''}`);
+  await emit({ progress: 8, stage: 'Loading account intelligence…' });
 
   let intelligence: AuditIntelligence;
   let previousOptimizedAd: { headlines: string[]; descriptions: string[] } | undefined;
@@ -1689,6 +1827,7 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
         accountContext: request.accountContext,
         auditFindingsSnapshot: request.auditFindingsSnapshot ?? stored?.findings,
         lightweight: true,
+        skipCompetitorAnalysis: true,
       });
       console.log(`[optimizeAd] lightweight intelligence ready in ${Date.now() - startedAt}ms`);
     }
@@ -1723,6 +1862,7 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
       accountContext: request.accountContext,
       auditFindingsSnapshot: request.auditFindingsSnapshot ?? stored?.findings,
       lightweight: useLightweight,
+      skipCompetitorAnalysis: true,
     });
     console.log(`[optimizeAd] intelligence ready in ${Date.now() - startedAt}ms (source=${intelligence.dataSource}${useLightweight ? ', lightweight' : ''})`);
   }
@@ -1803,17 +1943,122 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
 
   // Ad-scoped: refresh only when gather skipped/empty — never force a 2nd full SociaVault crawl
   // (duplicate crawls were taking 10–13+ minutes and timing out the UI).
-  const needsCompetitorRefresh = isAdScoped
-    ? existingCompetitorCount === 0 && existingRealAds === 0
-    : existingCompetitorCount === 0 ||
-      existingRealAds < 2 ||
-      !(intelligence.competitorAnalysis?.adGallery?.some((g) => (g.totalAdCount ?? 0) > 0) ?? false);
+  const uploadedCompetitorUrls = (request.accountContext?.competitorUrls ?? []).filter(Boolean);
+  const uploadedCompetitorNames = (request.accountContext?.competitorNames ?? []).filter(Boolean);
+  const uploadedCompetitorEntries = (request.accountContext?.competitorEntries ?? [])
+    .map((e) => ({
+      name: String(e?.name ?? '').trim(),
+      url: e?.url ? String(e.url).trim() : undefined,
+    }))
+    .filter((e) => e.name || e.url);
+  const hasUploadedList =
+    uploadedCompetitorEntries.length > 0 ||
+    uploadedCompetitorUrls.length > 0 ||
+    uploadedCompetitorNames.length > 0;
+  const discoveryMode =
+    request.accountContext?.competitorDiscoveryMode ??
+    (hasUploadedList ? 'both' : 'auto');
+  // uploaded_only = client list only; both = client + AI discovery; auto = discovery only
+  const useUploadedList = discoveryMode !== 'auto' && hasUploadedList;
+  const userProvidedOnly = discoveryMode === 'uploaded_only' && useUploadedList;
+  const hasUploadedCompetitors = useUploadedList;
 
-  if (needsCompetitorRefresh) {
-    const websiteUrl = intelligence.business.websiteUrl;
-    const adScopedServices = earlyProducts.length
-      ? earlyProducts
-      : request.accountContext?.productsServices ?? [];
+  // Upload → document rivals (+ optional discovery). No upload / auto → SociaVault / Transparency.
+  const staleDocumentIntel =
+    !hasUploadedCompetitors &&
+    intelligence.competitorAnalysis?.source === 'user_provided';
+  const needsCompetitorRefresh = hasUploadedCompetitors
+    ? true
+    : staleDocumentIntel
+      ? true
+      : isAdScoped
+        ? existingCompetitorCount === 0 && existingRealAds === 0
+        : existingCompetitorCount === 0 ||
+          existingRealAds < 2 ||
+          !(intelligence.competitorAnalysis?.adGallery?.some((g) => (g.totalAdCount ?? 0) > 0) ?? false);
+
+  const websiteUrl = intelligence.business.websiteUrl;
+  const adScopedServices = earlyProducts.length
+    ? earlyProducts
+    : request.accountContext?.productsServices ?? [];
+  const competitorDiscoverySource: CompetitorDiscoverySource =
+    discoveryMode === 'uploaded_only'
+      ? 'document'
+      : discoveryMode === 'both'
+        ? 'both'
+        : 'sociavault';
+
+  const searchKeywords = (request.accountContext?.serviceKeywords ?? [])
+    .map((k) => k.trim())
+    .filter((k) => k.length >= 3);
+
+  const competitorCacheLookup = {
+    websiteUrl,
+    businessName: intelligence.business.name,
+    primaryService: earlyLockService ?? request.accountContext?.primaryService,
+    productsServices: isAdScoped
+      ? adScopedServices
+      : [
+          ...(request.accountContext?.productsServices ?? []),
+          ...(intelligence.websiteAnalysis?.services ?? []),
+        ],
+    offer: request.accountContext?.offer?.trim() || undefined,
+    discoverySource: competitorDiscoverySource,
+    country:
+      resolveMarketCountry({
+        location: resolvedLocation,
+        websiteUrl,
+        explicitCountry: request.accountContext?.location,
+      }) ?? inferCountryFromLocation(resolvedLocation),
+    preferredCampaignType:
+      request.accountContext?.preferredCampaignType || request.accountContext?.campaignType,
+    userProvidedOnly,
+    competitorUrls:
+      hasUploadedCompetitors && uploadedCompetitorUrls.length ? uploadedCompetitorUrls : undefined,
+    competitorNames:
+      hasUploadedCompetitors && uploadedCompetitorNames.length ? uploadedCompetitorNames : undefined,
+    competitorEntries:
+      hasUploadedCompetitors && uploadedCompetitorEntries.length
+        ? uploadedCompetitorEntries
+        : undefined,
+    searchKeywords: searchKeywords.length ? searchKeywords : undefined,
+    strictServiceSeed: isAdScoped && !userProvidedOnly,
+  };
+
+  const cachedCompetitors = await getCachedCompetitorDiscovery(competitorCacheLookup);
+  if (
+    cachedCompetitors &&
+    ((cachedCompetitors.competitors?.length ?? 0) > 0 || (cachedCompetitors.adGallery?.length ?? 0) > 0)
+  ) {
+    intelligence = {
+      ...intelligence,
+      competitorAnalysis: cachedCompetitors,
+      analysisSources: {
+        ...intelligence.analysisSources,
+        competitorAnalysis: cachedCompetitors.competitors.length > 0,
+      },
+    };
+        console.log(
+          `[optimizeAd] using cached competitor discovery from database (${cachedCompetitors.competitors.length} rivals, ${cachedCompetitors.adGallery?.length ?? 0} ads)`
+        );
+  } else if (needsCompetitorRefresh) {
+    console.log(
+      `[optimizeAd] competitor path: mode=${discoveryMode} ${
+        hasUploadedCompetitors
+          ? `uploaded (${uploadedCompetitorEntries.length || uploadedCompetitorUrls.length || uploadedCompetitorNames.length} rivals)${userProvidedOnly ? ' only' : ' + discovery'}`
+          : isAdScoped
+            ? 'auto-discovery (ad service-scoped)'
+            : 'auto-discovery (campaign/account)'
+      }`
+    );
+    await emit({
+      progress: 15,
+      stage: hasUploadedCompetitors
+        ? userProvidedOnly
+          ? 'Fetching Transparency ads for your confirmed competitors…'
+          : 'Enriching your competitors and discovering additional rivals…'
+        : 'Discovering competitors and fetching their ads…',
+    });
     const refreshed = await analyzeCompetitors({
       businessName: intelligence.business.name,
       websiteUrl,
@@ -1826,7 +2071,16 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
             ...(request.accountContext?.productsServices ?? []),
             ...(intelligence.websiteAnalysis?.services ?? []),
           ],
-      competitorUrls: isAdScoped ? undefined : request.accountContext?.competitorUrls,
+      // Pass client list unless mode is auto-only
+      competitorUrls: hasUploadedCompetitors && uploadedCompetitorUrls.length
+        ? uploadedCompetitorUrls
+        : undefined,
+      competitorNames: hasUploadedCompetitors && uploadedCompetitorNames.length
+        ? uploadedCompetitorNames
+        : undefined,
+      competitorEntries: hasUploadedCompetitors && uploadedCompetitorEntries.length
+        ? uploadedCompetitorEntries
+        : undefined,
       websiteIntel: intelligence.websiteAnalysis,
       currentAd: request.accountContext?.primaryAdSnapshot
         ? {
@@ -1834,9 +2088,20 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
             descriptions: request.accountContext.primaryAdSnapshot.descriptions ?? [],
           }
         : undefined,
+      // Always lightweight on Make It Better — full crawl + multi-Claude regenerations
+      // exceed the browser poll window (especially with large uploaded competitor lists).
       lightweight: true,
-      serviceScoped: isAdScoped,
+      skipSocialPresence: true,
+      serviceScoped: isAdScoped && !userProvidedOnly,
       primaryService: earlyLockService ?? request.accountContext?.primaryService,
+      userProvidedOnly,
+      preferredCampaignType:
+        request.accountContext?.preferredCampaignType ||
+        request.accountContext?.campaignType,
+      offer: request.accountContext?.offer?.trim() || undefined,
+      discoverySource: competitorDiscoverySource,
+      searchKeywords: searchKeywords.length ? searchKeywords : undefined,
+      strictServiceSeed: isAdScoped && !userProvidedOnly,
     });
     intelligence = {
       ...intelligence,
@@ -1853,10 +2118,27 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
           : ''
       })`
     );
+    await emit({
+      progress: 35,
+      stage: `Competitor intel ready (${refreshed.competitors.length} rivals) — analyzing ad gallery…`,
+      competitorAnalysis: refreshed,
+      analysisSources: intelligence.analysisSources,
+    });
   } else if (isAdScoped) {
     console.log(
       `[optimizeAd] reusing gathered competitors (${existingCompetitorCount} rivals, ${existingRealAds} gallery ads) — skip second crawl`
     );
+    await emit({
+      progress: 30,
+      stage: `Using ${existingCompetitorCount} competitors — preparing current ad…`,
+      competitorAnalysis: intelligence.competitorAnalysis,
+    });
+  } else {
+    await emit({
+      progress: 28,
+      stage: 'Competitor intel loaded — preparing current ad…',
+      competitorAnalysis: intelligence.competitorAnalysis,
+    });
   }
 
   let originalAd = intelligenceToCurrentAd(intelligence, finding);
@@ -1943,13 +2225,61 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
   }
 
   const tone = request.tone ?? 'default';
-  const variationHint = request.variation ? VARIATION_HINTS[request.variation] : undefined;
+  const variationHint = [
+    request.variation ? VARIATION_HINTS[request.variation] : undefined,
+    intelligence.scenario === 'REPLACE_EXISTING'
+      ? [
+          'ANALYZE-THEN-GENERATE (FIXED ORDER):',
+          '1) READ THE CURRENT AD first — note what it already says (geo, product, CTA, proof) and treat it as a baseline to leave behind.',
+          '2) NOTE COMPETITOR ADS from adGallery — list winning offers, trust, CTAs, keywords the current ad lacks.',
+          '3) SUGGEST a brand-new RSA that develops those competitor pros for the client — NOT a rewrite of the current ad.',
+          'HARD RULE: The AI Optimized Ad must look NOTHING like the current ad. No paraphrases, no word-order swaps, no synonym tweaks, no City+Product twins.',
+          'At least 90% of headlines must introduce new angles from competitor insights. Target Ad Difference Score 90+.',
+        ].join(' ')
+      : undefined,
+  ]
+    .filter(Boolean)
+    .join('\n');
   const brand = resolveBusinessName(
     intelligence.business.name,
     intelligence.business.websiteUrl
   );
 
   const baseline = buildBaselinePerformance(intelligence);
+
+  await emit({
+    progress: 42,
+    stage: 'Step 1/3 — Reading your current ad…',
+    originalAd,
+    competitorAnalysis: intelligence.competitorAnalysis,
+    scenario: intelligence.scenario,
+    dataSource: intelligence.dataSource,
+    finding: {
+      id: finding.id,
+      title: finding.title,
+      category: finding.category,
+      dimension: finding.dimension,
+    },
+    intelligenceSummary: {
+      findingsAnalyzed: intelligence.findings.all.length,
+      campaignsLoaded: intelligence.campaigns.length,
+      keywordsLoaded: intelligence.keywords.length,
+      searchTermsLoaded: intelligence.searchTerms.length,
+      adsFound: intelligence.ads.length,
+      devicesLoaded: intelligence.devices.length,
+      audiencesLoaded: intelligence.audiences.length,
+    },
+    analysisSources: intelligence.analysisSources,
+    campaignPerformance: intelligence.campaignPerformance,
+    auditHealthScore: intelligence.auditHealth.score,
+  });
+
+  await emit({
+    progress: 48,
+    stage: 'Step 2/3 — Noting competitor ads (offers, trust, CTAs)…',
+    originalAd,
+    competitorAnalysis: intelligence.competitorAnalysis,
+  });
 
   const promptCtx = {
     intelligence,
@@ -1959,7 +2289,14 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
     scenario: intelligence.scenario,
     tone,
     optimizationMode: request.optimizationMode ?? 'aggressive',
-    variationHint,
+    variationHint: [
+      variationHint || undefined,
+      request.customPrompt?.trim()
+        ? `CLIENT CUSTOM INSTRUCTIONS (MUST APPLY TO HEADLINES, DESCRIPTIONS, SITELINKS, CALLOUTS, STRUCTURED SNIPPETS, KEYWORDS, AND NEGATIVE KEYWORDS):\n${request.customPrompt.trim()}`
+        : undefined,
+    ]
+      .filter(Boolean)
+      .join('\n\n') || undefined,
     customPrompt: request.customPrompt,
     adServiceLock,
   };
@@ -2037,7 +2374,20 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
   }
 
   const claudeStart = Date.now();
-  let optimized = await runClaudeOnce(promptCtx);
+  await emit({
+    progress: 52,
+    stage: 'Step 3/3 — Generating a suggested RSA that differs from your current ad…',
+    originalAd,
+    competitorAnalysis: intelligence.competitorAnalysis,
+  });
+  let optimized = await runClaudeOnce(
+    promptCtx,
+    request.regenerateOnly
+      ? request.customPrompt?.trim()
+        ? 1.05
+        : 1
+      : 1.0
+  );
 
   // Reject RSA that drifted to a different product vertical (e.g. Business Loans for a Car Loans ad)
   if (
@@ -2047,82 +2397,7 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
     console.warn(
       `[optimizeAd] SERVICE DRIFT detected — RSA not about "${adServiceLock.primaryService}"; forcing locked regenerate`
     );
-    optimized = await runClaudeOnce(
-      {
-        ...promptCtx,
-        previousOptimizedAd: {
-          headlines: optimized.headlines,
-          descriptions: optimized.descriptions,
-        },
-        variationHint: [
-          promptCtx.variationHint,
-          `CRITICAL SERVICE CORRECTION: Previous draft was REJECTED because it promoted the WRONG service.`,
-          `Locked service is ONLY "${adServiceLock.primaryService}" (landing: ${adServiceLock.landingPage ?? 'n/a'}).`,
-          `Rewrite ALL 15 headlines + 4 descriptions + sitelinks + callouts for "${adServiceLock.primaryService}" exclusively.`,
-          `Do NOT mention business loans, SME, commercial loans, home loans, mortgages, or personal loans unless that IS "${adServiceLock.primaryService}".`,
-        ]
-          .filter(Boolean)
-          .join('\n'),
-      },
-      0.75
-    );
-    if (
-      rsaDriftsFromService(optimized.headlines, optimized.descriptions, adServiceLock.primaryService)
-    ) {
-      console.warn(
-        `[optimizeAd] SERVICE DRIFT still present after regenerate — keeping draft but flagging lock="${adServiceLock.primaryService}"`
-      );
-    } else {
-      console.log(`[optimizeAd] service lock recovered — RSA now matches "${adServiceLock.primaryService}"`);
-    }
-  }
-
-  // Ad Difference Score — auto-regenerate if too similar to the current ad (target 80+)
-  let differenceScore = computeAdDifferenceScore(originalAd, optimized);
-  let diffAttempts = 0;
-  while (differenceScore < AD_DIFFERENCE_TARGET && diffAttempts < 3) {
-    diffAttempts += 1;
-    console.warn(
-      `[optimizeAd] Ad Difference Score ${differenceScore}/100 < ${AD_DIFFERENCE_TARGET} — regenerating (attempt ${diffAttempts})`
-    );
-    const rivalHints = (intelligence.competitorAnalysis?.adGallery ?? [])
-      .slice(0, 4)
-      .map(
-        (g) =>
-          `${g.advertiserName ?? g.name}: ${(g.headlines ?? []).slice(0, 3).join(' | ')} / offers=${(g.offers ?? []).slice(0, 2).join(', ')}`
-      )
-      .join('\n');
-    optimized = await runClaudeOnce(
-      {
-        ...promptCtx,
-        previousOptimizedAd: {
-          headlines: optimized.headlines,
-          descriptions: optimized.descriptions,
-        },
-        variationHint: [
-          promptCtx.variationHint,
-          adServiceLock?.primaryService
-            ? `Stay locked to service "${adServiceLock.primaryService}" only.`
-            : '',
-          request.accountContext?.location || resolvedLocation
-            ? `Prefer same-region competitor angles for ${request.accountContext?.location || resolvedLocation}.`
-            : '',
-          rivalHints ? `Competitor baselines to BEAT:\n${rivalHints}` : '',
-          `CRITICAL REGENERATION: Previous draft scored only ${differenceScore}/100 on Ad Difference vs the current ad (target ${AD_DIFFERENCE_TARGET}+). Produce a DRAMATICALLY different RSA — new offers, trust signals, CTAs, geo hooks, and positioning from competitor intelligence. Zero paraphrase / word-order swaps of current or previous headlines. Aim for a visibly 10× stronger ad.`,
-        ]
-          .filter(Boolean)
-          .join('\n'),
-      },
-      1.05
-    );
-    // Never accept a higher difference score if it broke the service lock
-    if (
-      adServiceLock?.primaryService &&
-      rsaDriftsFromService(optimized.headlines, optimized.descriptions, adServiceLock.primaryService)
-    ) {
-      console.warn(
-        `[optimizeAd] difference regenerate broke service lock "${adServiceLock.primaryService}" — retrying with lock`
-      );
+    try {
       optimized = await runClaudeOnce(
         {
           ...promptCtx,
@@ -2130,12 +2405,151 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
             headlines: optimized.headlines,
             descriptions: optimized.descriptions,
           },
-          variationHint: `SERVICE LOCK + DIFFERENCE: Write a dramatically different RSA that is STILL only about "${adServiceLock.primaryService}". Beat rivals with new offers/proof/CTAs — not paraphrases.`,
+          variationHint: [
+            promptCtx.variationHint,
+            `CRITICAL SERVICE CORRECTION: Previous draft was REJECTED because it promoted the WRONG service.`,
+            `Locked service is ONLY "${adServiceLock.primaryService}" (landing: ${adServiceLock.landingPage ?? 'n/a'}).`,
+            `Rewrite ALL 15 headlines + 4 descriptions + sitelinks + callouts for "${adServiceLock.primaryService}" exclusively.`,
+            `Do NOT mention business loans, SME, commercial loans, home loans, mortgages, or personal loans unless that IS "${adServiceLock.primaryService}".`,
+          ]
+            .filter(Boolean)
+            .join('\n'),
         },
-        1
+        0.75
+      );
+      if (
+        rsaDriftsFromService(optimized.headlines, optimized.descriptions, adServiceLock.primaryService)
+      ) {
+        console.warn(
+          `[optimizeAd] SERVICE DRIFT still present after regenerate — keeping draft but flagging lock="${adServiceLock.primaryService}"`
+        );
+      } else {
+        console.log(`[optimizeAd] service lock recovered — RSA now matches "${adServiceLock.primaryService}"`);
+      }
+    } catch (driftErr) {
+      console.warn(
+        `[optimizeAd] service-lock regenerate failed — keeping original draft:`,
+        driftErr instanceof Error ? driftErr.message : driftErr
       );
     }
-    differenceScore = computeAdDifferenceScore(originalAd, optimized);
+  }
+
+  // Ad Difference Score — auto-regenerate if too similar (cap retries to protect poll window)
+  // Never fail the whole job if a regenerate call hits an auth/rate error — ship the best draft.
+  let differenceScore = computeAdDifferenceScore(originalAd, optimized);
+  let diffAttempts = 0;
+  const maxDiffAttempts = request.regenerateOnly ? 3 : 4;
+  while (differenceScore < AD_DIFFERENCE_TARGET && diffAttempts < maxDiffAttempts) {
+    if (Date.now() - startedAt > 7 * 60_000) {
+      console.warn(
+        `[optimizeAd] skipping further difference retries — wall clock ${Math.round((Date.now() - startedAt) / 1000)}s`
+      );
+      break;
+    }
+    diffAttempts += 1;
+    const nearDupes = listNearDuplicateHeadlines(originalAd, optimized);
+    console.warn(
+      `[optimizeAd] Ad Difference Score ${differenceScore}/100 < ${AD_DIFFERENCE_TARGET} — regenerating (attempt ${diffAttempts}); near-dupes=${nearDupes.length}`
+    );
+    await emit({
+      progress: 54 + diffAttempts,
+      stage: `Suggested ad too similar to current (${differenceScore}/100) — rewriting with competitor angles…`,
+      originalAd,
+      competitorAnalysis: intelligence.competitorAnalysis,
+      optimized,
+    });
+    const documentOnly = intelligence.competitorAnalysis?.source === 'user_provided';
+    const rivalLimit = documentOnly ? 10 : 4;
+    const galleryHints = (intelligence.competitorAnalysis?.adGallery ?? [])
+      .slice(0, rivalLimit)
+      .map(
+        (g) =>
+          `${g.advertiserName ?? g.name}: ${(g.headlines ?? []).slice(0, documentOnly ? 5 : 3).join(' | ')} / offers=${(g.offers ?? []).slice(0, documentOnly ? 4 : 2).join(', ')} / trust=${(g.trustSignals ?? []).slice(0, 2).join(', ')}`
+      );
+    const profileHints =
+      documentOnly && galleryHints.length < 3
+        ? (intelligence.competitorAnalysis?.competitors ?? [])
+            .slice(0, rivalLimit)
+            .filter((p) => !galleryHints.some((h) => h.toLowerCase().startsWith(p.name.toLowerCase())))
+            .map(
+              (p) =>
+                `${p.name}: ${(p.headlines ?? p.keyMessages ?? []).slice(0, 4).join(' | ')} / offers=${(p.offers ?? []).slice(0, 3).join(', ')}`
+            )
+        : [];
+    const rivalHints = [...galleryHints, ...profileHints].join('\n');
+    const previousDraft = {
+      headlines: optimized.headlines,
+      descriptions: optimized.descriptions,
+    };
+    try {
+      let candidate = await runClaudeOnce(
+        {
+          ...promptCtx,
+          previousOptimizedAd: previousDraft,
+          variationHint: [
+            promptCtx.variationHint,
+            adServiceLock?.primaryService
+              ? `Stay locked to service "${adServiceLock.primaryService}" only.`
+              : '',
+            request.accountContext?.location || resolvedLocation
+              ? `Prefer same-region competitor angles for ${request.accountContext?.location || resolvedLocation}.`
+              : '',
+            documentOnly
+              ? 'DOCUMENT MODE: Use ONLY uploaded Make It Better rivals as inspiration — do not invent other competitors, and never name them in ad copy.'
+              : '',
+            rivalHints ? `Competitor ads to note and improve on (do not name rivals in the ad):\n${rivalHints}` : '',
+            nearDupes.length
+              ? `FORBIDDEN near-clones of the CURRENT AD (do not reuse or lightly reword):\n${nearDupes
+                  .slice(0, 12)
+                  .map((h) => `- ${h}`)
+                  .join('\n')}`
+              : '',
+            `CURRENT AD BASELINE (leave behind):\nHeadlines: ${JSON.stringify(
+              (originalAd.headlines ?? []).slice(0, 15)
+            )}\nDescriptions: ${JSON.stringify((originalAd.descriptions ?? []).slice(0, 4))}`,
+            `CRITICAL REGENERATION: Previous draft scored only ${differenceScore}/100 on Ad Difference vs the current ad (target ${AD_DIFFERENCE_TARGET}+). Workflow: (1) re-read current ad (2) re-note competitor ads (3) invent a DRAMATICALLY different RSA — new offers, trust, CTAs, geo hooks from competitor intelligence. Zero paraphrase / word-order swaps. No "beats [rival]" and no unverifiable "0%" claims.`,
+          ]
+            .filter(Boolean)
+            .join('\n'),
+        },
+        1.1
+      );
+      // Never accept a higher difference score if it broke the service lock
+      if (
+        adServiceLock?.primaryService &&
+        rsaDriftsFromService(candidate.headlines, candidate.descriptions, adServiceLock.primaryService)
+      ) {
+        console.warn(
+          `[optimizeAd] difference regenerate broke service lock "${adServiceLock.primaryService}" — retrying with lock`
+        );
+        try {
+          candidate = await runClaudeOnce(
+            {
+              ...promptCtx,
+              previousOptimizedAd: {
+                headlines: candidate.headlines,
+                descriptions: candidate.descriptions,
+              },
+              variationHint: `SERVICE LOCK + DIFFERENCE: Write a dramatically different RSA that is STILL only about "${adServiceLock.primaryService}". Beat rivals with new offers/proof/CTAs — not paraphrases.`,
+            },
+            1
+          );
+        } catch (lockErr) {
+          console.warn(
+            `[optimizeAd] service-lock difference retry failed — keeping difference draft:`,
+            lockErr instanceof Error ? lockErr.message : lockErr
+          );
+        }
+      }
+      optimized = candidate;
+      differenceScore = computeAdDifferenceScore(originalAd, optimized);
+    } catch (regenErr) {
+      const regenMsg = regenErr instanceof Error ? regenErr.message : String(regenErr);
+      console.warn(
+        `[optimizeAd] difference regenerate failed (${regenMsg}) — shipping draft at ${differenceScore}/100`
+      );
+      break;
+    }
   }
 
   if (differenceScore < AD_DIFFERENCE_TARGET) {
@@ -2161,6 +2575,234 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
   }
 
   console.log(`[optimizeAd] Ad Difference Score final=${differenceScore}/100 (retries=${diffAttempts})`);
+
+  await emit({
+    progress: 62,
+    stage: `Primary RSA ready (difference ${differenceScore}/100) — generating top-competitor copies…`,
+    originalAd,
+    competitorAnalysis: intelligence.competitorAnalysis,
+    optimized,
+  });
+
+  const optimizedVariations: OptimizedAdContent[] = [];
+  const variationBudgetMs = 10 * 60_000;
+  if (!request.regenerateOnly && Date.now() - startedAt < variationBudgetMs) {
+    type RivalSeed = {
+      name: string;
+      headlines: string[];
+      descriptions: string[];
+      offers: string[];
+      trustSignals: string[];
+      influencePercent: number;
+    };
+    const byName = new Map<string, RivalSeed>();
+    const upsertRival = (r: RivalSeed) => {
+      const key = r.name.toLowerCase();
+      if (!key) return;
+      const prev = byName.get(key);
+      if (!prev || r.influencePercent > prev.influencePercent) {
+        byName.set(key, {
+          ...r,
+          headlines: r.headlines.length ? r.headlines : prev?.headlines ?? [],
+          descriptions: r.descriptions.length ? r.descriptions : prev?.descriptions ?? [],
+          offers: r.offers.length ? r.offers : prev?.offers ?? [],
+          trustSignals: r.trustSignals.length ? r.trustSignals : prev?.trustSignals ?? [],
+        });
+      }
+    };
+    for (const g of intelligence.competitorAnalysis?.adGallery ?? []) {
+      const name = String(g.advertiserName ?? g.name ?? '').trim();
+      if (!name) continue;
+      upsertRival({
+        name,
+        headlines: g.headlines ?? [],
+        descriptions: g.descriptions ?? [],
+        offers: g.offers ?? [],
+        trustSignals: g.trustSignals ?? [],
+        influencePercent: Number(g.influencePercent) || Number(g.aiLearningValue) || Number(g.confidenceScore) || 0,
+      });
+    }
+    for (const c of intelligence.competitorAnalysis?.competitors ?? []) {
+      const name = String(c.name ?? '').trim();
+      if (!name) continue;
+      upsertRival({
+        name,
+        headlines: c.headlines ?? c.keyMessages ?? [],
+        descriptions: c.descriptions ?? [],
+        offers: c.offers ?? [],
+        trustSignals: c.trustSignals ?? [],
+        influencePercent:
+          Number(c.influencePercent) ||
+          Number(c.aiLearningValue) ||
+          Number(c.confidenceScore) ||
+          0,
+      });
+    }
+    const topRivals = [...byName.values()]
+      .sort((a, b) => b.influencePercent - a.influencePercent || a.name.localeCompare(b.name))
+      .slice(0, 3);
+    const seenKeys = new Set([optimized.headlines.join('\u0001')]);
+
+    // Target: primary + 3 more = 4 Make It Better ad copies
+    const TARGET_VARIATIONS = 3;
+    const angleFallbacks = [
+      {
+        name: 'High-conversion CTA',
+        headlines: optimized.headlines.slice(0, 4),
+        descriptions: optimized.descriptions.slice(0, 2),
+        offers: ['fast quote', 'compare lenders', 'speak to a specialist'],
+        trustSignals: ['licensed', 'local experts'],
+        influencePercent: 0,
+        hint: 'ANGLE: high-conversion CTA — urgency, clear next step, stronger verbs, still service-locked.',
+      },
+      {
+        name: 'Trust & proof',
+        headlines: optimized.headlines.slice(0, 4),
+        descriptions: optimized.descriptions.slice(0, 2),
+        offers: ['years of experience', 'award-winning team'],
+        trustSignals: ['trusted locally', 'transparent advice'],
+        influencePercent: 0,
+        hint: 'ANGLE: trust and proof — credibility, experience, reassurance, still service-locked.',
+      },
+      {
+        name: 'Offer-led',
+        headlines: optimized.headlines.slice(0, 4),
+        descriptions: optimized.descriptions.slice(0, 2),
+        offers: ['free assessment', 'multi-lender comparison'],
+        trustSignals: ['no obligation'],
+        influencePercent: 0,
+        hint: 'ANGLE: offer-led — tangible benefit hooks and comparison value, still service-locked.',
+      },
+    ] as Array<RivalSeed & { hint?: string }>;
+
+    const variationSeeds: Array<RivalSeed & { hint?: string; inspiredByCompetitor?: boolean }> = [
+      ...topRivals.map((r) => ({ ...r, inspiredByCompetitor: true as const })),
+    ];
+    for (const fallback of angleFallbacks) {
+      if (variationSeeds.length >= TARGET_VARIATIONS) break;
+      variationSeeds.push({ ...fallback, inspiredByCompetitor: false });
+    }
+
+    for (let i = 0; i < Math.min(TARGET_VARIATIONS, variationSeeds.length); i++) {
+      if (Date.now() - startedAt > variationBudgetMs) {
+        console.warn(
+          `[optimizeAd] skipping remaining variations — wall clock ${Math.round((Date.now() - startedAt) / 1000)}s`
+        );
+        break;
+      }
+      const rival = variationSeeds[i]!;
+      let accepted: OptimizedAdContent | null = null;
+      for (let attempt = 0; attempt < 2 && !accepted; attempt++) {
+        try {
+          const alt = await runClaudeOnce(
+            {
+              ...promptCtx,
+              previousOptimizedAd: {
+                headlines: [
+                  ...optimized.headlines,
+                  ...optimizedVariations.flatMap((v) => v.headlines.slice(0, 5)),
+                ],
+                descriptions: [
+                  ...optimized.descriptions,
+                  ...optimizedVariations.flatMap((v) => v.descriptions.slice(0, 2)),
+                ],
+              },
+              variationHint: [
+                promptCtx.variationHint,
+                rival.inspiredByCompetitor
+                  ? `COMPETITOR-INSPIRED RSA ${i + 2} of 4 (focused on insights from "${rival.name}" — do NOT name them in the ad).`
+                  : `ALTERNATE RSA ${i + 2} of 4 (${rival.hint ?? rival.name}).`,
+                `Study angles privately: headlines=${rival.headlines.slice(0, 6).join(' | ') || 'n/a'}; descriptions=${rival.descriptions.slice(0, 3).join(' | ') || 'n/a'}; offers=${rival.offers.slice(0, 4).join(', ') || 'n/a'}; trust=${rival.trustSignals.slice(0, 3).join(', ') || 'n/a'}.`,
+                `Write a complete new RSA (15 headlines, 4 descriptions) that is MORE attention-grabbing and professional for the CLIENT brand.`,
+                rival.inspiredByCompetitor
+                  ? `Express how the client improved vs gaps those rivals leave open (speed, trust, lender choice, local expertise, clear CTA) — searcher-first benefits only.`
+                  : `Make this copy clearly different from the primary and any earlier variations — new hooks, proof, and CTAs.`,
+                `FORBIDDEN in headlines/descriptions/callouts/sitelinks: naming "${rival.name}", "beats ${rival.name}", "better than", "unlike [competitor]", any rival brand name.`,
+                `FORBIDDEN weak/misleading marketing: "0%", "0% fees", "0% interest", unverifiable free-forever claims, truncated sentences.`,
+                `Must use ≥70% different phrasing vs the primary AI optimized ad. Keep service lock, brand, and Google Ads character limits.`,
+                attempt > 0
+                  ? 'RETRY: previous draft was rejected — remove competitor names and unverifiable 0% claims; make copy sharper and more professional.'
+                  : '',
+              ]
+                .filter(Boolean)
+                .join('\n'),
+            },
+            0.88 + i * 0.04
+          );
+          if (
+            adServiceLock?.primaryService &&
+            rsaDriftsFromService(alt.headlines, alt.descriptions, adServiceLock.primaryService)
+          ) {
+            continue;
+          }
+          const blob = [...alt.headlines, ...alt.descriptions, ...(alt.adExtensions?.callouts ?? [])]
+            .join(' ')
+            .toLowerCase();
+          const rivalLower = rival.name.toLowerCase();
+          const distinctiveTokens = rivalLower
+            .split(/[^a-z0-9]+/)
+            .filter(
+              (w) =>
+                w.length > 3 &&
+                !['bank', 'limited', 'ltd', 'group', 'australia', 'finance', 'loan', 'loans', 'and', 'the', 'pty', 'high', 'conversion', 'trust', 'proof', 'offer', 'led'].includes(
+                  w
+                )
+            );
+          const namesRival =
+            Boolean(rival.inspiredByCompetitor) &&
+            (blob.includes(rivalLower) ||
+              (distinctiveTokens.length > 0 &&
+                distinctiveTokens.every((t) => blob.includes(t)) &&
+                distinctiveTokens.join(' ').length >= 6));
+          const adCopyText = [...alt.headlines, ...alt.descriptions].join(' ');
+          const hasBadClaim =
+            /\b0\s*%/i.test(adCopyText) ||
+            /\bbeats?\b[\s\S]{0,50}\b(bank|loan|finance|ltd|limited|group)\b/i.test(adCopyText) ||
+            /\bunlike\b[\s\S]{0,40}\b(bank|loan|finance|competitor)\b/i.test(adCopyText);
+          if (namesRival || hasBadClaim) {
+            console.warn(
+              `[optimizeAd] variation vs "${rival.name}" rejected (competitor naming or weak claim) attempt=${attempt + 1}`
+            );
+            continue;
+          }
+          const key = alt.headlines.join('\u0001');
+          if (seenKeys.has(key)) continue;
+          seenKeys.add(key);
+          alt.variationLabel = rival.inspiredByCompetitor
+            ? `Inspired by ${rival.name}`
+            : rival.name;
+          alt.focusedCompetitor = rival.inspiredByCompetitor ? rival.name : undefined;
+          alt.adDifferenceScore = computeAdDifferenceScore(originalAd, alt);
+          accepted = alt;
+        } catch (err) {
+          console.warn(`[optimizeAd] competitor variation vs "${rival.name}" skipped`, err);
+        }
+      }
+      if (accepted) {
+        optimizedVariations.push(accepted);
+        await emit({
+          progress: 65 + Math.round((optimizedVariations.length / TARGET_VARIATIONS) * 25),
+          stage: `Ad copy ${optimizedVariations.length + 1}/4 ready (${accepted.variationLabel})…`,
+          originalAd,
+          competitorAnalysis: intelligence.competitorAnalysis,
+          optimized,
+          optimizedVariations: [...optimizedVariations],
+        });
+      }
+    }
+    console.log(
+      `[optimizeAd] ad copies ready: primary + ${optimizedVariations.length}/${TARGET_VARIATIONS} variations (rivals=${topRivals.map((r) => r.name).join(', ') || 'none'})`
+    );
+  }
+
+  await emit({
+    progress: 92,
+    stage: 'Finalizing Make It Better results…',
+    originalAd,
+    competitorAnalysis: intelligence.competitorAnalysis,
+    optimized,
+    optimizedVariations: optimizedVariations.length ? optimizedVariations : undefined,
+  });
 
   // Diversify sitelink destinations when Claude reused the same final URL on every link
   if (optimized.adExtensions?.sitelinks?.length) {
@@ -2216,7 +2858,7 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
       scenario: intelligence.scenario,
       auditContext: intelligence as object,
       originalAd: originalAd as object,
-      optimizedContent: optimized as object,
+      optimizedContent: { ...optimized, optimizedVariations } as object,
       improvementReasoning: optimized.improvementReasoning,
       predictedImpact: optimized.predictedImpact as object,
       tone,
@@ -2232,6 +2874,7 @@ export async function optimizeAd(request: OptimizeAdRequest): Promise<OptimizeAd
     dataSource: intelligence.dataSource,
     originalAd,
     optimized,
+    optimizedVariations: optimizedVariations.length ? optimizedVariations : undefined,
     finding: {
       id: finding.id,
       title: finding.title,
@@ -2276,8 +2919,20 @@ export interface AuditReportOptimization {
   createdAt: Date;
   originalAd: CurrentAdData;
   optimizedContent: OptimizedAdContent;
+  optimizedVariations?: OptimizedAdContent[];
   competitorAnalysis?: CompetitorIntelligence | null;
   improvementReasoning: string | null;
+  publishedActivity?: Array<{
+    id: string;
+    status: string;
+    publishedAt: Date | null;
+    createdAt: Date;
+    rollbackAvailable: boolean;
+    errorMessage: string | null;
+    originalAd?: CurrentAdData | Record<string, unknown> | null;
+    publishedAd?: CurrentAdData | Record<string, unknown> | null;
+    campaignName?: string;
+  }>;
 }
 
 /** Latest Make It Better optimization per finding+campaign for PDF / report export. */
@@ -2287,15 +2942,18 @@ export async function getOptimizationsForAuditReport(
   const rows = await prisma.aIOptimization.findMany({
     where: { auditRunId },
     orderBy: { createdAt: 'desc' },
+    include: {
+      publishedVersions: { orderBy: { createdAt: 'desc' }, take: 10 },
+    },
   });
 
-  const seen = new Set<string>();
   const result: AuditReportOptimization[] = [];
 
   for (const row of rows) {
-    const key = `${row.findingId}:${row.campaignId ?? ''}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    const rawContent = row.optimizedContent as unknown as OptimizedAdContent & {
+      optimizedVariations?: OptimizedAdContent[];
+    };
+    const { optimizedVariations, ...primaryContent } = rawContent;
 
     result.push({
       id: row.id,
@@ -2305,12 +2963,31 @@ export async function getOptimizationsForAuditReport(
       tone: row.tone,
       createdAt: row.createdAt,
       originalAd: row.originalAd as unknown as CurrentAdData,
-      optimizedContent: row.optimizedContent as unknown as OptimizedAdContent,
+      optimizedContent: primaryContent as OptimizedAdContent,
+      optimizedVariations: optimizedVariations?.length ? optimizedVariations : undefined,
       competitorAnalysis:
         row.auditContext && typeof row.auditContext === 'object'
           ? (row.auditContext as unknown as AuditIntelligence).competitorAnalysis
           : null,
       improvementReasoning: row.improvementReasoning,
+      publishedActivity: row.publishedVersions.map((pv) => {
+        const metrics =
+          pv.performanceMetrics && typeof pv.performanceMetrics === 'object'
+            ? (pv.performanceMetrics as { campaignName?: string })
+            : {};
+        return {
+          id: pv.id,
+          status: pv.status,
+          publishedAt: pv.publishedAt,
+          createdAt: pv.createdAt,
+          rollbackAvailable: pv.rollbackAvailable,
+          errorMessage: pv.errorMessage,
+          originalAd: (pv.originalAdSnapshot as CurrentAdData | null) ?? null,
+          publishedAd:
+            ((pv.publishedContent ?? pv.optimizedAdSnapshot) as CurrentAdData | null) ?? null,
+          campaignName: metrics.campaignName,
+        };
+      }),
     });
   }
 

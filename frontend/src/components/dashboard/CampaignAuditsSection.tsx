@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loader2, Target, Megaphone, Search, RefreshCw, Filter } from 'lucide-react';
+import { Loader2, Target, Megaphone, Search, RefreshCw, Filter, Plus } from 'lucide-react';
 import clsx from 'clsx';
 import { Button } from '../ui/Button';
 import { Badge } from '../ui/Badge';
 import { CampaignCard } from '../connect/CampaignCard';
+import { CreateCampaignModal } from './CreateCampaignModal';
 import { googleAdsApi, auditApi } from '../../services/api';
 import type { GoogleAdsCampaign } from '../../types/connect';
 import type { Finding } from '../../types';
@@ -18,6 +19,7 @@ import {
 } from '../../utils/campaignTypes';
 import { buildAdOptimizeFinding, inferServiceFromAd } from '../../utils/adServiceInference';
 import type { GoogleAdsCampaignAd } from '../../types/connect';
+import type { AdCompetitorUpload } from './CampaignAdPreview';
 
 interface CampaignAuditsSectionProps {
   auditId: string;
@@ -28,7 +30,13 @@ interface CampaignAuditsSectionProps {
   campaignName?: string;
   websiteUrl?: string;
   onOptimizeCampaign?: (finding: Finding, campaign: GoogleAdsCampaign) => void;
-  onOptimizeAd?: (finding: Finding, campaign: GoogleAdsCampaign, ad: GoogleAdsCampaignAd) => void;
+  onOptimizeAd?: (
+    finding: Finding,
+    campaign: GoogleAdsCampaign,
+    ad: GoogleAdsCampaignAd,
+    competitors?: AdCompetitorUpload,
+    requestedService?: string
+  ) => void;
 }
 
 function formatGoogleAdsCustomerId(id: string): string {
@@ -72,6 +80,8 @@ export function CampaignAuditsSection({
   const [currency, setCurrency] = useState('AUD');
   const [metricsWindowDays, setMetricsWindowDays] = useState(dataWindowDays);
   const [loading, setLoading] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createAdCampaign, setCreateAdCampaign] = useState<GoogleAdsCampaign | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [startingId, setStartingId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -79,6 +89,7 @@ export function CampaignAuditsSection({
   const [typeFilter, setTypeFilter] = useState<AccountCampaignTypeKey | 'all'>('all');
   const [serviceFilter, setServiceFilter] = useState<string | 'all'>('all');
   const [websiteServices, setWebsiteServices] = useState<string[]>([]);
+  const [competitorUploads, setCompetitorUploads] = useState<Record<string, AdCompetitorUpload>>({});
 
   const isCampaignAudit = auditScope === 'campaign';
   const customerId = googleAdsCustomerId ? formatGoogleAdsCustomerId(googleAdsCustomerId) : undefined;
@@ -219,20 +230,42 @@ export function CampaignAuditsSection({
       variant="action"
       currency={currency}
       auditing={startingId === campaign.id}
+      serviceFilter={serviceFilter}
+      competitorUploads={competitorUploads}
+      onCompetitorUploadChange={(adId, upload) => {
+        setCompetitorUploads((prev) => {
+          if (!upload) {
+            const next = { ...prev };
+            delete next[adId];
+            return next;
+          }
+          return { ...prev, [adId]: upload };
+        });
+      }}
       onAudit={() => void handleCampaignAudit(campaign)}
       onOptimize={
         onOptimizeCampaign
           ? () => onOptimizeCampaign(optimizeFindingFor(campaign), campaign)
           : undefined
       }
+      onCreateAd={() => {
+        setCreateOpen(false);
+        setCreateAdCampaign(campaign);
+      }}
+      googleAdsCustomerId={googleAdsCustomerId}
+      onSettingsUpdated={() => void loadCampaigns()}
       onOptimizeAd={
         onOptimizeAd
-          ? (ad) => {
+          ? (ad, competitors) => {
               const inferred = inferServiceFromAd(ad);
+              const effectiveService =
+                serviceFilter !== 'all' ? serviceFilter : inferred.primaryService;
               onOptimizeAd(
-                buildAdOptimizeFinding(campaign.id, campaign.name, ad, inferred.primaryService),
+                buildAdOptimizeFinding(campaign.id, campaign.name, ad, effectiveService),
                 campaign,
-                ad
+                ad,
+                competitors ?? competitorUploads[ad.id],
+                effectiveService
               );
             }
           : undefined
@@ -293,6 +326,17 @@ export function CampaignAuditsSection({
           {campaigns.length > 0 && (
             <Badge variant="teal">{campaigns.length} campaign{campaigns.length === 1 ? '' : 's'}</Badge>
           )}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setCreateAdCampaign(null);
+              setCreateOpen(true);
+            }}
+            disabled={!googleAdsCustomerId}
+          >
+            <Plus size={14} /> Create campaign
+          </Button>
           <Button variant="outline" size="sm" onClick={() => void loadCampaigns()} disabled={loading}>
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Refresh
           </Button>
@@ -352,43 +396,50 @@ export function CampaignAuditsSection({
             </div>
           )}
 
-          {serviceOptions.length > 0 && (
-            <>
-              <div className="flex items-center gap-2 text-muted text-[11px] uppercase tracking-wider pt-1 border-t border-border/50">
-                Service / offering
-                <span className="normal-case tracking-normal text-muted/80">(from landing page)</span>
-              </div>
-              <div className="flex flex-wrap gap-2">
+          {/* Service filter — always shown in Your Campaigns when campaigns exist */}
+          <div className="flex items-center gap-2 text-muted text-[11px] uppercase tracking-wider pt-1 border-t border-border/50">
+            <Filter size={12} />
+            Service
+            <span className="normal-case tracking-normal text-muted/80">
+              (filter campaigns by offering)
+            </span>
+          </div>
+          {serviceOptions.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setServiceFilter('all')}
+                className={clsx(
+                  'text-[11px] px-3 py-1.5 rounded-full border transition-colors',
+                  serviceFilter === 'all'
+                    ? 'bg-orange/15 text-orange border-orange/40'
+                    : 'bg-navy text-muted border-border hover:text-white'
+                )}
+              >
+                All services
+                <span className="ml-1.5 opacity-70">({campaigns.length})</span>
+              </button>
+              {serviceOptions.map((service) => (
                 <button
+                  key={service}
                   type="button"
-                  onClick={() => setServiceFilter('all')}
+                  onClick={() => setServiceFilter(service)}
                   className={clsx(
                     'text-[11px] px-3 py-1.5 rounded-full border transition-colors',
-                    serviceFilter === 'all'
-                      ? 'bg-orange/15 text-orange border-orange/40'
+                    serviceFilter === service
+                      ? 'bg-teal/15 text-teal border-teal/40'
                       : 'bg-navy text-muted border-border hover:text-white'
                   )}
                 >
-                  All services
+                  {service}
+                  <span className="ml-1.5 opacity-70">({serviceCounts[service] ?? 0})</span>
                 </button>
-                {serviceOptions.map((service) => (
-                  <button
-                    key={service}
-                    type="button"
-                    onClick={() => setServiceFilter(service)}
-                    className={clsx(
-                      'text-[11px] px-3 py-1.5 rounded-full border transition-colors',
-                      serviceFilter === service
-                        ? 'bg-purple-500/15 text-purple-300 border-purple-400/40'
-                        : 'bg-navy text-muted border-border hover:text-white'
-                    )}
-                  >
-                    {service}
-                    <span className="ml-1.5 opacity-70">({serviceCounts[service] ?? 0})</span>
-                  </button>
-                ))}
-              </div>
-            </>
+              ))}
+            </div>
+          ) : (
+            <p className="text-muted text-[11px]">
+              Service filters appear once campaign ads or website offerings are detected.
+            </p>
           )}
 
           <div className="relative">
@@ -427,11 +478,22 @@ export function CampaignAuditsSection({
           <p className="text-muted text-xs mb-4">
             {dataSource === 'mock'
               ? 'Mock data mode is on — only demo accounts have sample campaigns.'
-              : 'If you expect campaigns here, click Refresh or reconnect Google Ads.'}
+              : 'Create a paused Search campaign here, or click Refresh if you expect existing campaigns.'}
           </p>
-          <Button variant="outline" size="sm" onClick={() => void loadCampaigns()}>
-            <RefreshCw size={14} /> Refresh campaigns
-          </Button>
+          <div className="flex items-center justify-center gap-2">
+            <Button
+              size="sm"
+              onClick={() => {
+                setCreateAdCampaign(null);
+                setCreateOpen(true);
+              }}
+            >
+              <Plus size={14} /> Create campaign
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => void loadCampaigns()}>
+              <RefreshCw size={14} /> Refresh campaigns
+            </Button>
+          </div>
         </div>
       )}
 
@@ -522,6 +584,39 @@ export function CampaignAuditsSection({
             Clear filters
           </button>
         </p>
+      )}
+
+      {googleAdsCustomerId && (
+        <CreateCampaignModal
+          open={createOpen || Boolean(createAdCampaign)}
+          mode={createAdCampaign ? 'ad' : 'campaign'}
+          existingCampaign={
+            createAdCampaign
+              ? {
+                  id: createAdCampaign.id,
+                  resourceName: createAdCampaign.resourceName,
+                  name: createAdCampaign.name,
+                  type: createAdCampaign.type,
+                  biddingStrategyType: createAdCampaign.biddingStrategyType,
+                  budgetDaily: createAdCampaign.budgetDaily,
+                  status: createAdCampaign.status,
+                }
+              : undefined
+          }
+          onClose={() => {
+            setCreateOpen(false);
+            setCreateAdCampaign(null);
+          }}
+          auditId={auditId}
+          googleAdsCustomerId={googleAdsCustomerId}
+          websiteUrl={websiteUrl}
+          typeCounts={typeCounts}
+          onCreated={() => {
+            setCreateOpen(false);
+            setCreateAdCampaign(null);
+            void loadCampaigns();
+          }}
+        />
       )}
     </section>
   );

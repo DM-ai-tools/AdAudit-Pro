@@ -3,6 +3,10 @@ import { AdPreviewPanel } from './AdPreviewPanel';
 import { CompetitorAdActivityMetrics, CompetitorBrandReviewBlock } from './CompetitorBrandMetrics';
 import { decodeHtmlEntitiesList } from './html-entities';
 import { competitorCreativeMatchesService } from '../../utils/serviceRelevance';
+import {
+  collapseCompetitorsToOne,
+  competitorIdentityKey,
+} from '../../utils/competitorGalleryDisplay';
 import type { CompetitorAdPreview, PreviewDevice } from '../../types/optimization';
 
 interface CompetitorAdGalleryProps {
@@ -14,59 +18,36 @@ interface CompetitorAdGalleryProps {
   primaryService?: string;
 }
 
-function galleryDedupeKey(c: CompetitorAdPreview): string {
-  const creative = (c.creativeUrl ?? c.adLink ?? '').toLowerCase().trim();
-  if (creative) return `creative:${creative}`;
-  const adv =
-    c.advertiserId ||
-    (c.transparencyUrl ?? c.url)?.match(/advertiser\/(AR[\w-]+)/i)?.[1];
-  if (adv) return `adv:${adv.toLowerCase()}`;
-  const name = (c.advertiserName ?? c.name).toLowerCase().trim();
-  const host = (c.displayUrl ?? c.url).replace(/^https?:\/\//, '').split('/')[0]?.toLowerCase() ?? '';
-  if (host && !/adstransparency\.google\.com$/i.test(host)) return `host:${host}`;
-  return `name:${name}`;
-}
-
-function dedupeCompetitors(competitors: CompetitorAdPreview[]): CompetitorAdPreview[] {
-  const out: CompetitorAdPreview[] = [];
-  const seen = new Set<string>();
-  for (const c of competitors) {
-    const key = galleryDedupeKey(c);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(c);
-  }
-  return out;
-}
-
 export function CompetitorAdGallery({
   competitors,
   previewDevice,
   onDeviceChange,
-  source,
+  source: _source,
   primaryService,
 }: CompetitorAdGalleryProps) {
-  // Only show real SociaVault / Transparency creatives — never empty stubs
-  const gallery = dedupeCompetitors(competitors).filter(
-    (c) =>
-      ((c.totalAdCount ?? 0) > 0 ||
-        c.headlines?.length > 0 ||
-        c.descriptions?.length > 0 ||
-        Boolean(c.previewImageUrl)) &&
-      competitorCreativeMatchesService(c, primaryService)
-  );
+  const gallery = collapseCompetitorsToOne(competitors)
+    .filter(
+      (c) =>
+        (c.totalAdCount ?? 0) > 0 ||
+        (c.adDurationDays ?? 0) > 0 ||
+        (c.headlines?.length ?? 0) > 0 ||
+        (c.descriptions?.length ?? 0) > 0 ||
+        Boolean(c.previewImageUrl)
+    )
+    .filter((c) => competitorCreativeMatchesService(c, primaryService));
   if (!gallery.length) {
+    const serviceLabel = primaryService?.trim() || 'this service';
     return (
       <div className="bg-panel border border-purple-400/20 rounded-xl p-4">
         <p className="text-white text-sm font-semibold">Competitor Ad Gallery</p>
         <p className="text-muted text-[11px] mt-1">
-          No service-matched Google Ads Transparency creatives were returned for this ad yet. Re-run Make It Better — SociaVault discovery will retry car/auto finance advertisers and known market domains.
+          No competitor creatives were returned for{' '}
+          <span className="text-white">{serviceLabel}</span> yet. Re-run Make It Better to retry
+          discovery for this service.
         </p>
       </div>
     );
   }
-
-  const viaSociaVault = source === 'sociavault' || gallery.some((c) => c.adSource === 'sociavault');
 
   return (
     <div className="space-y-4">
@@ -74,9 +55,7 @@ export function CompetitorAdGallery({
         <div>
           <p className="text-white text-sm font-semibold">Competitor Ad Gallery</p>
           <p className="text-muted text-[11px] mt-0.5">
-            {viaSociaVault
-              ? 'Each competitor shows Ad duration, Active ads, Total ads, and a detailed brand review from SociaVault'
-              : 'Live ads from Google Ads Transparency Center'}
+            Live competitor creatives for every discovered advertiser.
           </p>
         </div>
         <span className="text-muted text-[10px] uppercase tracking-wider">
@@ -85,14 +64,22 @@ export function CompetitorAdGallery({
       </div>
 
       <div className="grid sm:grid-cols-2 xl:grid-cols-2 gap-4">
-        {gallery.map((c, idx) => {
+        {gallery.map((c) => {
           const headlines = decodeHtmlEntitiesList(c.headlines);
           const descriptions = decodeHtmlEntitiesList(c.descriptions);
           const adLink = c.adLink ?? c.creativeUrl ?? c.transparencyUrl;
+          const sourceLabel =
+            c.adSource === 'transparency_center'
+              ? 'Public ad library'
+              : c.adSource === 'sociavault'
+                ? 'Live competitor ad'
+                : c.adSource === 'website_fallback'
+                  ? 'Website fallback'
+                  : 'Live competitor ad';
 
           return (
             <div
-              key={`${galleryDedupeKey(c)}-${idx}`}
+              key={competitorIdentityKey(c)}
               className="min-w-0 bg-panel border border-purple-400/25 rounded-2xl p-4 space-y-3"
             >
               <div className="space-y-1">
@@ -108,8 +95,14 @@ export function CompetitorAdGallery({
                   )}
                 </div>
                 <div className="flex flex-wrap gap-1.5">
-                  <span className="text-[9px] px-2 py-0.5 rounded-full bg-purple-500/10 text-purple-300 border border-purple-400/20 inline-block">
-                    Google Ads Transparency Center
+                  <span
+                    className={`text-[9px] px-2 py-0.5 rounded-full border inline-block ${
+                      c.adSource === 'website_fallback'
+                        ? 'bg-amber-500/10 text-amber-300 border-amber-400/20'
+                        : 'bg-purple-500/10 text-purple-300 border-purple-400/20'
+                    }`}
+                  >
+                    {sourceLabel}
                   </span>
                   {c.durationLabel && (
                     <span className="text-[9px] px-2 py-0.5 rounded-full bg-teal/10 text-teal border border-teal/20 inline-block">
@@ -118,7 +111,7 @@ export function CompetitorAdGallery({
                   )}
                   {c.influencePercent != null && (
                     <span className="text-[9px] px-2 py-0.5 rounded-full bg-orange/10 text-orange border border-orange/20 inline-block">
-                      {c.influencePercent}% Claude influence
+                      {c.influencePercent}% AI influence
                     </span>
                   )}
                   {c.estimatedSuccessScore != null && (
@@ -162,16 +155,16 @@ export function CompetitorAdGallery({
                 </div>
               </div>
 
-              {(c.cta || c.offer || c.ctas?.[0] || c.offers?.[0]) && (
+              {(c.cta || c.offer) && c.adSource !== 'website_fallback' && (
                 <div className="flex flex-wrap gap-1.5">
-                  {(c.cta || c.ctas?.[0]) && (
+                  {c.cta && (
                     <span className="text-[10px] px-2 py-0.5 rounded-full bg-orange/10 text-orange border border-orange/25">
-                      CTA: {c.cta || c.ctas?.[0]}
+                      CTA: {c.cta}
                     </span>
                   )}
-                  {(c.offer || c.offers?.[0]) && (
+                  {c.offer && (
                     <span className="text-[10px] px-2 py-0.5 rounded-full bg-teal/10 text-teal border border-teal/25">
-                      Offer: {c.offer || c.offers?.[0]}
+                      Offer: {c.offer}
                     </span>
                   )}
                 </div>
@@ -198,16 +191,43 @@ export function CompetitorAdGallery({
               )}
 
               {(headlines.length > 0 || descriptions.length > 0) && (
-                <AdPreviewPanel
-                  headlines={headlines.slice(0, 3)}
-                  descriptions={descriptions.slice(0, 2)}
-                  displayUrl={c.displayUrl}
-                  device={previewDevice}
-                  onDeviceChange={onDeviceChange}
-                  variant="competitor"
-                  finalUrl={c.destinationUrl ?? c.url}
-                  simpleAdView
-                />
+                <div className="space-y-2">
+                  <AdPreviewPanel
+                    headlines={headlines}
+                    descriptions={descriptions}
+                    displayUrl={c.displayUrl}
+                    device={previewDevice}
+                    onDeviceChange={onDeviceChange}
+                    variant="competitor"
+                    finalUrl={c.destinationUrl ?? c.url}
+                    simpleAdView
+                  />
+                  <div className="rounded-lg border border-border/60 bg-navy/40 px-2.5 py-2 space-y-1.5">
+                    <p className="text-[9px] text-muted uppercase tracking-wider">
+                      Exact creative copy ({headlines.length} headline
+                      {headlines.length === 1 ? '' : 's'}, {descriptions.length} description
+                      {descriptions.length === 1 ? '' : 's'})
+                    </p>
+                    {headlines.length > 0 && (
+                      <ol className="list-decimal list-inside space-y-0.5">
+                        {headlines.map((h, hi) => (
+                          <li key={`h-${hi}`} className="text-[11px] text-white leading-snug">
+                            {h}
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                    {descriptions.length > 0 && (
+                      <ul className="space-y-0.5 border-t border-border/40 pt-1.5">
+                        {descriptions.map((d, di) => (
+                          <li key={`d-${di}`} className="text-[11px] text-muted leading-snug">
+                            {d}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </div>
               )}
 
               {(c.destinationUrl || (c.url && !/adstransparency\.google\.com/i.test(c.url))) && (
@@ -238,7 +258,7 @@ export function CompetitorAdGallery({
                 >
                   <ExternalLink size={12} className="shrink-0 mt-0.5" />
                   <span>
-                    View competitor ad on Transparency Center
+                    View live competitor ad
                     <span className="block text-[9px] text-muted mt-0.5 font-mono">{adLink}</span>
                   </span>
                 </a>

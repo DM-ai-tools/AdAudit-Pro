@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Loader2, FileText, Megaphone, ChevronRight, Clock, AlertCircle } from 'lucide-react';
 import clsx from 'clsx';
@@ -28,6 +29,7 @@ interface PreviousAuditsListProps {
   userEmail?: string;
   currentAuditId?: string;
   compact?: boolean;
+  initialVisibleCount?: number;
   emptyMessage?: string;
   className?: string;
 }
@@ -39,9 +41,25 @@ export function PreviousAuditsList({
   userEmail,
   currentAuditId,
   compact = false,
+  initialVisibleCount,
   emptyMessage = 'No previous audits yet. Start your first audit below.',
   className,
 }: PreviousAuditsListProps) {
+  const defaultVisible = initialVisibleCount ?? (compact ? 5 : 8);
+  const [visibleCount, setVisibleCount] = useState(defaultVisible);
+
+  useEffect(() => {
+    setVisibleCount(defaultVisible);
+  }, [defaultVisible, audits.length]);
+
+  const visibleAudits = useMemo(
+    () => audits.slice(0, Math.max(defaultVisible, visibleCount)),
+    [audits, defaultVisible, visibleCount]
+  );
+  const hasMore = audits.length > visibleAudits.length;
+  const remaining = Math.max(0, audits.length - visibleAudits.length);
+  const canCollapse = visibleAudits.length > defaultVisible;
+
   if (loading) {
     return (
       <div className={clsx('flex items-center gap-2 text-muted text-sm py-4', className)}>
@@ -74,7 +92,8 @@ export function PreviousAuditsList({
           Audits for <span className="text-white font-medium">{userEmail}</span>
         </p>
       )}
-      {audits.map((audit) => {
+      <div className={clsx(audits.length > defaultVisible ? 'max-h-[28rem] overflow-y-auto pr-1 space-y-2' : 'space-y-2')}>
+      {visibleAudits.map((audit) => {
         const isCurrent = audit.id === currentAuditId;
         const isCampaign = audit.auditScope === 'campaign';
 
@@ -141,6 +160,29 @@ export function PreviousAuditsList({
           </Link>
         );
       })}
+      </div>
+      {(hasMore || canCollapse) && (
+        <div className="flex items-center justify-center gap-2 pt-1">
+          {hasMore && (
+            <button
+              type="button"
+              onClick={() => setVisibleCount((v) => Math.min(audits.length, v + defaultVisible))}
+              className="text-xs px-3 py-1.5 rounded-full border border-border bg-panel text-muted hover:text-white hover:border-orange/40 transition-colors"
+            >
+              Show {Math.min(defaultVisible, remaining)} more
+            </button>
+          )}
+          {canCollapse && (
+            <button
+              type="button"
+              onClick={() => setVisibleCount(defaultVisible)}
+              className="text-xs px-3 py-1.5 rounded-full border border-border bg-panel text-muted hover:text-white hover:border-orange/40 transition-colors"
+            >
+              Show less
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

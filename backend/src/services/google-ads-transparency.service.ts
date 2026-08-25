@@ -146,7 +146,16 @@ export async function resolveTransparencyAdvertiser(options: {
   name: string;
   url: string;
   country?: string;
+  advertiserId?: string;
 }): Promise<TransparencyAdvertiser | null> {
+  if (options.advertiserId) {
+    return {
+      advertiserId: options.advertiserId,
+      name: options.name,
+      country: options.country,
+      transparencyUrl: `https://adstransparency.google.com/advertiser/${options.advertiserId}?region=${options.country ?? 'anywhere'}`,
+    };
+  }
   const domain = domainFromUrl(options.url);
   const queries = [...new Set([domain, options.name, domain.split('.')[0], `${options.name} ${options.country ?? ''}`.trim()])].filter(
     (q) => q.length > 2
@@ -354,6 +363,8 @@ export async function fetchTransparencyAdsForCompetitor(options: {
   url: string;
   country?: string;
   maxAds?: number;
+  advertiserId?: string;
+  maxPages?: number;
 }): Promise<TransparencyAdBundle | null> {
   const regionCode = transparencyRegionCode(options.country);
 
@@ -361,10 +372,15 @@ export async function fetchTransparencyAdsForCompetitor(options: {
     name: options.name,
     url: options.url,
     country: options.country,
+    advertiserId: options.advertiserId,
   });
   if (!advertiser) return null;
 
-  const creatives = await fetchCreativesForAdvertiser(advertiser.advertiserId, regionCode);
+  const creatives = await fetchCreativesForAdvertiser(
+    advertiser.advertiserId,
+    regionCode,
+    options.maxPages ?? 2
+  );
   const formatPriority = (fmt: number) => (fmt === 3 ? 0 : fmt === 2 ? 1 : 1);
 
   const sorted = [...creatives].sort((a, b) => {
@@ -373,74 +389,65 @@ export async function fetchTransparencyAdsForCompetitor(options: {
     return formatPriority(fa) - formatPriority(fb);
   });
 
-  const ads: TransparencySearchAd[] = [];
-  const maxAds = options.maxAds ?? 12;
+  const maxAds = options.maxAds ?? 6;
+  const candidates = sorted.filter((row) => {
+    const creativeId = String((row as Record<string, unknown>)['2'] ?? '');
+    return creativeId.startsWith('CR');
+  }).slice(0, maxAds);
 
-  for (const row of sorted) {
-    if (ads.length >= maxAds) break;
-    const c = row as Record<string, unknown>;
-    const creativeId = String(c['2'] ?? '');
-    if (!creativeId.startsWith('CR')) continue;
+  const decoded = await Promise.all(
+    candidates.map(async (row) => {
+      const c = row as Record<string, unknown>;
+      const creativeId = String(c['2'] ?? '');
+      const previewJs =
+        (c['3'] as Record<string, unknown> | undefined)?.['1'] &&
+        ((c['3'] as Record<string, unknown>)['1'] as Record<string, unknown>)['4'];
+      const previewImg =
+        (c['3'] as Record<string, unknown> | undefined)?.['3'] &&
+        ((c['3'] as Record<string, unknown>)['3'] as Record<string, unknown>)['2'];
 
-    const previewJs =
-      (c['3'] as Record<string, unknown> | undefined)?.['1'] &&
-      ((c['3'] as Record<string, unknown>)['1'] as Record<string, unknown>)['4'];
-    const previewImg =
-      (c['3'] as Record<string, unknown> | undefined)?.['3'] &&
-      ((c['3'] as Record<string, unknown>)['3'] as Record<string, unknown>)['2'];
+      let headlines: string[] = [];
+      let descriptions: string[] = [];
+      let finalUrl: string | undefined;
+      let format: TransparencySearchAd['format'] = 'unknown';
+      let previewImageUrl: string | undefined;
 
-    let headlines: string[] = [];
-    let descriptions: string[] = [];
-    let finalUrl: string | undefined;
-    let format: TransparencySearchAd['format'] = 'unknown';
-    let previewImageUrl: string | undefined;
-
-    if (typeof previewJs === 'string' && previewJs.includes('content.js')) {
-      try {
-        const decoded = await decodePreviewContentJs(previewJs);
-        headlines = decoded.headlines;
-        descriptions = decoded.descriptions;
-        finalUrl = decoded.finalUrl;
-        format = decoded.format;
-        previewImageUrl = decoded.previewImageUrl;
-      } catch {
-        /* continue */
+      if (typeof previewJs === 'string' && previewJs.includes('content.js')) {
+        try {
+          const decodedPreview = await decodePreviewContentJs(previewJs);
+          headlines = decodedPreview.headlines;
+          descriptions = decodedPreview.descriptions;
+          finalUrl = decodedPreview.finalUrl;
+          format = decodedPreview.format;
+          previewImageUrl = decodedPreview.previewImageUrl;
+        } catch {
+          /* continue */
+        }
       }
-    }
 
-    if (!headlines.length && !descriptions.length) {
-      const detail = await fetchCreativeDetail(advertiser.advertiserId, creativeId);
-      if (detail) {
-        headlines = detail.headlines;
-        descriptions = detail.descriptions;
-        finalUrl = detail.finalUrl;
-        format = 'text';
+      if (!headlines.length && !descriptions.length && typeof previewImg === 'string' && previewImg.includes('simgad')) {
+        const imgMatch = previewImg.match(/src=\\"([^"\\]+)\\"/) ?? previewImg.match(/src="([^"]+)"/);
+        previewImageUrl = imgMatch?.[1] ?? undefined;
+        format = 'image';
       }
-    }
 
-    if (!headlines.length && typeof previewImg === 'string' && previewImg.includes('simgad')) {
-      const imgMatch = previewImg.match(/src=\\"([^"\\]+)\\"/) ?? previewImg.match(/src="([^"]+)"/);
-      previewImageUrl = imgMatch?.[1] ?? undefined;
-      format = 'image';
-    }
+      if (!headlines.length && !descriptions.length && !previewImageUrl) return null;
 
-    if (!headlines.length && !descriptions.length && !previewImageUrl) continue;
+      return {
+        creativeId,
+        headlines: decodeHtmlEntitiesList(headlines),
+        descriptions: decodeHtmlEntitiesList(descriptions),
+        finalUrl: finalUrl ?? domainFromUrl(options.url),
+        displayUrl: finalUrl ?? domainFromUrl(options.url),
+        format,
+        previewImageUrl,
+        lastShown: timestampToDate(c['7'] as { 1?: string; 2?: number }),
+        creativeUrl: creativeTransparencyUrl(advertiser.advertiserId, creativeId, options.country),
+      } satisfies TransparencySearchAd;
+    })
+  );
 
-    ads.push({
-      creativeId,
-      headlines: decodeHtmlEntitiesList(headlines),
-      descriptions: decodeHtmlEntitiesList(descriptions),
-      finalUrl: finalUrl ?? domainFromUrl(options.url),
-      displayUrl: finalUrl ?? domainFromUrl(options.url),
-      format,
-      previewImageUrl,
-      lastShown: timestampToDate(c['7'] as { 1?: string; 2?: number }),
-      creativeUrl: creativeTransparencyUrl(advertiser.advertiserId, creativeId, options.country),
-    });
-
-    await sleep(250);
-  }
-
+  const ads = decoded.filter((ad): ad is TransparencySearchAd => Boolean(ad));
   if (!ads.length) return null;
 
   return { advertiser, ads, source: 'transparency_center' };
@@ -472,8 +479,13 @@ export async function fetchExactTransparencyAdForCompetitor(options: {
   name: string;
   url: string;
   country?: string;
+  advertiserId?: string;
 }): Promise<{ advertiser: TransparencyAdvertiser; exactAd: TransparencySearchAd; allAds: TransparencySearchAd[] } | null> {
-  const bundle = await fetchTransparencyAdsForCompetitor({ ...options, maxAds: 20 });
+  const bundle = await fetchTransparencyAdsForCompetitor({
+    ...options,
+    maxAds: 6,
+    maxPages: 2,
+  });
   if (!bundle?.ads.length) return null;
   const exactAd = pickExactTransparencyAd(bundle.ads);
   if (!exactAd) return null;
@@ -517,4 +529,45 @@ export function mergeTransparencyAdsToRsa(ads: TransparencySearchAd[]): {
     descriptions: descriptions.slice(0, 4),
     ctas: ctas.slice(0, 6),
   };
+}
+
+/** Keyword search on Google Ads Transparency Center when SociaVault is unavailable. */
+export async function discoverTransparencyAdvertisersByQueries(
+  queries: string[],
+  country?: string,
+  maxCount = 6
+): Promise<TransparencyAdvertiser[]> {
+  const out: TransparencyAdvertiser[] = [];
+  const seen = new Set<string>();
+
+  for (const raw of queries) {
+    if (out.length >= maxCount) break;
+    const query = raw.trim();
+    if (query.length < 3) continue;
+
+    try {
+      const candidates = await searchAdvertiserSuggestions(query);
+      for (const c of candidates) {
+        if (out.length >= maxCount) break;
+        if (seen.has(c.advertiserId)) continue;
+        if (country && c.country && c.country !== country) continue;
+        seen.add(c.advertiserId);
+        out.push({
+          advertiserId: c.advertiserId,
+          name: c.name,
+          country: c.country,
+          adCount: c.adCount,
+          transparencyUrl: `https://adstransparency.google.com/advertiser/${c.advertiserId}?region=${country ?? 'anywhere'}`,
+        });
+      }
+    } catch (err) {
+      console.warn(
+        `[Transparency] advertiser search failed for "${query}":`,
+        err instanceof Error ? err.message : err
+      );
+    }
+    await sleep(350);
+  }
+
+  return out;
 }

@@ -4,11 +4,28 @@ import type { OptimizeAdRequest, OptimizeAdResult } from './aiOptimization.servi
 
 export type OptimizeAdJobStatus = 'processing' | 'completed' | 'failed';
 
+export interface OptimizeAdJobPartial {
+  progress: number;
+  stage: string;
+  originalAd?: OptimizeAdResult['originalAd'];
+  competitorAnalysis?: OptimizeAdResult['competitorAnalysis'];
+  optimized?: OptimizeAdResult['optimized'];
+  optimizedVariations?: OptimizeAdResult['optimizedVariations'];
+  intelligenceSummary?: OptimizeAdResult['intelligenceSummary'];
+  analysisSources?: OptimizeAdResult['analysisSources'];
+  campaignPerformance?: OptimizeAdResult['campaignPerformance'];
+  auditHealthScore?: OptimizeAdResult['auditHealthScore'];
+  scenario?: OptimizeAdResult['scenario'];
+  dataSource?: OptimizeAdResult['dataSource'];
+  finding?: OptimizeAdResult['finding'];
+}
+
 export interface OptimizeAdJob {
   id: string;
   userId: string;
   status: OptimizeAdJobStatus;
   result?: OptimizeAdResult;
+  partial?: OptimizeAdJobPartial;
   error?: string;
   createdAt: number;
   updatedAt: number;
@@ -27,11 +44,35 @@ function toMemoryJob(row: {
   createdAt: Date;
   updatedAt: Date;
 }): OptimizeAdJob {
+  const result = row.result as OptimizeAdResult | (OptimizeAdJobPartial & { __partial?: boolean }) | null;
+  const isPartial =
+    result != null &&
+    typeof result === 'object' &&
+    '__partial' in (result as object) &&
+    (result as { __partial?: boolean }).__partial === true;
+
   return {
     id: row.id,
     userId: row.userId,
     status: row.status as OptimizeAdJobStatus,
-    result: (row.result as OptimizeAdResult | null) ?? undefined,
+    result: !isPartial ? ((result as OptimizeAdResult | null) ?? undefined) : undefined,
+    partial: isPartial
+      ? {
+          progress: Number((result as OptimizeAdJobPartial).progress) || 0,
+          stage: String((result as OptimizeAdJobPartial).stage || 'Working…'),
+          originalAd: (result as OptimizeAdJobPartial).originalAd,
+          competitorAnalysis: (result as OptimizeAdJobPartial).competitorAnalysis,
+          optimized: (result as OptimizeAdJobPartial).optimized,
+          optimizedVariations: (result as OptimizeAdJobPartial).optimizedVariations,
+          intelligenceSummary: (result as OptimizeAdJobPartial).intelligenceSummary,
+          analysisSources: (result as OptimizeAdJobPartial).analysisSources,
+          campaignPerformance: (result as OptimizeAdJobPartial).campaignPerformance,
+          auditHealthScore: (result as OptimizeAdJobPartial).auditHealthScore,
+          scenario: (result as OptimizeAdJobPartial).scenario,
+          dataSource: (result as OptimizeAdJobPartial).dataSource,
+          finding: (result as OptimizeAdJobPartial).finding,
+        }
+      : undefined,
     error: row.error ?? undefined,
     createdAt: row.createdAt.getTime(),
     updatedAt: row.updatedAt.getTime(),
@@ -82,12 +123,23 @@ export async function createOptimizeAdJob(userId: string): Promise<OptimizeAdJob
 
 export async function getOptimizeAdJob(jobId: string): Promise<OptimizeAdJob | undefined> {
   const cached = memoryJobs.get(jobId);
-  if (cached) return cached;
+  // Prefer memory while processing so live partials show immediately on same instance
+  if (cached && (cached.status === 'processing' || cached.partial || cached.result)) {
+    return cached;
+  }
 
   try {
     const row = await prisma.optimizeAdJob.findUnique({ where: { id: jobId } });
-    if (!row) return undefined;
+    if (!row) return cached;
     const job = toMemoryJob(row);
+    if (cached?.partial && job.status === 'processing') {
+      job.partial = {
+        ...job.partial,
+        ...cached.partial,
+        progress: Math.max(job.partial?.progress ?? 0, cached.partial.progress),
+        stage: cached.partial.stage || job.partial?.stage || 'Working…',
+      };
+    }
     memoryJobs.set(job.id, job);
     return job;
   } catch (err) {
@@ -99,11 +151,53 @@ export async function getOptimizeAdJob(jobId: string): Promise<OptimizeAdJob | u
   }
 }
 
+export async function updateOptimizeAdJobProgress(
+  jobId: string,
+  update: OptimizeAdJobPartial
+): Promise<void> {
+  const existing = memoryJobs.get(jobId);
+  const nextPartial: OptimizeAdJobPartial = {
+    ...(existing?.partial ?? { progress: 0, stage: 'Starting…' }),
+    ...update,
+    progress: Math.max(0, Math.min(100, Math.round(update.progress))),
+    stage: update.stage,
+  };
+
+  if (existing) {
+    existing.status = 'processing';
+    existing.partial = nextPartial;
+    existing.updatedAt = Date.now();
+  } else {
+    memoryJobs.set(jobId, {
+      id: jobId,
+      userId: '',
+      status: 'processing',
+      partial: nextPartial,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+  }
+
+  try {
+    await prisma.optimizeAdJob.update({
+      where: { id: jobId },
+      data: {
+        status: 'processing',
+        result: { __partial: true, ...nextPartial } as object,
+        updatedAt: new Date(),
+      },
+    });
+  } catch {
+    // Memory progress is enough for same-process polling
+  }
+}
+
 export async function completeOptimizeAdJob(jobId: string, result: OptimizeAdResult): Promise<void> {
   const existing = memoryJobs.get(jobId);
   if (existing) {
     existing.status = 'completed';
     existing.result = result;
+    existing.partial = undefined;
     existing.updatedAt = Date.now();
   } else {
     memoryJobs.set(jobId, {
@@ -127,7 +221,6 @@ export async function completeOptimizeAdJob(jobId: string, result: OptimizeAdRes
       },
     });
   } catch (err) {
-    // Table may be missing locally — memory job is already completed for same-process polling
     console.warn(
       '[optimize-ad-jobs] DB complete skipped (memory job is updated):',
       err instanceof Error ? err.message.split('\n')[0] : err

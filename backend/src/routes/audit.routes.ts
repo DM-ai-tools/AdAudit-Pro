@@ -226,12 +226,16 @@ router.get('/pdf/:id', async (req, res) => {
     const { generatePdf } = await import('../services/pdf.service.js');
     const { buffer, isPdf } = await generatePdf(audit);
     const safeName = audit.accountName.replace(/[^\w\s-]/g, '').replace(/\s+/g, '-');
-    const inline = req.query.inline === '1' || req.query.view === 'inline' || !isPdf;
+    const forceDownload = req.query.download === '1';
+    const inline =
+      !forceDownload &&
+      (req.query.inline === '1' || req.query.view === 'inline' || !isPdf);
     res.setHeader('Content-Type', isPdf ? 'application/pdf' : 'text/html; charset=utf-8');
     res.setHeader(
       'Content-Disposition',
       `${inline ? 'inline' : 'attachment'}; filename="adaudit-${safeName}.${isPdf ? 'pdf' : 'html'}"`
     );
+    res.setHeader('Cache-Control', 'no-store');
     res.send(buffer);
   } catch (err) {
     console.error('PDF generation failed:', err);

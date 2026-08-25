@@ -32,12 +32,12 @@ export function CompetitorAdActivityMetrics(props: {
   return (
     <div className={compact ? 'space-y-1.5' : 'space-y-2'}>
       <p className="text-[10px] uppercase tracking-wider text-purple-300/90 font-medium">
-        SociaVault ad activity
+        Ad activity
       </p>
       {!hasLibraryData ? (
         <div className="rounded-lg border border-border bg-white/5 px-2.5 py-2">
           <p className="text-muted text-[11px] leading-relaxed">
-            No Google Ads Transparency library data found for this competitor yet. Metrics appear once SociaVault returns creatives.
+            No public ad-library data found for this competitor yet. Metrics appear once live creatives are returned.
           </p>
         </div>
       ) : (
@@ -69,7 +69,7 @@ export function CompetitorAdActivityMetrics(props: {
             {total} creative{total === 1 ? '' : 's'}
           </p>
           <p className="text-[10px] text-muted leading-snug mt-0.5">
-            All creatives in the Google Ads Transparency library
+            All creatives in the public ad library
           </p>
         </div>
       </div>

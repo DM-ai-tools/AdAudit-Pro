@@ -21,6 +21,7 @@ import {
   fetchSociaVaultAdvertiserLibrary,
   isSociaVaultConfigured,
 } from './sociavault-google-ad-library.service.js';
+import { getCachedCompetitorDiscovery } from './competitor-discovery-cache.service.js';
 import { withTimeoutFallback } from '../utils/withTimeout.js';
 import { analyzeWebsite } from './website-intelligence.service.js';
 
@@ -538,24 +539,74 @@ export async function buildCompetitorAdLibraryForAudit(
     ? await withTimeoutFallback(analyzeWebsite(websiteUrl), 8_000, null, 'website-for-library')
     : null;
 
-  const intel = await analyzeCompetitors({
-    businessName: audit.accountName,
-    websiteUrl,
-    monthlySpend: audit.monthlySpend,
-    productsServices: websiteIntel?.services ?? [],
-    websiteIntel,
-    lightweight: false,
-  });
+  const services = (websiteIntel?.services ?? []).filter(Boolean).slice(0, 3);
+  let intel: CompetitorIntelligence | null = null;
+  for (const service of services.length ? services : ['core services']) {
+    const hit = await getCachedCompetitorDiscovery({
+      websiteUrl,
+      businessName: audit.accountName,
+      primaryService: service,
+      discoverySource: 'sociavault',
+    });
+    if (hit && ((hit.competitors?.length ?? 0) > 0 || (hit.adGallery?.length ?? 0) > 0)) {
+      console.log(`[CompetitorAdLibrary] using stored competitors for ${service} — skip live SociaVault`);
+      intel = hit;
+      break;
+    }
+  }
 
-  // Real SociaVault-backed ads only
-  const realGallery = (intel.adGallery ?? []).filter(
+  if (!intel) {
+    intel = await analyzeCompetitors({
+      businessName: audit.accountName,
+      websiteUrl,
+      monthlySpend: audit.monthlySpend,
+      productsServices: services.length ? services : undefined,
+      websiteIntel,
+      lightweight: true,
+      skipSocialPresence: true,
+    });
+  }
+
+  // Real SociaVault-backed ads only — fall back to selected competitor profiles
+  let realGallery = (intel.adGallery ?? []).filter(
     (g) =>
       (g.totalAdCount ?? 0) > 0 ||
       g.adSource === 'sociavault' ||
-      g.adSource === 'transparency_center'
+      g.adSource === 'transparency_center' ||
+      (g.headlines?.length ?? 0) > 0
   );
+  if (!realGallery.length && (intel.competitors?.length ?? 0) > 0) {
+    console.log(
+      `[CompetitorAdLibrary] gallery empty — seeding ${intel.competitors.length} selected rival(s) into the library UI`
+    );
+    realGallery = intel.competitors.map((c) => ({
+      name: c.name,
+      url: c.url,
+      displayUrl: c.url,
+      headlines: c.headlines ?? [],
+      descriptions: c.descriptions ?? [],
+      offers: c.offers ?? [],
+      ctas: c.ctas ?? [],
+      trustSignals: c.trustSignals ?? [],
+      advertiserName: c.name,
+      advertiserId: c.advertiserId,
+      transparencyUrl: c.transparencyUrl,
+      adSource: 'sociavault' as const,
+      totalAdCount: c.totalAdCount ?? 0,
+      activeAdCount: c.activeAdCount ?? 0,
+      adDurationDays: c.adDurationDays ?? 0,
+      brandReview: c.brandReview,
+      confidenceScore: c.confidenceScore,
+    }));
+  }
 
-  const formatFlags = await enrichFormatFlags(intel.competitors);
+  // Do not call company-ads again just for format flags — reuse gallery format.
+  const formatFlags = new Map<string, ReturnType<typeof summarizeCreativeFormats>>();
+  for (const g of realGallery) {
+    const key = (g.advertiserName || g.name).toLowerCase();
+    if (!g.format || formatFlags.has(key)) continue;
+    formatFlags.set(key, summarizeCreativeFormats([g.format]));
+  }
 
   const ads: CompetitorLibraryAd[] = realGallery.map((g) => {
     const profile = intel.competitors.find(

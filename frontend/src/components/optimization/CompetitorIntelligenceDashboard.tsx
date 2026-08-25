@@ -2,6 +2,7 @@ import { useMemo, useState, type ReactNode } from 'react';
 import { ExternalLink } from 'lucide-react';
 import clsx from 'clsx';
 import { CompetitorBrandReviewBlock } from './CompetitorBrandMetrics';
+import { competitorIdentityKey } from '../../utils/competitorGalleryDisplay';
 import type {
   CompetitorIntelligenceData,
   CompetitorBrandAuthority,
@@ -62,23 +63,18 @@ function hostFromUrl(url?: string): string {
   }
 }
 
-function advertiserIdFromUrl(url?: string): string | undefined {
-  if (!url) return undefined;
-  const m = url.match(/advertiser\/(AR[\w-]+)/i);
-  return m?.[1];
-}
-
-/** Prefer advertiser id / name so Transparency-host rivals don't collapse into one card. */
 function dashboardCompetitorKey(opts: {
   name: string;
   url?: string;
   advertiserId?: string;
 }): string {
-  const adv = opts.advertiserId?.trim() || advertiserIdFromUrl(opts.url);
-  if (adv) return `adv:${adv.toLowerCase()}`;
-  const host = hostFromUrl(opts.url).toLowerCase();
-  if (host && !/adstransparency\.google\.com$/i.test(host)) return `host:${host}`;
-  return `name:${opts.name.trim().toLowerCase()}`;
+  return competitorIdentityKey({
+    name: opts.name,
+    advertiserName: opts.name,
+    url: opts.url,
+    advertiserId: opts.advertiserId,
+    transparencyUrl: opts.url,
+  });
 }
 
 function preferLibraryStat(a?: number, b?: number): number {
@@ -492,7 +488,7 @@ function CompetitorCardShell({
               className="text-teal text-[11px] hover:underline inline-flex items-center gap-1 mt-0.5 break-all"
             >
               {/adstransparency\.google\.com/i.test(card.url)
-                ? 'Google Ads Transparency profile'
+                ? 'Public ad profile'
                 : hostFromUrl(card.url) || card.url}
               <ExternalLink size={11} className="shrink-0" />
             </a>
@@ -513,7 +509,7 @@ function CompetitorCardShell({
             </p>
           </div>
           {card.influencePercent > 0 && (
-            <p className="text-[10px] text-purple-300">{card.influencePercent}% Claude influence</p>
+            <p className="text-[10px] text-purple-300">{card.influencePercent}% AI influence</p>
           )}
         </div>
       </div>
@@ -533,7 +529,7 @@ function OverviewTab({ card }: { card: DashboardCard }) {
           value={formatScore(card.aiLearningValue ?? card.aiLearning?.aiLearningValue)}
           accent
         />
-        <MetricTile label="Claude Influence" value={`${card.influencePercent}%`} accent />
+        <MetricTile label="AI Influence" value={`${card.influencePercent}%`} accent />
         <MetricTile
           label="Brand Authority"
           value={formatScore(card.brandAuthorityScore ?? ba?.brandAuthorityScore)}
@@ -721,7 +717,7 @@ function SocialTab({ card }: { card: DashboardCard }) {
       <p className="text-[10px] uppercase tracking-wider text-purple-300">Social Media Presence</p>
       {s?.source === 'sociavault_social_profiles' && hasFollowers ? (
         <p className="text-[11px] text-emerald-300/90">
-          Live follower metrics via SociaVault (profile URLs from website crawl + Google discovery)
+          Live follower metrics from public social profiles
         </p>
       ) : hasUrls && !hasFollowers ? (
         <p className="text-[11px] text-amber-300/90">
@@ -786,7 +782,7 @@ function MarketTab({ card }: { card: DashboardCard }) {
       <p className="text-[10px] uppercase tracking-wider text-purple-300">Market Authority</p>
       {m?.source === 'unavailable' && (
         <p className="text-[11px] text-muted">
-          Domain / traffic metrics are not available via SociaVault. Authority Score is derived from
+          Domain and traffic metrics are not available for this competitor. Authority Score is derived from
           advertising strength, brand authority, and trust.
         </p>
       )}
@@ -877,7 +873,7 @@ function LearningTab({ card }: { card: DashboardCard }) {
           accent
         />
         <MetricTile
-          label="Claude Influence"
+          label="AI Influence"
           value={`${a?.influencePercent ?? card.influencePercent}%`}
           accent
         />
@@ -894,8 +890,8 @@ function LearningTab({ card }: { card: DashboardCard }) {
         </div>
       )}
       <p className="text-[11px] text-muted leading-relaxed">
-        Claude weights this competitor at {card.influencePercent}% when generating optimized ads —
-        learning from advertising longevity, trust, and brand strength rather than copying creatives
+        This competitor carries {card.influencePercent}% weight when generating optimized ads —
+        based on advertising longevity, trust, and brand strength rather than copying creatives
         verbatim.
       </p>
     </div>
@@ -947,7 +943,7 @@ export function CompetitorIntelligenceDashboard({
       <div className="bg-panel border border-teal/25 rounded-xl p-4 space-y-2">
         <p className="text-white text-sm font-semibold">Competitor Intelligence Engine</p>
         <p className="text-muted text-xs">
-          Competitor intelligence will appear after Make It Better finishes discovering SociaVault rivals.
+          Competitor intelligence will appear after Make It Better finishes discovering market rivals.
         </p>
       </div>
     );
@@ -958,7 +954,7 @@ export function CompetitorIntelligenceDashboard({
       <div className="bg-panel border border-teal/25 rounded-xl p-4 space-y-2">
         <p className="text-white text-sm font-semibold">Competitor Intelligence Engine</p>
         <p className="text-muted text-xs">
-          No ranked competitor cards yet for this run. Gallery-backed rivals will populate this engine when SociaVault returns ad activity.
+          No ranked competitor cards yet for this run. Library-backed rivals will appear here once ad activity is available.
         </p>
       </div>
     );
@@ -970,7 +966,7 @@ export function CompetitorIntelligenceDashboard({
         <div>
           <p className="text-white text-sm font-semibold">Competitor Intelligence Engine</p>
           <p className="text-muted text-[11px] mt-0.5">
-            Brand Authority & AI Learning — Claude learns from the strongest market rivals
+            Brand authority and AI learning from the strongest market rivals
           </p>
         </div>
         <label className="text-[10px] text-muted uppercase tracking-wider flex flex-col gap-1">
@@ -1013,10 +1009,17 @@ export function CompetitorIntelligenceDashboard({
         </p>
         {cards.length < 4 && (
           <p className="text-amber-300/90 text-[10px]">
-            Fewer than 4 SociaVault-proven advertisers found for this market
+            {competitorAnalysis?.discoveryWarning ??
+              'Fewer than 4 service-matched advertisers found for this market'}
           </p>
         )}
       </div>
+
+      {competitorAnalysis?.discoveryWarning && (
+        <p className="text-amber-300/90 text-[11px] bg-amber-500/10 border border-amber-500/25 rounded-lg px-3 py-2">
+          {competitorAnalysis.discoveryWarning}
+        </p>
+      )}
 
       <div className="grid sm:grid-cols-2 gap-3">
         {cards.map((c) => (
@@ -1038,7 +1041,7 @@ export function CompetitorIntelligenceDashboard({
       {tab === 'learning' && weights?.length ? (
         <div className="rounded-xl border border-purple-400/20 bg-navy/40 p-3 space-y-2">
           <p className="text-purple-300 text-[10px] uppercase tracking-wider font-medium">
-            Claude Competitor Weighting
+            Competitor weighting
           </p>
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
             {weights.map((w, i) => (
@@ -1055,7 +1058,7 @@ export function CompetitorIntelligenceDashboard({
                   <span className="text-white">{w.aiLearningValue ?? w.score}/100</span>
                 </p>
                 <p className="text-[11px] text-teal font-medium">
-                  Claude Influence: {w.influencePercent}%
+                  AI Influence: {w.influencePercent}%
                 </p>
               </div>
             ))}
@@ -1066,7 +1069,7 @@ export function CompetitorIntelligenceDashboard({
       {patterns && (tab === 'overview' || tab === 'offers') && (
         <div className="rounded-xl border border-purple-400/20 bg-navy/40 p-3 space-y-2">
           <p className="text-purple-300 text-[10px] uppercase tracking-wider font-medium">
-            Winning patterns from SociaVault ads
+            Winning patterns from competitor ads
           </p>
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2 text-[11px]">
             {[

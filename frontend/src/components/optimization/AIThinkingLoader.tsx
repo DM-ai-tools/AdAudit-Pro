@@ -1,59 +1,59 @@
-import { useEffect, useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { Sparkles } from 'lucide-react';
-import { THINKING_STEPS } from './utils';
 
-export function AIThinkingLoader() {
-  const [stepIndex, setStepIndex] = useState(0);
+interface AIThinkingLoaderProps {
+  progress?: number;
+  stage?: string;
+  compact?: boolean;
+}
 
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setStepIndex((i) => (i + 1) % THINKING_STEPS.length);
-    }, 2200);
-    return () => clearInterval(interval);
-  }, []);
+export function AIThinkingLoader({
+  progress = 0,
+  stage = 'Analyzing competitor ads and your current copy…',
+  compact = false,
+}: AIThinkingLoaderProps) {
+  const pct = Math.max(0, Math.min(100, Math.round(progress)));
 
   return (
-    <div className="flex flex-col items-center justify-center py-20 px-8">
-      <div className="relative mb-8">
-        <motion.div
-          className="w-24 h-24 rounded-full bg-gradient-to-br from-orange/30 via-purple-500/20 to-teal/30 blur-xl absolute inset-0"
-          animate={{ scale: [1, 1.2, 1], opacity: [0.5, 0.8, 0.5] }}
-          transition={{ duration: 2, repeat: Infinity }}
-        />
-        <motion.div
-          className="relative w-24 h-24 rounded-full border border-orange/40 flex items-center justify-center bg-navy/80"
-          animate={{ rotate: 360 }}
-          transition={{ duration: 8, repeat: Infinity, ease: 'linear' }}
-        >
-          <Sparkles className="text-orange w-10 h-10" />
-        </motion.div>
-      </div>
-
-      <AnimatePresence mode="wait">
-        <motion.p
-          key={stepIndex}
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -8 }}
-          className="text-white font-medium text-lg mb-2"
-        >
-          {THINKING_STEPS[stepIndex]}
-        </motion.p>
-      </AnimatePresence>
-
-      <p className="text-muted text-sm text-center max-w-sm">
-        Claude is analyzing your ad performance, audit findings, and conversion goals. This usually takes 1–2 minutes.
-      </p>
-
-      <div className="flex gap-1.5 mt-6">
-        {THINKING_STEPS.map((_, i) => (
+    <div className={compact ? 'py-4 px-4' : 'flex flex-col items-center justify-center py-12 px-8'}>
+      {!compact && (
+        <div className="relative mb-6">
           <motion.div
-            key={i}
-            className="w-2 h-2 rounded-full bg-orange/60"
-            animate={{ opacity: i === stepIndex ? 1 : 0.3, scale: i === stepIndex ? 1.2 : 1 }}
+            className="w-20 h-20 rounded-full bg-gradient-to-br from-orange/30 via-purple-500/20 to-teal/30 blur-xl absolute inset-0"
+            animate={{ scale: [1, 1.2, 1], opacity: [0.5, 0.8, 0.5] }}
+            transition={{ duration: 2, repeat: Infinity }}
           />
-        ))}
+          <motion.div
+            className="relative w-20 h-20 rounded-full border border-orange/40 flex items-center justify-center bg-navy/80"
+            animate={{ rotate: 360 }}
+            transition={{ duration: 8, repeat: Infinity, ease: 'linear' }}
+          >
+            <Sparkles className="text-orange w-8 h-8" />
+          </motion.div>
+        </div>
+      )}
+
+      <div className={compact ? 'w-full' : 'w-full max-w-md'}>
+        <div className="flex items-center justify-between gap-3 mb-2">
+          <p className="text-white font-medium text-sm flex items-center gap-2 min-w-0">
+            {compact && <Sparkles className="text-orange shrink-0" size={14} />}
+            <span className="truncate">{stage}</span>
+          </p>
+          <span className="text-orange text-xs font-semibold shrink-0">{pct}%</span>
+        </div>
+        <div className="h-2 rounded-full bg-navy border border-border overflow-hidden">
+          <motion.div
+            className="h-full rounded-full bg-gradient-to-r from-orange via-purple-400 to-teal"
+            initial={false}
+            animate={{ width: `${pct}%` }}
+            transition={{ duration: 0.4 }}
+          />
+        </div>
+        {!compact && (
+          <p className="text-muted text-xs text-center mt-3">
+            Live results appear below as each section finishes — competitors first, then the new AI Optimized Ad.
+          </p>
+        )}
       </div>
     </div>
   );

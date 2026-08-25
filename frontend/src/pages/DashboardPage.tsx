@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import {
   Share2, Download, ArrowLeft, Link2, ChevronRight,
   AlertTriangle, TrendingUp, Target, Heart, Megaphone,
-  Search, Globe, Users, FileText, BarChart3, MapPin, Eye, Sparkles, History, Library,
+  Search, Globe, Users, FileText, BarChart3, MapPin, Eye, Sparkles, History, Library, Pencil, ScrollText, Lightbulb, Wallet,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { Logo } from '../components/layout/Logo';
@@ -31,9 +31,13 @@ import type { Finding } from '../types';
 import type { GoogleAdsCampaign } from '../types/connect';
 import { AIOptimizationModal, MakeItBetterButton, isOptimizableFinding } from '../components/optimization';
 import { CampaignAuditsSection } from '../components/dashboard/CampaignAuditsSection';
+import { CampaignRecommendationsSection } from '../components/dashboard/CampaignRecommendationsSection';
+import { BudgetIntelligenceSection } from '../components/dashboard/BudgetIntelligenceSection';
 import { AccountPerformanceStats } from '../components/dashboard/AccountPerformanceStats';
 import { PreviousAuditsList } from '../components/dashboard/PreviousAuditsList';
 import { CompetitorAdLibrarySection } from '../components/dashboard/CompetitorAdLibrarySection';
+import { PublishedAdsHistorySection } from '../components/dashboard/PublishedAdsHistorySection';
+import { EditAdsSection } from '../components/dashboard/EditAdsSection';
 import { usePreviousAudits } from '../hooks/usePreviousAudits';
 import { ClaudeText } from '../components/ui/ClaudeText';
 import { useAuthStore } from '../store';
@@ -67,7 +71,11 @@ const baseNavItems: Array<{
 }> = [
   { id: 'executive', label: 'Executive Summary', icon: FileText, sectionId: 'executive' },
   { id: 'previous-audits', label: 'Previous Audits', icon: History, sectionId: 'previous-audits' },
+  { id: 'posted-ads-history', label: 'Posted Ads History', icon: ScrollText, sectionId: 'posted-ads-history', accountOnly: true },
+  { id: 'edit-ads', label: 'Edit Ads', icon: Pencil, sectionId: 'edit-ads', accountOnly: true },
   { id: 'campaigns', label: 'Your Campaigns', icon: Megaphone, sectionId: 'campaign-audits', accountOnly: true },
+  { id: 'budget-intel', label: 'Budget Intelligence', icon: Wallet, sectionId: 'budget-intelligence', accountOnly: true },
+  { id: 'campaign-recs', label: 'Campaign Recs', icon: Lightbulb, sectionId: 'campaign-recommendations' },
   { id: 'findings', label: 'All Findings', icon: AlertTriangle, badge: true, sectionId: 'findings' },
   { id: 'roadmap', label: 'Growth Roadmap', icon: TrendingUp, sub: '30/60/90d', sectionId: 'roadmap' },
   { id: 'health', label: 'Account Health', icon: Heart, sectionId: 'health' },
@@ -113,6 +121,16 @@ export default function DashboardPage() {
   const [optimizeCampaignId, setOptimizeCampaignId] = useState<string | undefined>();
   const [optimizeInitialCampaign, setOptimizeInitialCampaign] = useState<GoogleAdsCampaign | null>(null);
   const [optimizeInitialAd, setOptimizeInitialAd] = useState<import('../types/connect').GoogleAdsCampaignAd | null>(null);
+  const [optimizeCompetitorUrls, setOptimizeCompetitorUrls] = useState<string[] | undefined>();
+  const [optimizeCompetitorNames, setOptimizeCompetitorNames] = useState<string[] | undefined>();
+  const [optimizeCompetitorEntries, setOptimizeCompetitorEntries] = useState<
+    Array<{ name: string; url?: string }> | undefined
+  >();
+  const [optimizeCompetitorMode, setOptimizeCompetitorMode] = useState<
+    'uploaded_only' | 'auto' | 'both' | undefined
+  >();
+  const [optimizeRequestedService, setOptimizeRequestedService] = useState<string | undefined>();
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
   const [optimizeSnapshot, setOptimizeSnapshot] = useState<{
     auditId: string;
     auditFindings: Finding[];
@@ -133,7 +151,14 @@ export default function DashboardPage() {
   const openOptimization = useCallback((
     finding: Finding,
     campaign?: GoogleAdsCampaign,
-    ad?: import('../types/connect').GoogleAdsCampaignAd | null
+    ad?: import('../types/connect').GoogleAdsCampaignAd | null,
+    competitors?: {
+      competitorUrls?: string[];
+      competitorNames?: string[];
+      competitorEntries?: Array<{ name: string; url?: string }>;
+      mode?: 'uploaded_only' | 'auto' | 'both';
+    } | null,
+    requestedService?: string
   ) => {
     if (!auditId || !audit) return;
     const snapshotFindings = (audit.findings ?? []).filter((f) => !isFailureFinding(f));
@@ -150,6 +175,25 @@ export default function DashboardPage() {
     setOptimizeCampaignId(campaign?.id);
     setOptimizeInitialCampaign(campaign ?? null);
     setOptimizeInitialAd(ad ?? null);
+    setOptimizeRequestedService(ad ? requestedService?.trim() || undefined : undefined);
+    if (!ad) {
+      setOptimizeCompetitorUrls(undefined);
+      setOptimizeCompetitorNames(undefined);
+      setOptimizeCompetitorEntries(undefined);
+      setOptimizeCompetitorMode(undefined);
+    }
+    // No upload → clear document rivals so Make It Better uses auto-discovery (previous process).
+    const entries = (competitors?.competitorEntries ?? [])
+      .map((e) => ({ name: e.name?.trim() ?? '', url: e.url?.trim() || undefined }))
+      .filter((e) => e.name || e.url);
+    const urls = (competitors?.competitorUrls ?? []).filter(Boolean);
+    const names = (competitors?.competitorNames ?? []).filter(Boolean);
+    const mode = competitors?.mode ?? (entries.length || urls.length || names.length ? 'both' : 'auto');
+    const hasUpload = mode !== 'auto' && (entries.length > 0 || urls.length > 0 || names.length > 0);
+    setOptimizeCompetitorUrls(hasUpload ? urls : undefined);
+    setOptimizeCompetitorNames(hasUpload ? names : undefined);
+    setOptimizeCompetitorEntries(hasUpload ? (entries.length ? entries : undefined) : undefined);
+    setOptimizeCompetitorMode(mode);
     setOptimizeFinding(finding);
   }, [auditId, audit, authUser?.id]);
 
@@ -158,6 +202,11 @@ export default function DashboardPage() {
     setOptimizeCampaignId(undefined);
     setOptimizeInitialCampaign(null);
     setOptimizeInitialAd(null);
+    setOptimizeCompetitorUrls(undefined);
+    setOptimizeCompetitorNames(undefined);
+    setOptimizeCompetitorEntries(undefined);
+    setOptimizeCompetitorMode(undefined);
+    setOptimizeRequestedService(undefined);
     setOptimizeSnapshot(null);
   }, []);
 
@@ -255,9 +304,14 @@ export default function DashboardPage() {
     setPdfError(null);
     setPdfLoading(true);
     try {
-      await auditApi.downloadPdf(auditId, audit?.accountName);
+      const result = await auditApi.downloadPdf(auditId, audit?.accountName);
+      if (result && !result.isPdf) {
+        setPdfError(
+          'Report downloaded as HTML. Use Print / Save as PDF in the opened tab if you need a PDF file.'
+        );
+      }
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Could not open audit report';
+      const message = err instanceof Error ? err.message : 'Could not download audit report';
       setPdfError(message);
       try {
         window.open(`${auditApi.pdfUrl(auditId)}?inline=1`, '_blank', 'noopener,noreferrer');
@@ -269,7 +323,9 @@ export default function DashboardPage() {
     }
   };
 
-  if (loading && !audit && !optimizeSnapshot) {
+  const makeItBetterOpen = !!optimizeFinding && !!optimizeSnapshot;
+
+  if (loading && !audit && !makeItBetterOpen) {
     return (
       <div className="min-h-screen bg-bg flex items-center justify-center">
         <div className="text-center space-y-3">
@@ -280,7 +336,7 @@ export default function DashboardPage() {
     );
   }
 
-  if (!audit && !optimizeSnapshot) {
+  if (!audit && !makeItBetterOpen) {
     return (
       <div className="min-h-screen bg-bg flex items-center justify-center p-8">
         <div className="text-center max-w-md space-y-4">
@@ -292,30 +348,34 @@ export default function DashboardPage() {
     );
   }
 
+  const optimizationModal =
+    makeItBetterOpen && optimizeSnapshot && optimizeFinding ? (
+      <AIOptimizationModal
+        open
+        onClose={closeOptimization}
+        auditId={optimizeSnapshot.auditId}
+        finding={optimizeFinding}
+        auditFindings={optimizeSnapshot.auditFindings}
+        accountName={optimizeSnapshot.accountName}
+        googleAdsCustomerId={optimizeSnapshot.googleAdsCustomerId}
+        websiteUrl={optimizeSnapshot.websiteUrl}
+        goal={optimizeSnapshot.goal}
+        monthlySpend={optimizeSnapshot.monthlySpend}
+        userId={optimizeSnapshot.userId}
+        initialCampaignId={optimizeCampaignId}
+        initialCampaign={optimizeInitialCampaign}
+        initialAd={optimizeInitialAd}
+        requestedService={optimizeRequestedService}
+        competitorUrls={optimizeCompetitorUrls}
+        competitorNames={optimizeCompetitorNames}
+        competitorEntries={optimizeCompetitorEntries}
+        competitorDiscoveryMode={optimizeCompetitorMode}
+        lockCampaignScope={!!optimizeInitialCampaign}
+      />
+    ) : null;
+
   if (!audit) {
-    return (
-      <>
-        {optimizeFinding && optimizeSnapshot && (
-          <AIOptimizationModal
-            open
-            onClose={closeOptimization}
-            auditId={optimizeSnapshot.auditId}
-            finding={optimizeFinding}
-            auditFindings={optimizeSnapshot.auditFindings}
-            accountName={optimizeSnapshot.accountName}
-            googleAdsCustomerId={optimizeSnapshot.googleAdsCustomerId}
-            websiteUrl={optimizeSnapshot.websiteUrl}
-            goal={optimizeSnapshot.goal}
-            monthlySpend={optimizeSnapshot.monthlySpend}
-            userId={optimizeSnapshot.userId}
-            initialCampaignId={optimizeCampaignId}
-            initialCampaign={optimizeInitialCampaign}
-            initialAd={optimizeInitialAd}
-            lockCampaignScope={!!optimizeInitialCampaign}
-          />
-        )}
-      </>
-    );
+    return <>{optimizationModal}</>;
   }
 
   const failureFindings = audit.findings.filter(isFailureFinding);
@@ -388,10 +448,10 @@ export default function DashboardPage() {
             <Link2 size={14} /> {shareCopied ? 'Link copied!' : 'Share report link'}
           </Button>
           <Button variant="secondary" size="sm" className="w-full" onClick={handleDownloadPdf} disabled={pdfLoading}>
-            <Download size={14} /> {pdfLoading ? 'Opening report...' : 'View PDF Report'}
+            <Download size={14} /> {pdfLoading ? 'Generating report…' : 'Download Report'}
           </Button>
           {pdfError && (
-            <p className="text-red-400 text-[10px]">{pdfError}</p>
+            <p className={`text-[10px] ${pdfError.startsWith('Report downloaded') ? 'text-teal' : 'text-red-400'}`}>{pdfError}</p>
           )}
           {shareUrl && (
             <p className="text-teal text-[10px] break-all">{shareUrl}</p>
@@ -416,7 +476,7 @@ export default function DashboardPage() {
                 )}
               </div>
               <p className="text-muted text-xs mt-1">
-                Generated {audit.completedAt ? new Date(audit.completedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'} • {audit.dataWindowDays}-day data window • Engine v{audit.engineVersion}
+                Generated {audit.completedAt ? new Date(audit.completedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'} • {audit.dataWindowDays}-day data window
               </p>
             </div>
             <div className="flex items-center gap-3">
@@ -439,7 +499,7 @@ export default function DashboardPage() {
           {backfilling && (
             <div className="bg-orange/10 border border-orange/30 rounded-xl p-4 text-sm text-orange flex items-center gap-3">
               <Sparkles size={18} className="shrink-0 animate-pulse" />
-              <span>{backfillProgress ?? 'Generating missing module findings with Claude…'}</span>
+              <span>{backfillProgress ?? 'Generating remaining module findings…'}</span>
             </div>
           )}
           {backfillError && (
@@ -449,8 +509,8 @@ export default function DashboardPage() {
           )}
           {failureFindings.length > 0 && (
             <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-sm text-red-300">
-              {failureFindings.length} module{failureFindings.length === 1 ? '' : 's'} could not complete Claude analysis.
-              Check Anthropic API keys in backend/.env and run a new audit.
+              {failureFindings.length} module{failureFindings.length === 1 ? '' : 's'} could not complete analysis.
+              Please re-run the audit if this persists.
             </div>
           )}
 
@@ -510,6 +570,22 @@ export default function DashboardPage() {
             />
           </section>
 
+          {audit.status === 'COMPLETED' && audit.googleAdsCustomerId && (
+            <>
+              <PublishedAdsHistorySection
+                key={`history-${historyRefreshKey}`}
+                googleAdsCustomerId={audit.googleAdsCustomerId}
+                dataWindowDays={audit.dataWindowDays}
+              />
+              <EditAdsSection
+                auditId={auditId!}
+                googleAdsCustomerId={audit.googleAdsCustomerId}
+                dataWindowDays={audit.dataWindowDays}
+                onPosted={() => setHistoryRefreshKey((k) => k + 1)}
+              />
+            </>
+          )}
+
           {audit.status === 'COMPLETED' && (
             <CampaignAuditsSection
               auditId={auditId!}
@@ -520,7 +596,43 @@ export default function DashboardPage() {
               campaignName={audit.campaignName}
               websiteUrl={audit.websiteUrl}
               onOptimizeCampaign={(finding, campaign) => openOptimization(finding, campaign)}
-              onOptimizeAd={(finding, campaign, ad) => openOptimization(finding, campaign, ad)}
+              onOptimizeAd={(finding, campaign, ad, competitors, requestedService) =>
+                openOptimization(finding, campaign, ad, competitors, requestedService)
+              }
+            />
+          )}
+
+          {audit.status === 'COMPLETED' && audit.googleAdsCustomerId && (
+            <BudgetIntelligenceSection
+              googleAdsCustomerId={audit.googleAdsCustomerId}
+              dataWindowDays={audit.dataWindowDays}
+            />
+          )}
+
+          {audit.status === 'COMPLETED' && (
+            <CampaignRecommendationsSection
+              findings={validFindings}
+              roadmapItems={audit.roadmapItems ?? []}
+              campaignCount={audit.campaignCount}
+              websiteUrl={audit.websiteUrl}
+              onOpenCampaigns={() =>
+                handleNavClick({
+                  id: 'campaigns',
+                  label: 'Your Campaigns',
+                  icon: Megaphone,
+                  sectionId: 'campaign-audits',
+                  accountOnly: true,
+                })
+              }
+              onJumpToFindings={(slug) => {
+                const nav = baseNavItems.find((n) => n.moduleSlug === slug);
+                if (nav) handleNavClick(nav);
+                else {
+                  setActiveModuleSlug(slug);
+                  setActiveSection('findings');
+                  scrollToSection('findings');
+                }
+              }}
             />
           )}
 
@@ -547,7 +659,10 @@ export default function DashboardPage() {
           </section>
 
           {audit.status === 'COMPLETED' && auditId && (
-            <CompetitorAdLibrarySection auditId={auditId} enabled />
+            <CompetitorAdLibrarySection
+              auditId={auditId}
+              enabled={activeSection === 'competitor-ad-library'}
+            />
           )}
 
           <section id="findings" className="scroll-mt-24">
@@ -661,7 +776,7 @@ export default function DashboardPage() {
               <RoadmapColumn title="90-Day Scale" color="teal" items={roadmap90} />
             </div>
             {audit.roadmapItems.length === 0 && (
-              <p className="text-muted text-sm mt-4 text-center">Roadmap items will appear after Claude analyzes your findings.</p>
+              <p className="text-muted text-sm mt-4 text-center">Roadmap items will appear after findings are analyzed.</p>
             )}
           </section>
 
@@ -675,25 +790,7 @@ export default function DashboardPage() {
         </div>
       </main>
 
-      {optimizeFinding && optimizeSnapshot && (
-        <AIOptimizationModal
-          open={!!optimizeFinding}
-          onClose={closeOptimization}
-          auditId={optimizeSnapshot.auditId}
-          finding={optimizeFinding}
-          auditFindings={optimizeSnapshot.auditFindings}
-          accountName={optimizeSnapshot.accountName}
-          googleAdsCustomerId={optimizeSnapshot.googleAdsCustomerId}
-          websiteUrl={optimizeSnapshot.websiteUrl}
-          goal={optimizeSnapshot.goal}
-          monthlySpend={optimizeSnapshot.monthlySpend}
-          userId={optimizeSnapshot.userId}
-          initialCampaignId={optimizeCampaignId}
-          initialCampaign={optimizeInitialCampaign}
-          initialAd={optimizeInitialAd}
-          lockCampaignScope={!!optimizeInitialCampaign}
-        />
-      )}
+      {optimizationModal}
     </div>
   );
 }

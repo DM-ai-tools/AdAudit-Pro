@@ -161,12 +161,18 @@ function mergeInsightCards(
     };
   };
 
-  // Prefer SociaVault analysis cards; only enrich text from Claude for the same names
-  const source = fromAnalysis.length ? fromAnalysis : fromOptimized;
+  // Prefer SociaVault analysis cards; only enrich text from Claude for the same names.
+  // Uploaded-document mode: never invent rivals from Claude-only insight cards.
+  const documentOnly = competitorAnalysis?.source === 'user_provided';
+  const source = documentOnly
+    ? fromAnalysis
+    : fromAnalysis.length
+      ? fromAnalysis
+      : fromOptimized;
   let merged: CompetitorInsightCard[] = [];
 
   if (!source.length && gallery.length) {
-    merged = gallery.slice(0, 8).map(cardFromGallery);
+    merged = gallery.slice(0, documentOnly ? gallery.length : 8).map(cardFromGallery);
   } else {
     merged = source.map((base) => {
       const opt = fromOptimized.find((o) => o.name.toLowerCase() === base.name.toLowerCase());
@@ -455,7 +461,7 @@ export function CompetitorIntelligencePanels({
       <div className="bg-panel border border-purple-400/20 rounded-xl p-4 space-y-2">
         <p className="text-white text-sm font-semibold">Competitor Insights</p>
         <p className="text-muted text-xs">
-          Competitor insight cards will appear once SociaVault returns library-backed rivals for this service.
+          Competitor insight cards will appear once live library-backed rivals are found for this service.
           Re-run Make It Better if this section is empty after a completed run.
         </p>
       </div>

@@ -7,6 +7,8 @@ import ProcessingPage from '../pages/ProcessingPage';
 import DashboardPage from '../pages/DashboardPage';
 import SharedReportPage from '../pages/SharedReportPage';
 import SettingsPage from '../pages/SettingsPage';
+import PrivacyPolicyPage from '../pages/PrivacyPolicyPage';
+import TermsOfServicePage from '../pages/TermsOfServicePage';
 import { useAuthStore } from '../store';
 
 function AuthBootstrap({ children }: { children: React.ReactNode }) {
@@ -45,6 +47,8 @@ export default function AppRoutes() {
       <AuthBootstrap>
         <Routes>
           <Route path="/" element={<LandingPage />} />
+          <Route path="/privacy" element={<PrivacyPolicyPage />} />
+          <Route path="/terms" element={<TermsOfServicePage />} />
           <Route path="/connect-account" element={<ConnectAccountPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/processing/:auditId" element={<ProcessingPage />} />

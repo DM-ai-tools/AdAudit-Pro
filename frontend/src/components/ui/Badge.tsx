@@ -11,7 +11,7 @@ export function Badge({ children, variant = 'muted', className }: BadgeProps) {
   return (
     <span
       className={clsx(
-        'inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider',
+        'inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-[0.08em]',
         {
           'bg-orange/15 text-orange border border-orange/30': variant === 'orange',
           'bg-teal/15 text-teal border border-teal/30': variant === 'teal',

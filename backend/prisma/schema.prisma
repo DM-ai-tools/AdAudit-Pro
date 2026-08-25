@@ -99,6 +99,7 @@ model User {
   sharedReports      SharedReport[]
   aiOptimizations    AIOptimization[]
   publishedAdVersions PublishedAdVersion[]
+  campaignWizardActivities CampaignWizardActivity[]
 
   @@index([email])
 }
@@ -149,6 +150,7 @@ model AuditRun {
   auditLogs         AuditLog[]
   sharedReports     SharedReport[]
   modules           AuditModule[]
+  campaignWizardActivities CampaignWizardActivity[]
 
   @@index([userId])
   @@index([accountId])
@@ -324,4 +326,49 @@ model PublishedAdVersion {
 
   @@index([userId])
   @@index([aiOptimizationId])
+}
+
+/** Create Campaign / Create Ad wizard runs — process + choices for the audit download report. */
+model CampaignWizardActivity {
+  id                     String   @id @default(cuid())
+  userId                 String
+  auditRunId             String
+  googleAdsCustomerId    String?
+  mode                   String   // campaign | ad
+  stage                  String   // campaign_created | completed
+  title                  String
+  summary                String?  @db.Text
+  processJson            Json
+  campaignResourceName   String?
+  adResourceName         String?
+  campaignName           String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  auditRun               AuditRun @relation(fields: [auditRunId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([auditRunId])
+  @@index([createdAt])
+}
+
+/** Cached competitor discovery — keyed by company + service + offer + source (document / sociavault / both). */
+model CompetitorDiscoveryCache {
+  id                    String   @id @default(cuid())
+  cacheKey              String   @unique
+  companyHost           String
+  service               String
+  offer                 String   @default("")
+  source                String
+  country               String   @default("au")
+  preferredCampaignType String?
+  documentFingerprint   String?
+  payload               Json
+  expiresAt             DateTime
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([companyHost, service, source])
+  @@index([expiresAt])
 }

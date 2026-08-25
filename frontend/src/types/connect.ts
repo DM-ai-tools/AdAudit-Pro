@@ -79,6 +79,127 @@ export interface AccountPerformanceSummary {
   activeCampaigns: number;
 }
 
+export interface BudgetCampaignRow {
+  campaignId: string;
+  name: string;
+  type: string;
+  status: string;
+  biddingStrategyType?: string;
+  dailyBudget: number;
+  periodBudget: number;
+  spend: number;
+  spendShare: number;
+  budgetUtilization: number;
+  leftover: number;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+  ctr: number;
+  avgCpc: number;
+  conversionRate: number;
+  costPerConversion: number;
+  searchImpressionShare?: number;
+  budgetLostIs?: number;
+  rankLostIs?: number;
+}
+
+export interface BudgetAdRow {
+  adId: string;
+  campaignId: string;
+  campaignName: string;
+  adGroupName: string;
+  status: string;
+  headline: string;
+  spend: number;
+  spendShare: number;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+  ctr: number;
+  avgCpc: number;
+  costPerConversion: number;
+}
+
+export interface BudgetKeywordRow {
+  campaignId: string;
+  campaignName: string;
+  adGroupName: string;
+  keyword: string;
+  matchType: string;
+  qualityScore?: number;
+  spend: number;
+  spendShare: number;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+  ctr: number;
+  avgCpc: number;
+  costPerConversion: number;
+}
+
+export interface BudgetDailyRow {
+  date: string;
+  spend: number;
+  clicks: number;
+  conversions: number;
+  impressions: number;
+}
+
+export interface BudgetAccountSummary {
+  currency: string;
+  timezone: string;
+  windowDays: number;
+  dateRange: string;
+  totalSpend: number;
+  totalDailyBudget: number;
+  enabledDailyBudget: number;
+  expectedSpend: number;
+  pacePercent: number;
+  leftover: number;
+  clicks: number;
+  impressions: number;
+  conversions: number;
+  ctr: number;
+  avgCpc: number;
+  conversionRate: number;
+  costPerConversion: number;
+  activeCampaigns: number;
+  constrainedCampaigns: number;
+  underspentCampaigns: number;
+}
+
+export interface AccountBudgetBreakdown {
+  account: BudgetAccountSummary;
+  campaigns: BudgetCampaignRow[];
+  ads: BudgetAdRow[];
+  keywords: BudgetKeywordRow[];
+  daily: BudgetDailyRow[];
+}
+
+export interface BudgetRecommendationAction {
+  priority: 'critical' | 'high' | 'medium';
+  title: string;
+  detail: string;
+  moveFrom?: string;
+  moveTo?: string;
+  amount?: number;
+  expectedImpact?: string;
+}
+
+export interface BudgetReallocationRow {
+  entityType: 'campaign' | 'keyword' | 'ad';
+  name: string;
+  currentDaily: number;
+  recommendedDaily: number;
+  rationale: string;
+}
+
+export interface BudgetRecommendations {
+  summary: string;
+  actions: BudgetRecommendationAction[];
+  reallocation: BudgetReallocationRow[];
+}
+
 export interface AuditModuleOption {
   id: string;
   name: string;

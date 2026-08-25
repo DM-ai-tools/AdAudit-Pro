@@ -1,5 +1,7 @@
 import axios from 'axios';
 import { env } from '../config/env.js';
+import { inferCountryFromWebsiteUrl } from '../utils/region-codes.js';
+import { competitorUrlMatchesCountry, isEnglishAdCopy } from '../utils/competitor-region.js';
 import { decodeHtmlEntities } from '../utils/html-entities.js';
 import {
   creativeMatchesTargetService,
@@ -7,8 +9,14 @@ import {
   isGarbageCreativeText,
   matchesTargetService,
 } from '../utils/service-relevance.js';
+import { adMatchesServiceAndSeeds } from '../utils/service-seed-match.js';
 
 const BASE_URL = 'https://api.sociavault.com/v1/scrape/google-ad-library';
+const SEARCH_BASE_URL = 'https://api.sociavault.com/v1/scrape';
+
+/** Organic SERP hosts that are not advertising competitors. */
+const NON_COMPETITOR_HOST_RE =
+  /^(?:www\.)?(?:google|googleadservices|gstatic|doubleclick|googleapis|adstransparency|youtube|youtu\.be|facebook|fb\.com|instagram|linkedin|twitter|x\.com|tiktok|pinterest|reddit|quora|wikipedia|yelp|yellowpages|truelocal|hotfrog|productreview|trustpilot|sitejabber|glassdoor|indeed|seek|gumtree|amazon|ebay|microsoft|apple|maps\.app)\./i;
 
 export interface SociaVaultCompanyAd {
   advertiserId: string;
@@ -213,8 +221,32 @@ export function scoreSociaVaultAdActivity(metrics: SociaVaultAdActivityMetrics):
   return durationScore + volumeScore + longevityBonus;
 }
 
+let lastSociaVaultError: { status?: number; message?: string } | null = null;
+let creditsExhaustedUntil = 0;
+
+export function isSociaVaultCreditsExhausted(): boolean {
+  return Date.now() < creditsExhaustedUntil || lastSociaVaultError?.status === 402;
+}
+
+export function resetSociaVaultErrorState(): void {
+  // Never clear a 402 — keep skipping API calls until the cooldown ends
+  if (isSociaVaultCreditsExhausted()) return;
+  lastSociaVaultError = null;
+}
+
+export function getSociaVaultErrorState(): { creditsExhausted: boolean; message?: string } {
+  return {
+    creditsExhausted: isSociaVaultCreditsExhausted(),
+    message: lastSociaVaultError?.message,
+  };
+}
+
 async function sociavaultGet(path: string, params: Record<string, string | undefined>): Promise<unknown | null> {
   if (!env.sociavaultApiKey) return null;
+  if (isSociaVaultCreditsExhausted()) {
+    console.warn(`[SociaVault] skip ${path} — credits exhausted, not calling API`);
+    return null;
+  }
 
   const cleanParams = Object.fromEntries(
     Object.entries(params).filter(([, v]) => v != null && v !== '')
@@ -234,6 +266,20 @@ async function sociavaultGet(path: string, params: Record<string, string | undef
     const msg = axios.isAxiosError(err)
       ? `${err.response?.status ?? ''} ${JSON.stringify(err.response?.data ?? err.message)}`
       : String(err);
+    if (axios.isAxiosError(err)) {
+      lastSociaVaultError = {
+        status: err.response?.status,
+        message: typeof err.response?.data === 'object'
+          ? JSON.stringify(err.response.data)
+          : String(err.response?.data ?? err.message),
+      };
+      if (err.response?.status === 402) {
+        creditsExhaustedUntil = Date.now() + 30 * 60 * 1000;
+        console.warn('[SociaVault] credits exhausted (402) — pausing all SociaVault calls for 30 minutes');
+      }
+    } else {
+      lastSociaVaultError = { message: msg };
+    }
     console.warn(`[SociaVault] ${path} failed:`, msg.slice(0, 240));
     return null;
   }
@@ -416,33 +462,40 @@ function pickBestCompanyAd(ads: SociaVaultCompanyAd[]): SociaVaultCompanyAd | nu
   return rankCompanyAds(ads)[0] ?? null;
 }
 
+function englishVariations(variations: SociaVaultAdVariation[]): SociaVaultAdVariation[] {
+  return variations.filter((v) =>
+    isEnglishAdCopy([v.headline ?? ''], [v.description ?? ''])
+  );
+}
+
 function pickBestVariation(
   variations: SociaVaultAdVariation[],
   serviceTerms?: string[]
 ): SociaVaultAdVariation | null {
+  const pool = englishVariations(variations);
+  const source = pool.length ? pool : variations;
+
   if (serviceTerms?.length) {
-    // Strict: never fall back to an unmatched variation when filtering by service
-    return (
-      variations.find((v) =>
-        creativeMatchesTargetService(
-          {
-            headline: v.headline,
-            description: v.description,
-            // Intentionally omit destinationUrl — path segments must not override headlines
-          },
-          serviceTerms
-        )
-      ) ?? null
+    // Prefer a family match, but keep a usable English variation for LLM relevance.
+    const matched = source.find((v) =>
+      creativeMatchesTargetService(
+        {
+          headline: v.headline,
+          description: v.description,
+        },
+        serviceTerms
+      )
     );
+    if (matched) return matched;
   }
   return (
-    variations.find(
+    source.find(
       (v) =>
         v.headline?.trim() &&
         v.description?.trim() &&
         !isGarbageCreativeText(`${v.headline} ${v.description}`)
     ) ??
-    variations.find((v) => v.headline?.trim() || v.description?.trim()) ??
+    source.find((v) => v.headline?.trim() || v.description?.trim()) ??
     null
   );
 }
@@ -459,7 +512,7 @@ export async function fetchSociaVaultAdvertiserLibrary(options: {
   advertiserId?: string;
 }): Promise<{ ads: SociaVaultCompanyAd[]; activity: SociaVaultAdActivityMetrics }> {
   const empty = { ads: [] as SociaVaultCompanyAd[], activity: computeSociaVaultAdActivity([]) };
-  if (!isSociaVaultConfigured()) return empty;
+  if (!isSociaVaultConfigured() || isSociaVaultCreditsExhausted()) return empty;
 
   const domain = domainFromWebsiteUrl(options.url);
   const region = options.country || undefined;
@@ -471,30 +524,31 @@ export async function fetchSociaVaultAdvertiserLibrary(options: {
       ads = await fetchSociaVaultCompanyAds({
         advertiserId: options.advertiserId,
         region,
-        maxPages: 2,
+        maxPages: 1,
       });
     }
-    if (!ads.length) {
+    if (!ads.length && !isSociaVaultCreditsExhausted()) {
       ads = await fetchSociaVaultCompanyAds({
         advertiserId: options.advertiserId,
-        maxPages: 2,
+        maxPages: 1,
       });
     }
   }
 
   // 1) domain + region (skip placeholder transparency hosts)
-  if (!ads.length && isUsableAdvertiserHost(domain) && region) {
-    ads = await fetchSociaVaultCompanyAds({ domain, region, maxPages: 3 });
+  if (!ads.length && isUsableAdvertiserHost(domain) && region && !isSociaVaultCreditsExhausted()) {
+    ads = await fetchSociaVaultCompanyAds({ domain, region, maxPages: 1 });
   }
   // 2) domain anywhere
-  if (!ads.length && isUsableAdvertiserHost(domain)) {
-    ads = await fetchSociaVaultCompanyAds({ domain, maxPages: 3 });
+  if (!ads.length && isUsableAdvertiserHost(domain) && !isSociaVaultCreditsExhausted()) {
+    ads = await fetchSociaVaultCompanyAds({ domain, maxPages: 1 });
   }
   // 3) advertiser search by name / domain brand — require a name/brand match (no advertisers[0])
-  if (!ads.length) {
+  if (!ads.length && !isSociaVaultCreditsExhausted()) {
     const brand = (domain.split('.')[0] ?? '').toLowerCase();
     const queries = [options.name, brand].filter((q) => q && q.trim().length > 2);
     for (const q of queries) {
+      if (isSociaVaultCreditsExhausted()) break;
       const advertisers = await searchSociaVaultAdvertisers(q);
       const ranked = advertisers.filter((a) =>
         advertiserNameLikelyMatch(a.name, options.name, brand)
@@ -533,135 +587,356 @@ export async function fetchSociaVaultAdvertiserLibrary(options: {
   return { ads, activity: computeSociaVaultAdActivity(ads) };
 }
 
+type DiscoveredCompetitor = {
+  name: string;
+  url: string;
+  score: number;
+  activity: SociaVaultAdActivityMetrics;
+  advertiserId?: string;
+};
+
+function isCompetitorSerpHost(host: string, ownDomain: string): boolean {
+  const h = host.toLowerCase().replace(/^www\./, '');
+  if (!isUsableAdvertiserHost(h)) return false;
+  if (h === ownDomain || h.endsWith(`.${ownDomain}`) || ownDomain.endsWith(`.${h}`)) return false;
+  const blocked = [
+    'google.com',
+    'google.com.au',
+    'facebook.com',
+    'instagram.com',
+    'linkedin.com',
+    'youtube.com',
+    'youtu.be',
+    'twitter.com',
+    'x.com',
+    'tiktok.com',
+    'pinterest.com',
+    'reddit.com',
+    'quora.com',
+    'wikipedia.org',
+    'yelp.com',
+    'yellowpages.com.au',
+    'truelocal.com.au',
+    'productreview.com.au',
+    'trustpilot.com',
+    'indeed.com',
+    'seek.com.au',
+    'gumtree.com.au',
+    'amazon.com',
+    'ebay.com.au',
+    'apple.com',
+    'microsoft.com',
+  ];
+  if (blocked.some((b) => h === b || h.endsWith(`.${b}`))) return false;
+  if (NON_COMPETITOR_HOST_RE.test(h)) return false;
+  return true;
+}
+
+function hostnameToDisplayName(host: string): string {
+  const brand = host.replace(/^www\./, '').split('.')[0] ?? host;
+  return brand
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .trim();
+}
+
+/**
+ * SociaVault Google Ads Transparency `/company-ads` needs a domain (or advertiser_id),
+ * not keywords. Use SociaVault Google Search with service keywords to find rival domains,
+ * then fetch ads by domain.
+ */
+export async function discoverCompetitorDomainsViaWebSearch(options: {
+  searchQueries: string[];
+  siteUrl: string;
+  region?: string;
+  maxDomains?: number;
+  maxQueries?: number;
+}): Promise<Array<{ domain: string; name: string; query: string; rank: number }>> {
+  if (!isSociaVaultConfigured() || !env.sociavaultApiKey) return [];
+
+  const ownDomain = siteDomain(options.siteUrl);
+  const maxDomains = options.maxDomains ?? 12;
+  const maxQueries = options.maxQueries ?? Math.min(8, options.searchQueries.length);
+  const found = new Map<string, { domain: string; name: string; query: string; rank: number }>();
+
+  const queries = [...new Set(options.searchQueries.map((q) => q.trim()).filter(Boolean))].slice(
+    0,
+    maxQueries
+  );
+
+  for (let qi = 0; qi < queries.length; qi++) {
+    const query = queries[qi]!;
+    try {
+      const res = await axios.get(`${SEARCH_BASE_URL}/google/search`, {
+        params: { query, region: options.region ?? 'AU' },
+        headers: { 'X-API-Key': env.sociavaultApiKey },
+        timeout: 25_000,
+        validateStatus: (s) => s < 500,
+      });
+      if (res.status >= 400) {
+        console.warn(`[SociaVault] google/search "${query}" → HTTP ${res.status}`);
+        continue;
+      }
+
+      const data = asRecord(res.data) ?? {};
+      const inner = asRecord(data.data) ?? data;
+      const resultsRaw = inner.results ?? inner.organic_results ?? inner.items;
+      const rows: unknown[] = Array.isArray(resultsRaw)
+        ? resultsRaw
+        : resultsRaw && typeof resultsRaw === 'object'
+          ? Object.values(resultsRaw as Record<string, unknown>)
+          : [];
+
+      let added = 0;
+      for (let ri = 0; ri < rows.length; ri++) {
+        const row = asRecord(rows[ri]);
+        const link =
+          pickString(row?.url, row?.link, row?.href, row?.displayed_link, row?.displayUrl) ?? '';
+        if (!link) continue;
+        let host = '';
+        try {
+          host = domainFromWebsiteUrl(link);
+        } catch {
+          continue;
+        }
+        if (!isCompetitorSerpHost(host, ownDomain)) continue;
+        if (options.region && !competitorUrlMatchesCountry(`https://${host}`, options.region)) {
+          continue;
+        }
+        const key = host.toLowerCase();
+        if (found.has(key)) continue;
+        const title = pickString(row?.title, row?.name) ?? hostnameToDisplayName(host);
+        found.set(key, {
+          domain: host,
+          name: title.replace(/\s*[|\-–—].*$/, '').trim() || hostnameToDisplayName(host),
+          query,
+          rank: qi * 20 + ri,
+        });
+        added += 1;
+        if (found.size >= maxDomains) break;
+      }
+      console.log(
+        `[SociaVault] web search "${query}" → ${rows.length} result(s), ${added} new competitor domain(s)`
+      );
+    } catch (err) {
+      console.warn(
+        `[SociaVault] web search "${query}" failed:`,
+        err instanceof Error ? err.message : err
+      );
+    }
+    if (found.size >= maxDomains) break;
+  }
+
+  console.log(
+    `[SociaVault] web search collected ${found.size} competitor domain(s) from ${queries.length} keyword quer(y/ies)`
+  );
+  return [...found.values()].sort((a, b) => a.rank - b.rank);
+}
+
+async function addDomainBackedCompetitor(
+  results: Map<string, DiscoveredCompetitor>,
+  options: {
+    domain: string;
+    name?: string;
+    region?: string;
+    ownDomain: string;
+    scoreBoost?: number;
+  }
+): Promise<boolean> {
+  const domain = options.domain.toLowerCase().replace(/^www\./, '');
+  if (!isUsableAdvertiserHost(domain) || domain === options.ownDomain) return false;
+  if (results.has(`dom:${domain}`)) return false;
+
+  let ads = await fetchSociaVaultCompanyAds({
+    domain,
+    region: options.region,
+    maxPages: 2,
+  });
+  if (!ads.length && options.region) {
+    ads = await fetchSociaVaultCompanyAds({ domain, maxPages: 2 });
+  }
+  if (!ads.length) {
+    console.log(`[SociaVault] company-ads domain=${domain} → 0 ads (skip)`);
+    return false;
+  }
+
+  const activity = computeSociaVaultAdActivity(ads);
+  if (activity.totalAdCount <= 0) return false;
+
+  const advertiserId = ads.find((a) => a.advertiserId)?.advertiserId;
+  const name =
+    options.name?.trim() ||
+    ads.find((a) => a.advertiserName?.trim())?.advertiserName?.trim() ||
+    hostnameToDisplayName(domain);
+  const score = (options.scoreBoost ?? 10) + scoreSociaVaultAdActivity(activity);
+  const key = advertiserId ? `adv:${advertiserId}` : `dom:${domain}`;
+  const existing = results.get(key);
+  if (!existing || score > existing.score) {
+    results.set(key, {
+      name,
+      url: `https://${domain}`,
+      score: (existing?.score ?? 0) + score,
+      activity,
+      advertiserId,
+    });
+  }
+  console.log(
+    `[SociaVault] domain=${domain} → ${activity.totalAdCount} ads (active=${activity.activeAdCount}) as "${name}"`
+  );
+  return true;
+}
+
 export async function discoverSociaVaultCompetitors(options: {
   siteUrl: string;
   searchQueries: string[];
   region?: string;
   maxCount?: number;
-  /** Stop after this many consecutive queries that add zero new domains (default: no early stop). */
+  /** Stop after this many consecutive advertiser-search queries that add zero rivals (default: no early stop). */
   maxEmptyQueries?: number;
-}): Promise<
-  Array<{
-    name: string;
-    url: string;
-    score: number;
-    activity: SociaVaultAdActivityMetrics;
-    advertiserId?: string;
-  }>
-> {
-  if (!isSociaVaultConfigured()) return [];
+}): Promise<DiscoveredCompetitor[]> {
+  if (!isSociaVaultConfigured() || isSociaVaultCreditsExhausted()) return [];
 
   const max = options.maxCount ?? 6;
   const ownDomain = siteDomain(options.siteUrl);
-  const results = new Map<
-    string,
-    {
-      name: string;
-      url: string;
-      score: number;
-      activity: SociaVaultAdActivityMetrics;
-      advertiserId?: string;
-    }
-  >();
-  let emptyStreak = 0;
-  const emptyCap = options.maxEmptyQueries ?? 0;
+  const region =
+    options.region ?? inferCountryFromWebsiteUrl(options.siteUrl) ?? 'AU';
+  const results = new Map<string, DiscoveredCompetitor>();
+  const queries = [...new Set(options.searchQueries.map((q) => q.trim()).filter(Boolean))];
 
-  for (let qi = 0; qi < options.searchQueries.length; qi++) {
-    const query = options.searchQueries[qi]?.trim();
-    if (!query) continue;
+  // ── Primary: keyword web search → competitor domains → company-ads by domain ──
+  // Transparency /company-ads cannot take keywords; domains come from organic SERP.
+  const webDomains = await discoverCompetitorDomainsViaWebSearch({
+    searchQueries: queries,
+    siteUrl: options.siteUrl,
+    region,
+    maxDomains: Math.max(max + 6, 12),
+    maxQueries: Math.min(queries.length, 8),
+  });
 
-    const before = results.size;
-    const advertisers = await searchSociaVaultAdvertisers(query);
-    console.log(`[SociaVault] search "${query}" → ${advertisers.length} advertiser(s)`);
-
-    // Prefer advertisers with the highest estimated ad volume from search
-    const rankedAdvertisers = [...advertisers].sort((a, b) => {
-      const ae = (a as { number_of_ads_estimate?: number }).number_of_ads_estimate ?? 0;
-      const be = (b as { number_of_ads_estimate?: number }).number_of_ads_estimate ?? 0;
-      return be - ae;
+  for (let i = 0; i < webDomains.length; i++) {
+    const hit = webDomains[i]!;
+    if (region && !competitorUrlMatchesCountry(`https://${hit.domain}`, region)) continue;
+    await addDomainBackedCompetitor(results, {
+      domain: hit.domain,
+      name: hit.name,
+      region,
+      ownDomain,
+      scoreBoost: Math.max(4, 20 - i),
     });
+    if (results.size >= max + 2) break;
+  }
 
-    for (const advertiser of rankedAdvertisers.slice(0, 6)) {
-      let ads = await fetchSociaVaultCompanyAds({
-        advertiserId: advertiser.advertiser_id,
-        region: options.region ?? advertiser.region,
-        maxPages: 2,
+  console.log(
+    `[SociaVault] after web→domain path: ${results.size} rival(s) with ads (need ${max})`
+  );
+
+  // ── Fallback: advertiser keyword search (may return IDs without useful domains) ──
+  if (results.size < max) {
+    let emptyStreak = 0;
+    const emptyCap = options.maxEmptyQueries ?? 0;
+
+    for (let qi = 0; qi < queries.length; qi++) {
+      if (results.size >= max + 2) break;
+      const query = queries[qi]!;
+      const before = results.size;
+      const advertisers = await searchSociaVaultAdvertisers(query);
+      console.log(`[SociaVault] advertiser-search "${query}" → ${advertisers.length} hit(s)`);
+
+      const rankedAdvertisers = [...advertisers].sort((a, b) => {
+        const ae = a.number_of_ads_estimate ?? 0;
+        const be = b.number_of_ads_estimate ?? 0;
+        return be - ae;
       });
-      if (!ads.length) {
-        ads = await fetchSociaVaultCompanyAds({
+
+      for (const advertiser of rankedAdvertisers.slice(0, 6)) {
+        if (region && advertiser.region && advertiser.region !== region) continue;
+        let ads = await fetchSociaVaultCompanyAds({
           advertiserId: advertiser.advertiser_id,
+          region: region ?? advertiser.region,
           maxPages: 2,
         });
-      }
-      if (!ads.length) continue;
-
-      let resolvedDomain =
-        ads.find((a) => a.domain?.trim())?.domain?.replace(/^www\./, '') ?? '';
-      // Avoid expensive ad-details probes for every search hit — keep advertiserId instead.
-      // Domain recovery still happens later when loading gallery creatives if needed.
-
-      const activity = computeSociaVaultAdActivity(ads);
-      if (activity.totalAdCount === 0) continue;
-
-      const queryBoost = Math.max(1, options.searchQueries.length - qi);
-      const activityScore = scoreSociaVaultAdActivity(activity);
-      const estimateBoost = Math.min(
-        12,
-        Math.round(((advertiser as { number_of_ads_estimate?: number }).number_of_ads_estimate ?? 0) / 100)
-      );
-      const score = queryBoost * 4 + activityScore + estimateBoost;
-      const name = advertiser.name.trim() || resolvedDomain.split('.')[0] || 'Competitor';
-
-      // Prefer advertiser-id key so distinct AR accounts never collapse onto one domain
-      if (resolvedDomain && isUsableAdvertiserHost(resolvedDomain)) {
-        if (siteDomain(resolvedDomain) === ownDomain) continue;
-        const url = `https://${resolvedDomain}`;
-        const key = `adv:${advertiser.advertiser_id}`;
-        const existing = results.get(key);
-        if (!existing || score > existing.score) {
-          results.set(key, {
-            name,
-            url,
-            score: (existing?.score ?? 0) + score,
-            activity,
+        if (!ads.length) {
+          ads = await fetchSociaVaultCompanyAds({
             advertiserId: advertiser.advertiser_id,
+            maxPages: 2,
           });
+        }
+        if (!ads.length) continue;
+
+        let resolvedDomain =
+          ads.find((a) => a.domain?.trim())?.domain?.replace(/^www\./, '') ?? '';
+        if (!resolvedDomain || !isUsableAdvertiserHost(resolvedDomain)) {
+          const recovered = await resolveDomainFromCompanyAds(ads);
+          if (recovered) resolvedDomain = recovered;
+        }
+
+        const activity = computeSociaVaultAdActivity(ads);
+        if (activity.totalAdCount === 0) continue;
+
+        const queryBoost = Math.max(1, queries.length - qi);
+        const activityScore = scoreSociaVaultAdActivity(activity);
+        const estimateBoost = Math.min(12, Math.round((advertiser.number_of_ads_estimate ?? 0) / 100));
+        const score = queryBoost * 2 + activityScore + estimateBoost;
+        const name = advertiser.name.trim() || resolvedDomain.split('.')[0] || 'Competitor';
+
+        if (resolvedDomain && isUsableAdvertiserHost(resolvedDomain)) {
+          if (siteDomain(resolvedDomain) === ownDomain) continue;
+          if (region && !competitorUrlMatchesCountry(`https://${resolvedDomain}`, region)) continue;
+          // Prefer domain-backed company-ads path for this host when we only have an ID
+          const added = await addDomainBackedCompetitor(results, {
+            domain: resolvedDomain,
+            name,
+            region: options.region,
+            ownDomain,
+            scoreBoost: score,
+          });
+          if (!added) {
+            const key = `adv:${advertiser.advertiser_id}`;
+            const existing = results.get(key);
+            if (!existing || score > existing.score) {
+              results.set(key, {
+                name,
+                url: `https://${resolvedDomain}`,
+                score: (existing?.score ?? 0) + score,
+                activity,
+                advertiserId: advertiser.advertiser_id,
+              });
+            }
+          }
+        } else {
+          const key = `adv:${advertiser.advertiser_id}`;
+          const existing = results.get(key);
+          if (!existing || score > existing.score) {
+            results.set(key, {
+              name,
+              url: `https://adstransparency.google.com/advertiser/${advertiser.advertiser_id}`,
+              score: (existing?.score ?? 0) + score,
+              activity,
+              advertiserId: advertiser.advertiser_id,
+            });
+          }
+        }
+        if (results.size >= max + 2) break;
+      }
+
+      if (results.size === before) {
+        emptyStreak += 1;
+        // Only early-stop advertiser-search fallback once we already have some web rivals,
+        // or after several empties — never after a single empty query.
+        if (emptyCap > 0 && emptyStreak >= Math.max(emptyCap, 3) && results.size === 0) {
+          console.warn(
+            `[SociaVault] early-stop advertiser-search after ${emptyStreak} empty quer(y/ies)`
+          );
+          break;
         }
       } else {
-        console.warn(
-          `[SociaVault] advertiser ${advertiser.name} (${advertiser.advertiser_id}) has ${ads.length} ads — keeping via advertiser id (no domain on creatives)`
-        );
-        const key = `adv:${advertiser.advertiser_id}`;
-        const url = `https://adstransparency.google.com/advertiser/${advertiser.advertiser_id}`;
-        const existing = results.get(key);
-        if (!existing || score > existing.score) {
-          results.set(key, {
-            name,
-            url,
-            score: (existing?.score ?? 0) + score,
-            activity,
-            advertiserId: advertiser.advertiser_id,
-          });
-        }
+        emptyStreak = 0;
       }
-    }
-    if (results.size >= max + 2) break;
-
-    if (results.size === before) {
-      emptyStreak += 1;
-      if (emptyCap > 0 && emptyStreak >= emptyCap && results.size === 0) {
-        console.warn(
-          `[SociaVault] early-stop discovery after ${emptyStreak} empty quer(y/ies) (no rivals yet)`
-        );
-        break;
-      }
-    } else {
-      emptyStreak = 0;
     }
   }
 
   console.log(
-    `[SociaVault] discovery found ${results.size} competitor(s) from ${options.searchQueries.length} quer(y/ies)`
+    `[SociaVault] discovery found ${results.size} competitor(s) from ${queries.length} keyword quer(y/ies) (web+ads)`
   );
 
   return [...results.values()]
@@ -726,8 +1001,18 @@ export async function resolveCompetitorViaSociaVault(options: {
   return null;
 }
 
+/** Blog/article SERP titles mistaken for advertisers — not real companies. */
+export function isLikelyArticleAdvertiser(name: string): boolean {
+  const n = name.trim();
+  if (!n || n.length < 4) return true;
+  if (/^\d+\s/.test(n)) return true;
+  if (/\b(best|top|guide|ranked|reviewed|tools for)\b/i.test(n) && /\b20\d{2}\b/.test(n)) return true;
+  if (/\(\s*tested|ranked\s*&\s*ranked|people actually use\)/i.test(n)) return true;
+  if (/\byour guide for\b/i.test(n)) return true;
+  return false;
+}
+
 /**
- * Fetch competitor ad copy + library activity via SociaVault.
  * Activity metrics are returned even if OCR/ad-details fails (as long as company-ads succeeded).
  * When serviceTerms are provided, samples multiple creatives until the *primary* copy matches.
  */
@@ -741,7 +1026,7 @@ export async function fetchSociaVaultCompetitorAd(options: {
   maxServiceAdSamples?: number;
   advertiserId?: string;
 }): Promise<SociaVaultCompetitorAdResult | null> {
-  if (!isSociaVaultConfigured()) return null;
+  if (!isSociaVaultConfigured() || isSociaVaultCreditsExhausted()) return null;
 
   const domain = domainFromWebsiteUrl(options.url);
   const region = options.country ?? undefined;
@@ -770,7 +1055,6 @@ export async function fetchSociaVaultCompetitorAd(options: {
     let format = companyAd.format;
     let allHeadlines: string[] = [];
     let allDescriptions: string[] = [];
-    let matched = false;
 
     try {
       const details = await fetchSociaVaultAdDetails(companyAd.adUrl);
@@ -779,7 +1063,7 @@ export async function fetchSociaVaultCompetitorAd(options: {
           details.variations,
           requireService ? serviceTerms : undefined
         );
-        if (!variation && requireService) {
+        if (!variation && requireService && !details.variations.length) {
           continue;
         }
         const chosen =
@@ -816,30 +1100,22 @@ export async function fetchSociaVaultCompetitorAd(options: {
           ...new Set(sourceVars.map((v) => v.description?.trim()).filter(Boolean) as string[]),
         ];
 
-        if (requireService) {
-          matched = creativeMatchesTargetService(
-            { headline, description },
-            serviceTerms
-          );
-        } else {
-          matched = true;
-        }
       }
     } catch (err) {
       console.warn(`[SociaVault] ad-details failed for ${companyAd.adUrl}:`, err instanceof Error ? err.message : err);
       if (requireService) continue;
     }
 
-    if (requireService && !matched) continue;
     if (requireService && isGarbageCreativeText(`${headline} ${description}`)) continue;
-    // Hard safety: never return a conflicting vertical creative when service-scoped
     if (
-      requireService &&
-      !creativeMatchesTargetService({ headline, description }, serviceTerms)
+      region &&
+      !isEnglishAdCopy(
+        allHeadlines.length ? allHeadlines : headline ? [headline] : [],
+        allDescriptions.length ? allDescriptions : description ? [description] : []
+      )
     ) {
       continue;
     }
-
     const advertiserKey = options.advertiserId || companyAd.advertiserId;
     const advertiserUrl = advertiserKey
       ? `https://adstransparency.google.com/advertiser/${advertiserKey}?region=${region ?? 'anywhere'}`
@@ -875,13 +1151,19 @@ export async function fetchSociaVaultCompetitorAd(options: {
       !hasConflictingService(options.name, serviceTerms);
     const companyAd = ranked[0];
     if (nameOk && companyAd?.adUrl) {
+      if (region && !competitorUrlMatchesCountry(options.url, region)) {
+        console.log(
+          `[SociaVault] skip name-matched fallback for ${options.name} — outside ${region} market`
+        );
+        return null;
+      }
       console.log(
         `[SociaVault] name-matched service fallback for ${options.name} (no OCR "${serviceTerms[0]}" creative)`
       );
       return {
         advertiserName: companyAd.advertiserName || options.name,
-        headline: options.name.slice(0, 30),
-        description: `${options.name} — live Google Ads Transparency creatives for ${serviceTerms[0]}.`,
+        headline: '',
+        description: '',
         destinationUrl: companyAd.domain ? `https://${companyAd.domain}` : options.url,
         visibleUrl: companyAd.domain || domain,
         adUrl: companyAd.adUrl,
@@ -893,10 +1175,8 @@ export async function fetchSociaVaultCompetitorAd(options: {
         })(),
         previewImageUrl: companyAd.imageUrl ?? undefined,
         format: companyAd.format,
-        allHeadlines: [options.name.slice(0, 30)],
-        allDescriptions: [
-          `${options.name} — live Google Ads Transparency creatives for ${serviceTerms[0]}.`,
-        ],
+        allHeadlines: [],
+        allDescriptions: [],
         ...activity,
       };
     }
@@ -928,4 +1208,128 @@ export async function fetchSociaVaultCompetitorAd(options: {
     allDescriptions: [],
     ...activity,
   };
+}
+
+/**
+ * Fetch creatives for an advertiser. By default does NOT require exact service keywords —
+ * Claude semantic scoring in CompetitorIntel decides relatedness afterward.
+ */
+export async function fetchSociaVaultMatchingAds(options: {
+  name: string;
+  url: string;
+  country?: string;
+  service: string;
+  seedKeywords?: string[];
+  advertiserId?: string;
+  maxAdSamples?: number;
+  /** When true, require lexical seed match before return (legacy). Default false — Claude filters later. */
+  requireLexicalMatch?: boolean;
+}): Promise<SociaVaultCompetitorAdResult[]> {
+  if (!isSociaVaultConfigured() || isSociaVaultCreditsExhausted()) return [];
+
+  const domain = domainFromWebsiteUrl(options.url);
+  const region = options.country ?? undefined;
+  const service = options.service.trim();
+  const requireLexical = options.requireLexicalMatch === true;
+  const { ads, activity } = await fetchSociaVaultAdvertiserLibrary(options);
+  if (!ads.length) return [];
+
+  const ranked = rankCompanyAds(ads);
+  const sampleLimit = Math.min(options.maxAdSamples ?? 16, ranked.length);
+  const out: SociaVaultCompetitorAdResult[] = [];
+  const seenCreative = new Set<string>();
+  const samples = ranked.slice(0, sampleLimit).filter((companyAd) => Boolean(companyAd.adUrl));
+
+  const detailed = await Promise.all(
+    samples.map(async (companyAd) => {
+      const adUrl = companyAd.adUrl;
+      if (!adUrl) return { companyAd, details: null };
+      try {
+        const details = await fetchSociaVaultAdDetails(adUrl);
+        return { companyAd, details };
+      } catch {
+        return { companyAd, details: null };
+      }
+    })
+  );
+
+  const pushVariation = (
+    companyAd: SociaVaultCompanyAd,
+    details: NonNullable<Awaited<ReturnType<typeof fetchSociaVaultAdDetails>>>,
+    v: { headline?: string; description?: string; destinationUrl?: string; visibleUrl?: string; image?: string | null },
+    force = false
+  ) => {
+    const headline = v.headline?.trim() ?? '';
+    const description = v.description?.trim() ?? '';
+    if (!headline && !description) return;
+    if (isGarbageCreativeText(`${headline} ${description}`)) return;
+    if (
+      requireLexical &&
+      !force &&
+      !adMatchesServiceAndSeeds(
+        {
+          headlines: headline ? [headline] : [],
+          descriptions: description ? [description] : [],
+          destinationUrl: v.destinationUrl ?? options.url,
+        },
+        service,
+        options.seedKeywords ?? []
+      )
+    ) {
+      return;
+    }
+    if (
+      region &&
+      !isEnglishAdCopy(headline ? [headline] : [], description ? [description] : [])
+    ) {
+      return;
+    }
+    const key = `${headline}|${description}`.toLowerCase();
+    if (seenCreative.has(key)) return;
+    seenCreative.add(key);
+
+    const advertiserKey = options.advertiserId || companyAd.advertiserId;
+    out.push({
+      advertiserName: companyAd.advertiserName || options.name,
+      headline,
+      description,
+      destinationUrl: v.destinationUrl ?? options.url,
+      visibleUrl: v.visibleUrl ?? (companyAd.domain || domain),
+      adUrl: details.url || companyAd.adUrl,
+      advertiserUrl: advertiserKey
+        ? `https://adstransparency.google.com/advertiser/${advertiserKey}?region=${region ?? 'anywhere'}`
+        : details.url || companyAd.adUrl,
+      previewImageUrl: v.image ?? companyAd.imageUrl ?? undefined,
+      format: details.format || companyAd.format,
+      allHeadlines: headline ? [headline] : [],
+      allDescriptions: description ? [description] : [],
+      ...activity,
+    });
+  };
+
+  for (const { companyAd, details } of detailed) {
+    if (!details?.variations?.length) continue;
+    for (const v of details.variations) {
+      pushVariation(companyAd, details, v);
+    }
+  }
+
+  // Lexical mode empty → soft synonym pass
+  if (!out.length && requireLexical) {
+    for (const { companyAd, details } of detailed) {
+      if (!details?.variations?.length) continue;
+      for (const v of details.variations) {
+        pushVariation(companyAd, details, v, true);
+        if (out.length >= 4) break;
+      }
+      if (out.length >= 4) break;
+    }
+  }
+
+  if (out.length) {
+    console.log(
+      `[SociaVault] ${out.length} creative(s) sampled for ${options.name} (${service}) — Claude will score relatedness`
+    );
+  }
+  return out;
 }

@@ -129,7 +129,9 @@ function CompetitorAdCard({
         </div>
         <div className="rounded-lg border border-border bg-white/5 px-2 py-1.5">
           <p className="text-muted text-[10px] uppercase">Source</p>
-          <p className="text-white leading-snug">{ad.source}</p>
+          <p className="text-white leading-snug">
+            {ad.source === 'Google Ads Transparency Center' ? 'Public ad library' : 'Live competitor ad'}
+          </p>
         </div>
       </div>
 
@@ -188,7 +190,7 @@ function CompetitorAdCard({
           className="text-[11px] text-purple-300 hover:text-purple-200 inline-flex items-center gap-1"
         >
           <ExternalLink size={12} />
-          View on Google Ads Transparency Center
+          View live ad
         </a>
       )}
     </div>
@@ -252,17 +254,27 @@ export function CompetitorAdLibrarySection({
             <h2 className="text-white font-bold text-xl">Competitor Ad Library</h2>
           </div>
           <p className="text-muted text-sm">
-            Real competitor advertising from SociaVault / Google Ads Transparency Center — insights
+            Live competitor advertising from the public ad library — insights
             and recommendations only (no campaign creation).
           </p>
         </div>
       </div>
 
+      {!enabled && !report && !loading && (
+        <div className="bg-panel border border-border rounded-xl p-6 text-sm text-muted">
+          <p className="text-white text-sm font-medium mb-1">Competitor research is on demand</p>
+          <p>
+            Competitor research runs when you open this section from the sidebar, so it does not
+            run automatically after the audit finishes.
+          </p>
+        </div>
+      )}
+
       {loading && (
         <div className="bg-panel border border-border rounded-xl p-8 flex flex-col items-center gap-3 text-muted">
           <Loader2 className="animate-spin text-teal" size={28} />
-          <p className="text-sm">Discovering competitor ads via SociaVault…</p>
-          <p className="text-[11px]">This can take up to a couple of minutes on first load.</p>
+          <p className="text-sm">Discovering competitor ads…</p>
+          <p className="text-[11px]">This runs only while you are in Competitor Ad Library.</p>
         </div>
       )}
 
@@ -344,8 +356,7 @@ export function CompetitorAdLibrarySection({
 
             {tabAds.length === 0 ? (
               <p className="text-muted text-sm py-4">
-                No {report.byCampaignType[activeTab].label} creatives detected from Transparency
-                Center data for the analyzed competitors.
+                No {report.byCampaignType[activeTab].label} creatives detected for the analyzed competitors.
               </p>
             ) : (
               <div className="grid lg:grid-cols-2 gap-4">
@@ -486,7 +497,10 @@ export function CompetitorAdLibrarySection({
             </div>
           )}
 
-          <p className="text-[11px] text-muted leading-relaxed">{report.disclaimer}</p>
+          <p className="text-[11px] text-muted leading-relaxed">
+            Campaign types for competitor creatives are inferred from public ad formats and messaging.
+            This section provides recommendations only — it does not create or publish campaigns.
+          </p>
         </>
       )}
 

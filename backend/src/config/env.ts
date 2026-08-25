@@ -160,4 +160,6 @@ export const env = {
   railwayPublicDomain,
   useMockData: resolveUseMockData(),
   sociavaultApiKey: (process.env.SOCIAVAULT_API_KEY || '').trim(),
+  ahrefsApiKey: (process.env.AHREFS_API_KEY || '').trim(),
+  firecrawlApiKey: (process.env.FIRECRAWL_API_KEY || '').trim(),
 };

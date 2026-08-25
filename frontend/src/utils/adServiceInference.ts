@@ -2,6 +2,11 @@ import type { GoogleAdsCampaignAd } from '../types/connect';
 
 /** Known finance / vertical service phrases (longest first for greedy match). */
 const KNOWN_SERVICES = [
+  'commercial mortgage broker',
+  'commercial mortgage',
+  'commercial property finance',
+  'commercial property loan',
+  'commercial lending',
   'property development finance',
   'property development',
   'commercial property finance',
@@ -36,7 +41,7 @@ const KNOWN_SERVICES = [
   'legal services',
 ].sort((a, b) => b.length - a.length);
 
-type ServiceFamily = 'car_loan' | 'home_loan' | 'personal_loan' | 'business_loan' | 'other';
+type ServiceFamily = 'car_loan' | 'home_loan' | 'personal_loan' | 'business_loan' | 'commercial_mortgage' | 'other';
 
 const FLUFF =
   /^(get|free|quote|call|book|today|now|best|trusted|award|melbourne|sydney|brisbane|perth|australia|online)$/i;
@@ -49,12 +54,21 @@ function titleCase(s: string): string {
     .join(' ');
 }
 
+function isCommercialMortgageService(service: string): boolean {
+  const s = service.toLowerCase();
+  return /\bcommercial\b/.test(s) && /\b(mortgage|property|lending|finance|broker)\b/.test(s);
+}
+
 function familyOf(service: string): ServiceFamily {
   const s = service.toLowerCase();
+  if (isCommercialMortgageService(s)) return 'commercial_mortgage';
   if (/\b(car|auto|vehicle)\b/.test(s) && /\b(loan|finance|lease)\b/.test(s)) return 'car_loan';
-  if (/\b(home|mortgage|property|refinance)\b/.test(s)) return 'home_loan';
+  if (/\b(home|owner[\s-]occupier|first\s*home|refinance)\b/.test(s) && /\b(loan|mortgage)\b/.test(s)) {
+    return 'home_loan';
+  }
+  if (/\b(mortgage|property)\b/.test(s) && !/\bcommercial\b/.test(s)) return 'home_loan';
   if (/\bpersonal\b/.test(s) && /\bloan/.test(s)) return 'personal_loan';
-  if (/\b(business|commercial|sme|equipment|asset)\b/.test(s)) return 'business_loan';
+  if (/\b(business|sme|equipment|asset|working\s*capital|invoice)\b/.test(s)) return 'business_loan';
   return 'other';
 }
 
@@ -168,6 +182,9 @@ export function inferServiceFromAd(ad: Pick<
   if (canon === 'auto loan') primaryService = 'Car Loans';
   if (canon === 'auto loans') primaryService = 'Car Loans';
   if (canon === 'car finance' || canon === 'vehicle finance') primaryService = 'Car Loans';
+  if (canon === 'commercial mortgage') primaryService = 'Commercial Mortgage';
+  if (canon === 'commercial mortgage broker') primaryService = 'Commercial Mortgage Broker';
+  if (canon === 'commercial property finance') primaryService = 'Commercial Property Finance';
 
   const serviceFamily = familyOf(primaryService);
 
@@ -230,7 +247,7 @@ export function buildAdOptimizeFinding(
     severity: 'HIGH',
     title: `Optimize ad: ${primaryService}`,
     description: `Ad-level AI optimization for “${ad.headlines[0] ?? ad.adGroupName}” promoting ${primaryService} in campaign ${campaignName}. Discover service-specific competitors only.`,
-    recommendation: `Generate improved RSA copy for this ${primaryService} ad using SociaVault competitors that advertise the same service.`,
+    recommendation: `Generate improved RSA copy for this ${primaryService} ad using competitors that advertise the same service.`,
     confidence: 88,
     impactMonthly: 0,
     category: 'AD_COPY',

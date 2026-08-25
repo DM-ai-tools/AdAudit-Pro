@@ -18,24 +18,45 @@ function isCarLoanService(service?: string): boolean {
 }
 
 export function competitorCreativeMatchesService(
-  creative: { headlines?: string[]; descriptions?: string[] },
+  creative: {
+    headlines?: string[];
+    descriptions?: string[];
+    totalAdCount?: number;
+    adDurationDays?: number;
+  },
   primaryService?: string
 ): boolean {
   if (!primaryService?.trim()) return true;
-  if (!isCarLoanService(primaryService)) return true;
 
   const headline = (creative.headlines?.[0] ?? '').trim();
   const description = (creative.descriptions?.[0] ?? '').trim();
   const text = `${headline} ${description}`;
+  const libraryBacked =
+    (creative.totalAdCount ?? 0) > 0 || (creative.adDurationDays ?? 0) > 0;
 
-  // Always hide clear home/personal creatives on car-loan runs
-  if (HOME_LOAN.test(headline) || HOME_LOAN.test(text)) return false;
-  if (PERSONAL_LOAN.test(headline) && !CAR_LOAN.test(headline)) return false;
+  if (isCarLoanService(primaryService)) {
+    if (HOME_LOAN.test(headline) || HOME_LOAN.test(text)) return false;
+    if (PERSONAL_LOAN.test(headline) && !CAR_LOAN.test(headline)) return false;
+    if (!headline && !description) return true;
+    if (CAR_LOAN.test(headline) || CAR_LOAN.test(description)) return true;
+    return !HOME_LOAN.test(text) && !PERSONAL_LOAN.test(text);
+  }
 
-  // Empty OCR after backend service filter — still show the card (backend already scoped)
+  // Empty OCR — backend already scoped the advertiser
   if (!headline && !description) return true;
+  // Backend-selected library rivals must stay visible even when OCR copy is generic
+  if (libraryBacked) return true;
 
-  // Prefer positive car match when copy exists; allow through if no conflict family found
-  if (CAR_LOAN.test(headline) || CAR_LOAN.test(description)) return true;
-  return !HOME_LOAN.test(text) && !PERSONAL_LOAN.test(text);
+  const svc = primaryService.toLowerCase().trim();
+  const blob = text.toLowerCase();
+  if (blob.includes(svc)) return true;
+
+  const stop = new Set([
+    'for', 'and', 'the', 'with', 'in', 'of', 'a', 'an', 'to',
+    'services', 'service', 'agency', 'marketing', 'solutions', 'company',
+  ]);
+  const tokens = svc.split(/\W+/).filter((t) => t.length >= 2 && !stop.has(t));
+  if (!tokens.length) return true;
+  if (tokens.length === 1) return blob.includes(tokens[0]!);
+  return tokens.every((t) => blob.includes(t));
 }

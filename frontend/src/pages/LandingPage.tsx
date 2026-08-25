@@ -31,7 +31,7 @@ const modules = [
   { icon: Sparkles, title: 'PMax Placements', desc: 'Brand cannibalization, asset group performance, and placement data.', color: 'orange' },
 ];
 
-const footerLinks = {
+const footerLinks: Record<string, Array<{ label: string; href: string; external?: boolean }>> = {
   Product: [
     { label: 'How It Works', href: '#how-it-works' },
     { label: 'Audit Modules', href: '#modules' },
@@ -40,8 +40,8 @@ const footerLinks = {
   ],
   Company: [
     { label: 'About Us', href: '#pricing' },
-    { label: 'Contact', href: 'mailto:hello@adauditpro.com' },
-    { label: 'Careers', href: '#' },
+    { label: 'Contact', href: 'mailto:hello@adauditpro.com', external: true },
+    { label: 'Careers', href: '#pricing' },
   ],
   Resources: [
     { label: 'Audit Checklist', href: '#modules' },
@@ -49,9 +49,9 @@ const footerLinks = {
     { label: 'FAQ', href: '#how-it-works' },
   ],
   Legal: [
-    { label: 'Privacy Policy', href: '#' },
-    { label: 'Terms of Service', href: '#' },
-    { label: 'Cookie Policy', href: '#' },
+    { label: 'Privacy Policy', href: '/privacy' },
+    { label: 'Terms of Service', href: '/terms' },
+    { label: 'Cookie Policy', href: '/privacy#cookies' },
   ],
 };
 
@@ -74,14 +74,16 @@ export default function LandingPage() {
     <div className="min-h-screen bg-bg">
       {/* Top banner */}
       <div className="bg-gradient-to-r from-orange to-orange-2 text-white text-center py-2 text-sm">
-        <span>🚀 New: AI-powered ad copy analysis with Claude — </span>
+        <span>New: AI-powered ad copy analysis and competitor intelligence — </span>
         <a href="#modules" className="underline font-semibold">Learn more</a>
       </div>
 
       {/* Nav */}
       <nav className="border-b border-border bg-navy/50 backdrop-blur-md sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-          <Logo />
+          <Link to="/" className="hover:opacity-90 transition-opacity">
+            <Logo />
+          </Link>
           <div className="hidden md:flex items-center gap-8 text-sm text-muted">
             <a href="#modules" className="hover:text-white transition-colors">Audit Modules</a>
             <a href="#pricing" className="hover:text-white transition-colors">Pricing</a>
@@ -106,10 +108,10 @@ export default function LandingPage() {
             <div className="inline-flex items-center gap-2 bg-orange/10 border border-orange/30 rounded-full px-3 py-1 mb-6">
               <span className="w-1.5 h-1.5 rounded-full bg-orange animate-pulse-glow" />
               <span className="text-orange text-[10px] font-bold uppercase tracking-wider">
-                AI-Powered · 12 Audit Modules · Instant Results
+                Professional Google Ads audits · 12 modules · Live account data
               </span>
             </div>
-            <h1 className="text-4xl lg:text-5xl xl:text-[3.25rem] font-bold text-white leading-[1.1] mb-6">
+            <h1 className="text-4xl lg:text-5xl xl:text-[3.4rem] font-extrabold text-white leading-[1.08] mb-6 tracking-tight">
               Stop <span className="text-gradient-orange">bleeding budget</span> on Google Ads that don't convert.
             </h1>
             <p className="text-body text-lg mb-8 leading-relaxed">
@@ -429,7 +431,9 @@ export default function LandingPage() {
       <footer className="border-t border-border py-12">
         <div className="max-w-7xl mx-auto px-6 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-8">
           <div className="col-span-2 sm:col-span-3 lg:col-span-1">
-            <Logo size="sm" />
+            <Link to="/" className="inline-block hover:opacity-90 transition-opacity">
+              <Logo size="sm" />
+            </Link>
             <p className="text-muted text-xs mt-4">© 2026 AdAudit Pro</p>
           </div>
           {Object.entries(footerLinks).map(([col, links]) => (
@@ -438,9 +442,15 @@ export default function LandingPage() {
               <ul className="space-y-2">
                 {links.map((link) => (
                   <li key={link.label}>
-                    <a href={link.href} className="text-muted text-sm hover:text-white transition-colors">
-                      {link.label}
-                    </a>
+                    {link.href.startsWith('/') ? (
+                      <Link to={link.href} className="text-muted text-sm hover:text-white transition-colors">
+                        {link.label}
+                      </Link>
+                    ) : (
+                      <a href={link.href} className="text-muted text-sm hover:text-white transition-colors">
+                        {link.label}
+                      </a>
+                    )}
                   </li>
                 ))}
               </ul>

@@ -7,7 +7,12 @@ export type CompetitorCampaignTypeKey =
   | 'performance_max'
   | 'demand_gen'
   | 'app'
-  | 'local_services';
+  | 'local_services'
+  | 'call_ads';
+
+export type AccountCampaignTypeKey =
+  | CompetitorCampaignTypeKey
+  | 'other';
 
 export const COMPETITOR_CAMPAIGN_TYPES: Array<{
   key: CompetitorCampaignTypeKey;
@@ -22,24 +27,104 @@ export const COMPETITOR_CAMPAIGN_TYPES: Array<{
   { key: 'demand_gen', label: 'Demand Gen', tabLabel: 'Demand Gen' },
   { key: 'app', label: 'App Campaigns', tabLabel: 'App Campaigns' },
   { key: 'local_services', label: 'Local Services Ads', tabLabel: 'Local Services Ads' },
+  { key: 'call_ads', label: 'Call Ads', tabLabel: 'Call Ads' },
 ];
 
-export function campaignTypeLabel(key: CompetitorCampaignTypeKey): string {
+export function campaignTypeLabel(key: CompetitorCampaignTypeKey | AccountCampaignTypeKey): string {
+  if (key === 'other') return 'Other Campaigns';
   return COMPETITOR_CAMPAIGN_TYPES.find((t) => t.key === key)?.label ?? key;
 }
 
-/** Map Google Ads advertisingChannelType → library key. */
+/** Map Google Ads advertisingChannelType → library / create key. */
 export function mapGoogleAdsChannelType(channelType?: string): CompetitorCampaignTypeKey | null {
   const t = (channelType ?? '').toUpperCase().replace(/\s+/g, '_');
-  if (t.includes('SEARCH')) return 'search';
-  if (t.includes('DISPLAY')) return 'display';
+  if (t.includes('PERFORMANCE_MAX') || t === 'PERFORMANCE_MAX') return 'performance_max';
+  if (t.includes('DEMAND_GEN') || t.includes('DISCOVERY')) return 'demand_gen';
   if (t.includes('SHOPPING')) return 'shopping';
   if (t.includes('VIDEO')) return 'video';
-  if (t.includes('PERFORMANCE_MAX') || t === 'PERFORMANCE_MAX') return 'performance_max';
-  if (t.includes('DEMAND_GEN')) return 'demand_gen';
+  if (t.includes('DISPLAY')) return 'display';
   if (t.includes('MULTI_CHANNEL') || t.includes('APP')) return 'app';
-  if (t.includes('LOCAL_SERVICES') || t.includes('LOCAL')) return 'local_services';
+  if (t.includes('LOCAL_SERVICES') || t === 'LOCAL') return 'local_services';
+  if (t.includes('SEARCH')) return 'search';
   return null;
+}
+
+/** Normalize UI / free-text campaign type → account bucket. */
+export function normalizeAccountCampaignType(
+  raw?: string | null
+): AccountCampaignTypeKey | null {
+  if (!raw?.trim()) return null;
+  const t = raw.trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (t === 'search' || t.includes('search_ad')) return 'search';
+  if (t === 'display' || t.includes('display')) return 'display';
+  if (t === 'video' || t.includes('youtube') || t.includes('video')) return 'video';
+  if (t === 'shopping' || t.includes('shopping')) return 'shopping';
+  if (t === 'performance_max' || t.includes('pmax') || t.includes('performance_max')) {
+    return 'performance_max';
+  }
+  if (t === 'app' || t.includes('app_campaign')) return 'app';
+  if (t === 'demand_gen' || t.includes('demand')) return 'demand_gen';
+  if (t === 'local_services' || t.includes('local_service')) return 'local_services';
+  if (t === 'call_ads' || t.includes('call')) return 'call_ads';
+  return mapGoogleAdsChannelType(raw) ?? null;
+}
+
+/**
+ * Google Ads API advertisingChannelType for campaign create.
+ * Call ads are Search campaigns with call-focused creatives.
+ */
+export function toGoogleAdsAdvertisingChannelType(
+  type: AccountCampaignTypeKey
+): string {
+  switch (type) {
+    case 'display':
+      return 'DISPLAY';
+    case 'video':
+      return 'VIDEO';
+    case 'shopping':
+      return 'SHOPPING';
+    case 'performance_max':
+      return 'PERFORMANCE_MAX';
+    case 'app':
+      return 'MULTI_CHANNEL';
+    case 'demand_gen':
+      return 'DEMAND_GEN';
+    case 'local_services':
+      return 'LOCAL_SERVICES';
+    case 'call_ads':
+    case 'search':
+    case 'other':
+    default:
+      return 'SEARCH';
+  }
+}
+
+export function supportsAutomatedRsaCreate(type: AccountCampaignTypeKey): boolean {
+  return type === 'search' || type === 'call_ads' || type === 'other';
+}
+
+export function defaultAdFormatLabel(type: AccountCampaignTypeKey): string {
+  switch (type) {
+    case 'display':
+      return 'Responsive Display Ad';
+    case 'video':
+      return 'YouTube / Video Ad';
+    case 'shopping':
+      return 'Shopping product ad';
+    case 'performance_max':
+      return 'Performance Max text assets';
+    case 'app':
+      return 'App campaign creatives';
+    case 'demand_gen':
+      return 'Demand Gen creatives';
+    case 'local_services':
+      return 'Local Services Ad';
+    case 'call_ads':
+      return 'Call Ad';
+    case 'search':
+    default:
+      return 'Responsive Search Ad';
+  }
 }
 
 /**

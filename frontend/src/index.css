@@ -11,12 +11,17 @@
     scroll-behavior: smooth;
   }
 
+  h1, h2, h3, h4 {
+    letter-spacing: -0.02em;
+  }
+
   body {
     margin: 0;
-    font-family: 'Roboto', 'Open Sans', system-ui, sans-serif;
+    font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
     background: #07090F;
     color: #C0CCDB;
     -webkit-font-smoothing: antialiased;
+    letter-spacing: -0.011em;
   }
 
   #root {
@@ -68,7 +73,8 @@
     background: linear-gradient(135deg, #FF6B2B, #F8A51B);
     color: white;
     font-weight: 600;
-    border-radius: 8px;
+    border-radius: 10px;
+    letter-spacing: 0.01em;
     transition: all 0.2s;
   }
 

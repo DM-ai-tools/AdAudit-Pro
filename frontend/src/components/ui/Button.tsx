@@ -12,7 +12,7 @@ export function Button({ variant = 'primary', size = 'md', children, className, 
   return (
     <button
       className={clsx(
-        'inline-flex items-center justify-center gap-2 font-semibold transition-all duration-200 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed',
+        'inline-flex items-center justify-center gap-2 font-semibold tracking-tight transition-all duration-200 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed',
         {
           'btn-primary text-white': variant === 'primary',
           'bg-panel border border-border text-body hover:border-orange/50': variant === 'secondary',
@@ -27,7 +27,7 @@ export function Button({ variant = 'primary', size = 'md', children, className, 
       disabled={disabled || loading}
       {...props}
     >
-      {loading ? 'Loading...' : children}
+        {loading ? 'Please wait…' : children}
     </button>
   );
 }

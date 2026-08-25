@@ -198,6 +198,20 @@ export function buildCompetitorSearchQueries(
   return uniqueStrings(queries, 14);
 }
 
+/** Turn selected Ahrefs keyword-cluster seed terms into competitor search queries. */
+export function buildKeywordClusterQueries(
+  keywords: string[] | undefined,
+  location?: string
+): string[] {
+  const out: string[] = [];
+  for (const raw of (keywords ?? []).slice(0, 12)) {
+    const term = raw.replace(/\s+/g, ' ').trim().slice(0, 48);
+    if (!term || term.length < 3) continue;
+    out.push(term);
+  }
+  return uniqueStrings(out, 12);
+}
+
 /**
  * Extra Transparency search strings for a primary service (ad-level Make This Ad Better).
  * Aimed at producing enough domain-backed advertisers to hit ~4 service-matched rivals.
@@ -230,17 +244,54 @@ export function expandServiceSearchQueries(services: string[], location?: string
     ]) {
       add(t);
     }
+  } else if (/\bcommercial\b/.test(joined) && /\b(mortgage|property|lending|finance)\b/.test(joined)) {
+    for (const t of [
+      'commercial mortgage',
+      'commercial mortgage broker',
+      'commercial property finance',
+      'commercial lending',
+      'commercial property loan',
+    ]) {
+      add(t);
+    }
   } else if (/\bhome\b|\bmortgage\b|\bproperty\b/.test(joined)) {
     for (const t of ['home loan', 'mortgage', 'home loan broker', 'refinance home loan']) add(t);
   } else if (/\bpersonal\b/.test(joined)) {
     for (const t of ['personal loan', 'personal loans', 'unsecured loan']) add(t);
-  } else if (/\bbusiness\b|\bcommercial\b/.test(joined)) {
+  } else if (/\bbusiness\b|\bsme\b/.test(joined)) {
     for (const t of ['business loan', 'business finance', 'sme finance']) add(t);
+  } else if (
+    /\bseo\b|search engine optimization|digital marketing|\bppc\b|\bsem\b|google ads/.test(joined)
+  ) {
+    for (const t of [
+      'seo agency',
+      'seo services',
+      'search engine optimization',
+      'digital marketing agency',
+      'google ads agency',
+      'ppc agency',
+    ]) {
+      add(t);
+    }
   } else {
     for (const s of services.slice(0, 3)) add(s);
   }
 
   return uniqueStrings(out, 12);
+}
+
+/** Put country/metro-specific queries first so lightweight discovery still searches the right market. */
+export function prioritizeMarketQueries(queries: string[], location?: string): string[] {
+  const country = countryLabelFromLocation(location);
+  const loc = (location ?? '').trim().toLowerCase();
+  const prioritized = queries.filter((q) => {
+    const ql = q.toLowerCase();
+    if (country && ql.includes(country.toLowerCase())) return true;
+    if (loc && loc.length > 2 && ql.includes(loc)) return true;
+    return false;
+  });
+  const rest = queries.filter((q) => !prioritized.includes(q));
+  return uniqueStrings([...prioritized, ...rest], queries.length + prioritized.length);
 }
 
 export function inferCompetitorLevelFromText(text: string, locationCount = 0): BusinessLevel {

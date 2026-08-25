@@ -33,7 +33,7 @@ export function WhyThisAdWasGenerated({ optimized }: WhyThisAdWasGeneratedProps)
         <div>
           <p className="text-white text-sm font-semibold">Why This Ad Was Generated</p>
           <p className="text-muted text-[11px] mt-0.5">
-            Competitor-influenced Generation 2.0 — learned from strongest market rivals, not a rewrite
+            Built in order: current ad diagnosed → competitor ads noted → new RSA suggested (not a rewrite)
           </p>
         </div>
         {score != null && (
@@ -42,13 +42,13 @@ export function WhyThisAdWasGenerated({ optimized }: WhyThisAdWasGeneratedProps)
             <p
               className={clsx(
                 'text-lg font-semibold leading-none',
-                score >= 80 ? 'text-teal' : score >= 60 ? 'text-amber-300' : 'text-rose-300'
+                score >= 90 ? 'text-teal' : score >= 70 ? 'text-amber-300' : 'text-rose-300'
               )}
             >
               {score}/100
             </p>
             <p className="text-[10px] text-muted mt-1">
-              {score >= 80 ? 'Target met (80+)' : 'Below target — regenerated for uniqueness'}
+              {score >= 90 ? 'Target met (90+)' : 'Below target — rewritten to differ from current ad'}
             </p>
           </div>
         )}

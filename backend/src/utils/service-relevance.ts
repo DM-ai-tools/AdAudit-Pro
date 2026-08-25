@@ -9,6 +9,7 @@ export type ServiceFamily =
   | 'home_loan'
   | 'personal_loan'
   | 'business_loan'
+  | 'commercial_mortgage'
   | 'insurance'
   | 'real_estate'
   | 'generic';
@@ -23,7 +24,9 @@ const FAMILY_PATTERNS: Record<ConcreteFamily, RegExp> = {
   personal_loan:
     /\b(personal\s*[- ]?loans?|payday\s*[- ]?loans?|cash\s*[- ]?loans?|unsecured\s*[- ]?loans?|line\s*of\s*credit|consumer\s*credit|quick\s*cash|home\s*renovation\s*loans?)\b/i,
   business_loan:
-    /\b(business\s*[- ]?loans?|commercial\s*[- ]?loans?|sme\s*[- ]?(?:loans?|finance)|working\s*capital|equipment\s*[- ]?(?:loans?|finance)|invoice\s*finance|merchant\s*cash)\b/i,
+    /\b(business\s*[- ]?loans?|sme\s*[- ]?(?:loans?|finance)|working\s*capital|equipment\s*[- ]?(?:loans?|finance)|invoice\s*finance|merchant\s*cash|business\s*finance)\b/i,
+  commercial_mortgage:
+    /\b(commercial\s*[- ]?(?:mortgages?|property\s*[- ]?(?:finance|lending|loans?)|lending|finance\s*broker)|commercial\s*[- ]?mortgage\s*[- ]?broker|commercial\s*property\s*[- ]?(?:finance|loan|lending|mortgage)|smsf\s*commercial\s*property)\b/i,
   insurance:
     /\b(car\s*insurance|home\s*insurance|life\s*insurance|health\s*insurance|travel\s*insurance|insurance\s*quotes?)\b/i,
   real_estate:
@@ -34,7 +37,8 @@ const FAMILY_CUES: Record<ConcreteFamily, RegExp> = {
   car_loan: /\b(car|auto|vehicle|automotive|motor(?:ing)?)\b/i,
   home_loan: /\b(home|house|mortgage|property|investor|realty|refinance|lvr)\b/i,
   personal_loan: /\b(personal|payday|unsecured|consumer|renovation)\b/i,
-  business_loan: /\b(business|commercial|sme|merchant|invoice)\b/i,
+  business_loan: /\b(business|sme|merchant|invoice|working\s*capital|equipment)\b/i,
+  commercial_mortgage: /\b(commercial|property\s*finance|property\s*lending)\b/i,
   insurance: /\b(insurance|insure|premium|cover)\b/i,
   real_estate: /\b(realestate|realty|property|listings?)\b/i,
 };
@@ -61,9 +65,30 @@ function uniqueFamilies(items: ServiceFamily[]): ServiceFamily[] {
   return [...new Set(items)];
 }
 
+/** Commercial property / mortgage lending — not owner-occupier home loans or SME working-capital. */
+export function isCommercialMortgageContext(text: string): boolean {
+  const t = stripUrls(text).toLowerCase();
+  if (!/\bcommercial\b/.test(t)) return false;
+  if (/\b(home\s*loan|owner[\s-]occupier|first\s*home|residential\s*home)\b/.test(t)) return false;
+  return /\b(mortgage|property\s*(?:finance|lending|loan)|lending|finance\s*broker)\b/.test(t);
+}
+
+export function isCommercialMortgageTarget(services: string[]): boolean {
+  const joined = services.filter(Boolean).join(' ').toLowerCase();
+  if (isCommercialMortgageContext(joined)) return true;
+  return targetServiceFamilies(services).includes('commercial_mortgage');
+}
+
+/** SME / working-capital business lending without commercial property mortgage intent. */
+function isGenericBusinessLoanContext(text: string): boolean {
+  if (isCommercialMortgageContext(text)) return false;
+  return detectServiceFamilies(text).includes('business_loan');
+}
+
 export function detectServiceFamilies(text: string): ServiceFamily[] {
   const t = stripUrls(text).trim();
   if (!t) return [];
+  if (isCommercialMortgageContext(t)) return ['commercial_mortgage'];
   const found: ServiceFamily[] = [];
   for (const [family, pattern] of Object.entries(FAMILY_PATTERNS) as Array<[ConcreteFamily, RegExp]>) {
     if (pattern.test(t)) found.push(family);
@@ -128,6 +153,11 @@ export function hasConflictingService(text: string, targetServices: string[]): b
   const cleaned = stripUrls(text);
   const found = detectServiceFamilies(cleaned);
   if (!found.length) return false;
+
+  const targetCommercial = targets.includes('commercial_mortgage');
+  const targetBusiness = targets.includes('business_loan');
+  if (targetCommercial && isGenericBusinessLoanContext(cleaned)) return true;
+  if (targetBusiness && isCommercialMortgageContext(cleaned)) return true;
 
   const hasTarget = found.some((f) => targets.includes(f as ConcreteFamily));
   const others = found.filter((f) => f !== 'generic' && !targets.includes(f as ConcreteFamily));

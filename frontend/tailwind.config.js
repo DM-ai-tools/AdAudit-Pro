@@ -18,7 +18,7 @@ export default {
         muted: '#6B7D96',
       },
       fontFamily: {
-        sans: ['Roboto', 'Open Sans', 'system-ui', 'sans-serif'],
+        sans: ['"Plus Jakarta Sans"', 'system-ui', 'sans-serif'],
       },
       backgroundImage: {
         'gradient-orange': 'linear-gradient(135deg, #FF6B2B, #F8A51B)',

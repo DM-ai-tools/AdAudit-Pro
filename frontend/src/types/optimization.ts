@@ -227,6 +227,9 @@ export interface CompetitorAdPreview {
   descriptions: string[];
   offers: string[];
   ctas: string[];
+  keywordRelevanceScore?: number;
+  /** True when headlines were invented from the company name, not Transparency OCR. */
+  syntheticCopy?: boolean;
   trustSignals: string[];
   transparencyUrl?: string;
   creativeUrl?: string;
@@ -341,6 +344,7 @@ export interface CompetitorIntelligenceData {
   }>;
   marketPatterns?: CompetitiveMarketPatterns;
   source: string;
+  discoveryWarning?: string;
 }
 
 export interface StrategistReasoning {
@@ -443,6 +447,8 @@ export interface OptimizedAdContent {
   keywordImprovements?: string[];
   negativeKeywordSuggestions?: string[];
   landingPageRecommendations?: string[];
+  variationLabel?: string;
+  focusedCompetitor?: string;
 }
 
 export interface IntelligenceSummary {
@@ -472,6 +478,8 @@ export interface OptimizeAdResponse {
   campaignPerformance?: CampaignPerformanceSummary | null;
   auditHealthScore?: number;
   competitorAnalysis?: CompetitorIntelligenceData | null;
+  /** Additional RSAs, each focused on beating a specific competitor from Make It Better */
+  optimizedVariations?: OptimizedAdContent[];
 }
 
 export type PublishStepStatus = 'pending' | 'running' | 'complete' | 'failed' | 'skipped';

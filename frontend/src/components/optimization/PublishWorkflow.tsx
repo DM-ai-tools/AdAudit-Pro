@@ -27,9 +27,15 @@ const VISIBLE_STEPS: Array<{ id: string; label: string }> = [
   { id: 'save', label: 'Saving version history' },
 ];
 
-function scenarioConfirmCopy(scenario: OptimizationScenario, campaignName?: string): string {
+function scenarioConfirmCopy(
+  scenario: OptimizationScenario,
+  campaignName?: string,
+  pauseExistingAd?: boolean
+): string {
   if (scenario === 'REPLACE_EXISTING') {
-    return 'The existing ad will be paused (not deleted). A new optimized Responsive Search Ad will be created in paused status until you enable it in Google Ads.';
+    return pauseExistingAd
+      ? 'A new optimized Responsive Search Ad will be created. The existing ad will be paused (not deleted) because you chose that option.'
+      : 'A new optimized Responsive Search Ad will be created. The existing ad stays active (default). Nothing is deleted.';
   }
   if (scenario === 'CREATE_STRATEGY') {
     return 'A new Search campaign, ad group, keywords, and Responsive Search Ad will be created in paused status. Review and enable them in Google Ads when ready.';
@@ -62,6 +68,15 @@ interface PublishWorkflowProps {
   scenario: OptimizationScenario;
   campaignName?: string;
   accountName: string;
+  googleAdsCustomerId?: string;
+  adGroupName?: string;
+  headlineCount?: number;
+  descriptionCount?: number;
+  finalUrl?: string;
+  pauseExistingAd?: boolean;
+  dailyBudget?: number;
+  biddingStrategy?: string;
+  targetCpa?: number;
   publishing: boolean;
   publishResult: PublishAdResponse | null;
   publishError: string | null;
@@ -78,6 +93,15 @@ export function PublishWorkflow({
   scenario,
   campaignName,
   accountName,
+  googleAdsCustomerId,
+  adGroupName,
+  headlineCount,
+  descriptionCount,
+  finalUrl,
+  pauseExistingAd = false,
+  dailyBudget,
+  biddingStrategy,
+  targetCpa,
   publishing,
   publishResult,
   publishError,
@@ -142,7 +166,7 @@ export function PublishWorkflow({
   if (!open) return null;
 
   const visibleSteps = displaySteps.filter((s) => {
-    if (scenario !== 'REPLACE_EXISTING' && s.id === 'pause') return false;
+    if (s.id === 'pause' && (scenario !== 'REPLACE_EXISTING' || !pauseExistingAd)) return false;
     if (scenario !== 'CREATE_STRATEGY' && (s.id === 'campaign' || s.id === 'keywords')) return false;
     if (scenario === 'REPLACE_EXISTING' && s.id === 'campaign') return false;
     return s.status !== 'skipped';
@@ -174,20 +198,77 @@ export function PublishWorkflow({
           {phase === 'confirm' && (
             <>
               <AlertTriangle className="text-orange mb-3" size={28} />
-              <h3 className="text-white font-bold text-xl mb-2">Confirm Publish</h3>
+              <h3 className="text-white font-bold text-xl mb-2">Are you sure?</h3>
               <p className="text-muted text-sm mb-3">
-                You are about to publish optimized ads to your Google Ads account.
-                {campaignName && (
-                  <> This will update <strong className="text-white">{campaignName}</strong>.</>
-                )}
+                You are about to publish these changes to Google Ads.
               </p>
+              <dl className="text-xs space-y-1.5 mb-4 bg-navy/50 rounded-xl p-4 border border-border">
+                <div className="flex justify-between gap-2">
+                  <dt className="text-muted">Google Ads account</dt>
+                  <dd className="text-white text-right">{accountName}</dd>
+                </div>
+                {googleAdsCustomerId && (
+                  <div className="flex justify-between gap-2">
+                    <dt className="text-muted">Customer ID</dt>
+                    <dd className="text-white text-right">{googleAdsCustomerId}</dd>
+                  </div>
+                )}
+                {campaignName && (
+                  <div className="flex justify-between gap-2">
+                    <dt className="text-muted">Campaign</dt>
+                    <dd className="text-white text-right">{campaignName}</dd>
+                  </div>
+                )}
+                {adGroupName && (
+                  <div className="flex justify-between gap-2">
+                    <dt className="text-muted">Ad group</dt>
+                    <dd className="text-white text-right">{adGroupName}</dd>
+                  </div>
+                )}
+                <div className="flex justify-between gap-2">
+                  <dt className="text-muted">Action</dt>
+                  <dd className="text-white text-right">Create new AI-optimized ad</dd>
+                </div>
+                {headlineCount != null && (
+                  <div className="flex justify-between gap-2">
+                    <dt className="text-muted">Headlines</dt>
+                    <dd className="text-white text-right">{headlineCount}</dd>
+                  </div>
+                )}
+                {descriptionCount != null && (
+                  <div className="flex justify-between gap-2">
+                    <dt className="text-muted">Descriptions</dt>
+                    <dd className="text-white text-right">{descriptionCount}</dd>
+                  </div>
+                )}
+                {finalUrl && (
+                  <div className="flex justify-between gap-2">
+                    <dt className="text-muted">Final URL</dt>
+                    <dd className="text-teal text-right break-all max-w-[60%]">{finalUrl}</dd>
+                  </div>
+                )}
+                <div className="flex justify-between gap-2">
+                  <dt className="text-muted">Existing ad</dt>
+                  <dd className="text-white text-right">{pauseExistingAd ? 'PAUSE EXISTING' : 'KEEP ACTIVE'}</dd>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <dt className="text-muted">Budget / bidding</dt>
+                  <dd className="text-white text-right">
+                    {dailyBudget != null
+                      ? `$${dailyBudget.toFixed(2)}/day · ${(biddingStrategy ?? 'MANUAL_CPC').replace(/_/g, ' ')}${
+                          targetCpa != null ? ` · CPA $${targetCpa.toFixed(2)}` : ''
+                        }`
+                      : 'Documented at review — RSA only on publish'}
+                  </dd>
+                </div>
+              </dl>
               <p className="text-muted text-xs mb-6 leading-relaxed">
-                {scenarioConfirmCopy(scenario, campaignName)}
+                {scenarioConfirmCopy(scenario, campaignName, pauseExistingAd)}
               </p>
               <div className="flex gap-3 justify-end">
                 <Button variant="ghost" onClick={onCancel}>Cancel</Button>
                 <Button onClick={onConfirm} className="bg-gradient-to-r from-orange to-orange-2">
-                  Confirm Publish <ChevronRight size={16} />
+                  Approve &amp; Publish <ChevronRight size={16} />
                 </Button>
               </div>
             </>

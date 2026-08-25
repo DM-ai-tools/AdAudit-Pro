@@ -11,6 +11,7 @@ import {
   createOptimizeAdJob,
   failOptimizeAdJob,
   getOptimizeAdJob,
+  updateOptimizeAdJobProgress,
 } from '../services/optimize-ad-jobs.service.js';
 import { getAuditReport } from '../services/audit.service.js';
 import type { Finding } from '../types/index.js';
@@ -110,13 +111,35 @@ function shouldRunAsync(_req: AuthRequest): boolean {
 }
 
 async function runOptimizeAdJob(jobId: string, request: OptimizeAdRequest): Promise<void> {
+  const HARD_TIMEOUT_MS = 12 * 60_000;
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    console.error(`optimize-ad job ${jobId} hard-timeout after ${HARD_TIMEOUT_MS / 1000}s`);
+    void failOptimizeAdJob(
+      jobId,
+      'Optimization took too long and was stopped. Try again with fewer uploaded competitors, or use Find Automatically.'
+    );
+  }, HARD_TIMEOUT_MS);
+
   try {
-    const result = await optimizeAd(request);
+    await updateOptimizeAdJobProgress(jobId, {
+      progress: 5,
+      stage: 'Starting Make It Better…',
+    });
+    const result = await optimizeAd(request, async (update) => {
+      if (timedOut) return;
+      await updateOptimizeAdJobProgress(jobId, update);
+    });
+    if (timedOut) return;
     await completeOptimizeAdJob(jobId, result);
   } catch (err) {
+    if (timedOut) return;
     const { message } = mapOptimizeAdError(err);
     console.error(`optimize-ad job ${jobId} failed:`, err);
     await failOptimizeAdJob(jobId, message);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -143,7 +166,27 @@ export async function handleOptimizeAdStatus(req: AuthRequest, res: Response): P
     return;
   }
 
-  res.json({ status: 'processing' });
+  res.json({
+    status: 'processing',
+    progress: job.partial?.progress ?? 0,
+    stage: job.partial?.stage ?? 'Working…',
+    updatedAt: job.updatedAt,
+    partial: job.partial
+      ? {
+          originalAd: job.partial.originalAd,
+          competitorAnalysis: job.partial.competitorAnalysis,
+          optimized: job.partial.optimized,
+          optimizedVariations: job.partial.optimizedVariations,
+          intelligenceSummary: job.partial.intelligenceSummary,
+          analysisSources: job.partial.analysisSources,
+          campaignPerformance: job.partial.campaignPerformance,
+          auditHealthScore: job.partial.auditHealthScore,
+          scenario: job.partial.scenario,
+          dataSource: job.partial.dataSource,
+          finding: job.partial.finding,
+        }
+      : undefined,
+  });
 }
 
 export async function handleOptimizeAd(req: AuthRequest, res: Response): Promise<void> {

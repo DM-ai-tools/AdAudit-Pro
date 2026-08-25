@@ -237,7 +237,7 @@ export default function ConnectAccountPage() {
       if (detail) message += ` (${detail})`;
       if (googleError === 'invalid_client') {
         setOauthErrorCode('invalid_client');
-        message = 'Invalid Google OAuth client secret. Copy a fresh Client Secret from Google Cloud Console into backend/.env and restart the server.';
+        message = 'Google sign-in could not be completed. Please try connecting your account again.';
       }
       setOauthError(message);
       resetToGoogleLogin();

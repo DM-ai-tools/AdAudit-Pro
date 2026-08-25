@@ -360,6 +360,7 @@ export async function gatherAuditIntelligence(options: {
     industry?: string;
     location?: string;
     competitorUrls?: string[];
+    competitorNames?: string[];
     productsServices?: string[];
     optimizationScope?: 'campaign' | 'ad';
     primaryService?: string;
@@ -401,6 +402,8 @@ export async function gatherAuditIntelligence(options: {
   };
   auditFindingsSnapshot?: Finding[];
   lightweight?: boolean;
+  /** When true, skip competitor discovery (caller will run analyzeCompetitors separately). */
+  skipCompetitorAnalysis?: boolean;
 }): Promise<AuditIntelligence> {
   const stored = await getAuditReport(options.auditId);
   const findings = buildFindingsFromAudit(
@@ -564,6 +567,10 @@ export async function gatherAuditIntelligence(options: {
       .join(' ');
     if (/\bcar\s*loans?\b|\bauto\s*loans?\b|\bvehicle\s*(?:loans?|finance)\b/i.test(pathBlob)) {
       adScopedPrimary = 'Car Loans';
+    } else if (/\bcommercial[\s-]?(?:mortgage|property)\b|\bcommercial\s*property\s*(?:finance|loan|lending)\b/i.test(pathBlob)) {
+      adScopedPrimary = /\bbroker\b/i.test(pathBlob)
+        ? 'Commercial Mortgage Broker'
+        : 'Commercial Mortgage';
     } else if (/\bhome\s*loans?\b|\bmortgage\b/i.test(pathBlob)) {
       adScopedPrimary = 'Home Loans';
     } else if (/\bpersonal\s*loans?\b/i.test(pathBlob)) {
@@ -608,7 +615,18 @@ export async function gatherAuditIntelligence(options: {
     'website-analysis'
   );
   const serviceScopedProducts =
-    isAdScoped && (adScopedPrimary || (options.accountContext?.productsServices?.length ?? 0) > 0)
+    options.accountContext?.primaryService?.trim()
+      ? [
+          options.accountContext.primaryService.trim(),
+          ...(options.accountContext?.productsServices ?? []),
+          ...(options.accountContext?.serviceKeywords ?? []),
+        ]
+          .filter((s, i, arr) => {
+            const key = s.trim().toLowerCase();
+            return key && arr.findIndex((x) => x.trim().toLowerCase() === key) === i;
+          })
+          .slice(0, 4)
+      : isAdScoped && (adScopedPrimary || (options.accountContext?.productsServices?.length ?? 0) > 0)
       ? [
           ...(adScopedPrimary ? [adScopedPrimary] : []),
           ...(options.accountContext?.productsServices ?? []),
@@ -638,11 +656,14 @@ export async function gatherAuditIntelligence(options: {
     source: 'unavailable' as const,
   };
 
-  // Ad-scoped Make This Ad Better: skip crawl here — optimizeAd runs a single focused crawl.
-  // Running it twice (gather + refresh) was causing 10–13+ min jobs and UI timeouts.
-  const competitorAnalysis = isAdScoped
-    ? emptyCompetitorIntel
-    : await withTimeoutFallback(
+  // Never run SociaVault here. Competitor research is on-demand only
+  // (Competitor Ad Library, Create Campaign step 4, Make It Better refresh).
+  // gatherAuditIntelligence used to call analyzeCompetitors after every audit /
+  // optimize job and burned credits even when the user never opened competitors.
+  const competitorAnalysis =
+    isAdScoped || options.skipCompetitorAnalysis !== false
+      ? emptyCompetitorIntel
+      : await withTimeoutFallback(
         analyzeCompetitors({
           businessName: business.name,
           websiteUrl,
@@ -653,6 +674,7 @@ export async function gatherAuditIntelligence(options: {
           monthlySpend: business.monthlySpend ?? options.accountContext?.monthlySpend,
           productsServices: serviceScopedProducts,
           competitorUrls: options.accountContext?.competitorUrls,
+          competitorNames: options.accountContext?.competitorNames,
           websiteIntel: websiteAnalysis,
           currentAd: options.accountContext?.primaryAdSnapshot
             ? {
@@ -665,10 +687,12 @@ export async function gatherAuditIntelligence(options: {
               }
             : undefined,
           lightweight: options.lightweight,
-          serviceScoped: false,
+          // When a primary service/keyword is provided (Create Ad brief / Make It Better),
+          // scope discovery to those keywords via web search → domain → company-ads.
+          serviceScoped: Boolean(options.accountContext?.primaryService?.trim()),
           primaryService: options.accountContext?.primaryService,
         }),
-        options.lightweight ? 90_000 : 180_000,
+        options.lightweight ? 120_000 : 180_000,
         emptyCompetitorIntel,
         'competitor-analysis'
       );

@@ -60,8 +60,7 @@ export default function ProcessingPage() {
           <div>
             <h1 className="text-2xl font-bold text-white mb-2">Auditing your Google Ads account</h1>
             <p className="text-muted text-sm leading-relaxed">
-              Claude is analyzing {audit?.totalModules || 0} modules in parallel
-              {audit?.totalModules === 12 ? ' (3 API streams × 4 modules each)' : ''}.
+              Analyzing {audit?.totalModules || 0} modules in parallel.
               Findings and logs update live as each module completes.
             </p>
           </div>

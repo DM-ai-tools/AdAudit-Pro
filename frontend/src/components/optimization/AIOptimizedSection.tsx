@@ -1,3 +1,4 @@
+import clsx from 'clsx';
 import { AdPreviewPanel } from './AdPreviewPanel';
 import type { OptimizedAdContent, PreviewDevice } from '../../types/optimization';
 
@@ -9,6 +10,9 @@ interface AIOptimizedSectionProps {
   finalUrl?: string;
   previewDevice: PreviewDevice;
   onDeviceChange: (d: PreviewDevice) => void;
+  adCopyOptions?: Array<{ id: string; label: string; content: OptimizedAdContent }>;
+  selectedCopyId?: string;
+  onSelectCopy?: (id: string) => void;
 }
 
 export function AIOptimizedSection({
@@ -19,6 +23,9 @@ export function AIOptimizedSection({
   finalUrl,
   previewDevice,
   onDeviceChange,
+  adCopyOptions,
+  selectedCopyId,
+  onSelectCopy,
 }: AIOptimizedSectionProps) {
   return (
     <div className="bg-panel border border-teal/30 rounded-2xl p-5 space-y-4 glow-teal">
@@ -26,6 +33,11 @@ export function AIOptimizedSection({
         <h3 className="text-white font-semibold flex items-center gap-2">
           <span className="w-2 h-2 rounded-full bg-teal animate-pulse" />
           AI Optimized Ad
+          {adCopyOptions && adCopyOptions.length > 1 && (
+            <span className="text-[10px] font-normal text-muted">
+              ({adCopyOptions.length} copies)
+            </span>
+          )}
         </h3>
         <div className="flex items-center gap-2">
           {optimized.adDifferenceScore != null && (
@@ -42,6 +54,26 @@ export function AIOptimizedSection({
           <span className="text-[10px] uppercase tracking-wider text-teal/80">Recommended for publish</span>
         </div>
       </div>
+
+      {adCopyOptions && adCopyOptions.length > 1 && onSelectCopy && (
+        <div className="flex flex-wrap gap-2">
+          {adCopyOptions.map((opt) => (
+            <button
+              key={opt.id}
+              type="button"
+              onClick={() => onSelectCopy(opt.id)}
+              className={clsx(
+                'px-3 py-1.5 rounded-full text-[11px] font-medium border transition-colors text-left',
+                selectedCopyId === opt.id
+                  ? 'border-teal/50 bg-teal/15 text-teal'
+                  : 'border-border bg-navy/60 text-muted hover:text-white hover:border-teal/30'
+              )}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       <AdPreviewPanel
         headlines={headlines}
