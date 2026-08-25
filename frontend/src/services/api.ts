@@ -755,6 +755,7 @@ export const campaignWizardApi = {
           matchSuggestion?: 'EXACT' | 'PHRASE';
           role?: 'primary' | 'secondary';
           seed?: string;
+          suggestedCpc?: number;
         }>;
         seedThemes?: Array<{
           seed: string;
