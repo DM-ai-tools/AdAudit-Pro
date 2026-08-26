@@ -3393,6 +3393,7 @@ export async function analyzeCompetitors(options: {
     ...(options.productsServices ?? []),
   ].filter(Boolean);
   const uniqueScoped = [...new Set(scopedServiceList.map((s) => s.trim()).filter(Boolean))];
+  const neededRivals = Math.max(MIN_COMPETITORS, options.minCompetitors ?? MIN_COMPETITORS);
   const serviceTermsForMatch =
     options.serviceScoped && uniqueScoped.length
       ? options.strictServiceSeed && options.primaryService
@@ -3814,7 +3815,6 @@ export async function analyzeCompetitors(options: {
 
   // Soft fill: pad toward target count with library-backed rivals (Claude-scored when available)
   let withLibraryAds = sortLibraryRows(strictMatches);
-  const neededRivals = Math.max(MIN_COMPETITORS, options.minCompetitors ?? MIN_COMPETITORS);
   if (
     !options.userProvidedOnly &&
     serviceTermsForMatch.length &&
@@ -3985,7 +3985,7 @@ export async function analyzeCompetitors(options: {
           siteUrl: options.websiteUrl || options.businessName,
           searchQueries: [...new Set(nameQueries)].slice(0, 10),
           region: country,
-          maxCount: MIN_COMPETITORS + 4,
+          maxCount: neededRivals + 6,
           maxEmptyQueries: 2,
         })
       ).filter((t) => {
@@ -3999,7 +3999,7 @@ export async function analyzeCompetitors(options: {
 
       if (recovered.length) {
         const recoverFetches = await Promise.all(
-          recovered.slice(0, MIN_COMPETITORS + 1).map(async (t) => {
+          recovered.slice(0, neededRivals + 4).map(async (t) => {
             const site = await withTimeoutFallback(
               analyzeWebsite(t.url),
               crawlTimeout,
@@ -4112,17 +4112,14 @@ export async function analyzeCompetitors(options: {
     }
   }
 
-  // Ad-scoped: if we have fewer than 4 service-matched rivals, keep searching until we hit 4
-  // Never backfill unrelated rivals when the user uploaded a fixed competitor document.
-  // Create Campaign strict mode: return what we already have so the UI can display ads now.
+  // Create Campaign (minCompetitors set): keep searching until we hit the target, including strict mode
   if (
     !options.userProvidedOnly &&
-    !options.strictServiceSeed &&
     serviceTermsForMatch.length &&
     isSociaVaultConfigured() &&
-    filteredTargets.length < MIN_COMPETITORS
+    filteredTargets.length < neededRivals
   ) {
-    const needed = MIN_COMPETITORS - filteredTargets.length;
+    const needed = neededRivals - filteredTargets.length;
     console.log(
       `[competitors] service backfill: have ${filteredTargets.length}, need ${needed} more for "${serviceTermsForMatch[0]}"`
     );
@@ -4133,13 +4130,13 @@ export async function analyzeCompetitors(options: {
     ];
     const uniqueBackfill = [...new Set(backfillQueries.map((q) => q.trim()).filter(Boolean))].slice(
       0,
-      options.lightweight ? 3 : 6
+      options.lightweight ? 3 : 8
     );
     const recovered = await discoverSociaVaultCompetitors({
       siteUrl: options.websiteUrl || options.businessName,
       searchQueries: uniqueBackfill,
       region: country,
-      maxCount: MIN_COMPETITORS + 6,
+      maxCount: neededRivals + 6,
       maxEmptyQueries: options.lightweight ? 2 : 0,
     });
 
@@ -4159,7 +4156,7 @@ export async function analyzeCompetitors(options: {
       .slice(0, 8);
 
     for (const t of candidates) {
-      if (filteredTargets.length >= MIN_COMPETITORS) break;
+      if (filteredTargets.length >= neededRivals) break;
       if (used.has(t.url.toLowerCase())) continue;
 
       const site = await withTimeoutFallback(
@@ -4219,7 +4216,7 @@ export async function analyzeCompetitors(options: {
       transparencyByUrl.set(t.url.toLowerCase(), result.preview);
       transparencyHits += 1;
       console.log(
-        `[competitors] backfill added ${t.name} (${filteredTargets.length}/${MIN_COMPETITORS})`
+        `[competitors] backfill added ${t.name} (${filteredTargets.length}/${neededRivals})`
       );
     }
 
@@ -4229,10 +4226,11 @@ export async function analyzeCompetitors(options: {
   }
 
   // Backfill only with other targets that have SociaVault ads (never pad with 0-ad stubs)
-  // Lightweight with any gallery hits: skip second-wave gallery fetches (main timeout cause)
+  // Lightweight Make It Better: skip second-wave fetches once any gallery hit exists.
+  // Create Campaign (minCompetitors) always continues until the target is met.
   if (
-    transparencyByUrl.size < MIN_COMPETITORS &&
-    !(options.lightweight && transparencyByUrl.size > 0)
+    transparencyByUrl.size < neededRivals &&
+    !(options.lightweight && !options.minCompetitors && transparencyByUrl.size > 0)
   ) {
     const used = new Set(filteredTargets.map((t) => t.url.toLowerCase()));
     const extras = relevanceScored
@@ -4248,7 +4246,7 @@ export async function analyzeCompetitors(options: {
         }
         return true;
       })
-      .slice(0, options.lightweight ? 4 : 8);
+      .slice(0, options.lightweight && !options.minCompetitors ? 4 : 10);
 
     const extraFetches = await Promise.all(
       extras.map(async (target) => {
@@ -4279,7 +4277,7 @@ export async function analyzeCompetitors(options: {
     );
 
     for (const { target, result } of extraFetches) {
-      if (transparencyByUrl.size >= MIN_COMPETITORS) break;
+      if (transparencyByUrl.size >= neededRivals) break;
       if (!result || (result.profile.totalAdCount ?? 0) <= 0) continue;
       if (
         serviceTermsForMatch.length &&
@@ -4474,11 +4472,10 @@ export async function analyzeCompetitors(options: {
       );
     }
 
-    // Never drop below MIN_COMPETITORS when we already selected library-backed rivals
+    // Never drop below the requested rival count when we already selected library-backed rivals
     if (
-      kept.length < MIN_COMPETITORS &&
-      !isCommercialMortgageTarget(uniqueScoped) &&
-      !options.strictServiceSeed
+      kept.length < neededRivals &&
+      !isCommercialMortgageTarget(uniqueScoped)
     ) {
       const keptKeys = new Set(kept.map((c) => competitorIdentityKey(c)));
       const restore = beforeCompetitors
@@ -4489,10 +4486,10 @@ export async function analyzeCompetitors(options: {
             (b.totalAdCount ?? 0) - (a.totalAdCount ?? 0) ||
             (b.adDurationDays ?? 0) - (a.adDurationDays ?? 0)
         )
-        .slice(0, MIN_COMPETITORS - kept.length);
+        .slice(0, neededRivals - kept.length);
       if (restore.length) {
         console.log(
-          `[CompetitorIntel] restoring ${restore.length} rival(s) to hit MIN_COMPETITORS=${MIN_COMPETITORS}:`,
+          `[CompetitorIntel] restoring ${restore.length} rival(s) to hit target=${neededRivals}:`,
           restore.map((c) => c.name)
         );
         kept = [...kept, ...restore];
@@ -4501,19 +4498,18 @@ export async function analyzeCompetitors(options: {
 
     // Absolute floor: pad from any non-conflicting library rival still on the board
     if (
-      kept.length < MIN_COMPETITORS &&
-      !isCommercialMortgageTarget(uniqueScoped) &&
-      !options.strictServiceSeed
+      kept.length < neededRivals &&
+      !isCommercialMortgageTarget(uniqueScoped)
     ) {
       const keptKeys = new Set(kept.map((c) => competitorIdentityKey(c)));
       const floorPad = beforeCompetitors
         .filter((c) => !keptKeys.has(competitorIdentityKey(c)))
         .filter((c) => (c.totalAdCount ?? 0) > 0 || (c.adDurationDays ?? 0) > 0)
         .filter((c) => !advertiserConflictsWithService(c.name, c.url, uniqueScoped))
-        .slice(0, MIN_COMPETITORS - kept.length);
+        .slice(0, neededRivals - kept.length);
       if (floorPad.length) {
         console.log(
-          `[CompetitorIntel] floor-pad ${floorPad.length} rival(s) → ${kept.length + floorPad.length}/${MIN_COMPETITORS}:`,
+          `[CompetitorIntel] floor-pad ${floorPad.length} rival(s) → ${kept.length + floorPad.length}/${neededRivals}:`,
           floorPad.map((c) => c.name)
         );
         kept = [...kept, ...floorPad];
@@ -4549,8 +4545,8 @@ export async function analyzeCompetitors(options: {
       );
     });
 
-    // Pad gallery cards to match retained competitors (Insights needs ≥4 cards)
-    if (nextGallery.length < MIN_COMPETITORS && !options.strictServiceSeed) {
+    // Pad gallery cards to match retained competitors (Create Campaign needs ≥6 cards)
+    if (nextGallery.length < neededRivals) {
       const galleryKeys = new Set(
         nextGallery.map((g) =>
           competitorIdentityKey({
@@ -4562,7 +4558,7 @@ export async function analyzeCompetitors(options: {
         )
       );
       for (const g of beforeGallery) {
-        if (nextGallery.length >= MIN_COMPETITORS) break;
+        if (nextGallery.length >= neededRivals) break;
         const key = competitorIdentityKey({
           name: g.advertiserName ?? g.name,
           url: g.url,
@@ -4576,9 +4572,9 @@ export async function analyzeCompetitors(options: {
         galleryKeys.add(key);
       }
       // Still short? Seed gallery rows from kept competitor profiles (include all Engine sections)
-      if (nextGallery.length < MIN_COMPETITORS) {
+      if (nextGallery.length < neededRivals) {
         for (const c of filteredCompetitors) {
-          if (nextGallery.length >= MIN_COMPETITORS) break;
+          if (nextGallery.length >= neededRivals) break;
           const key = competitorIdentityKey(c);
           if (galleryKeys.has(key)) continue;
           const seeded = attachProfileSectionsToGallery(

@@ -848,7 +848,7 @@ export async function discoverSociaVaultCompetitors(options: {
         return be - ae;
       });
 
-      for (const advertiser of rankedAdvertisers.slice(0, 6)) {
+      for (const advertiser of rankedAdvertisers.slice(0, 10)) {
         if (region && advertiser.region && advertiser.region !== region) continue;
         let ads = await fetchSociaVaultCompanyAds({
           advertiserId: advertiser.advertiser_id,

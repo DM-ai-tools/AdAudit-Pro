@@ -27,7 +27,7 @@ import {
   type CompetitorAdPreview,
   type CompetitorIntelligence,
 } from './competitor-intelligence.service.js';
-import { adMatchesServiceAndSeeds, filterSeedKeywordsForService, looksLikeEducationalCompetitorName } from '../utils/service-seed-match.js';
+import { filterSeedKeywordsForService, looksLikeEducationalCompetitorName } from '../utils/service-seed-match.js';
 import { claudeTextFromMessage, createClaudeMessage } from '../ai/anthropic-client.js';
 import { ANTHROPIC_OPTIMIZE_MODEL_FALLBACKS } from '../ai/anthropic-models.js';
 import { extractJsonFromClaudeText } from '../utils/claude-json.js';
@@ -972,6 +972,7 @@ export async function discoverCompetitors(opts: {
   forceRefresh?: boolean;
 }): Promise<CompetitorDiscoveryResult> {
   const TARGET = 8;
+  const MIN_DISPLAY = 6;
   const country = resolveMarketCountry({
     location: opts.country,
     websiteUrl: opts.websiteUrl,
@@ -993,7 +994,7 @@ export async function discoverCompetitors(opts: {
   const filteredSeeds = filterSeedKeywordsForService(opts.service, keywords);
   const seedKeywords = filteredSeeds.length ? filteredSeeds : [opts.service];
 
-  const runDiscovery = async (skipCache: boolean, lightweight: boolean) => {
+  const runDiscovery = async (skipCache: boolean) => {
     const analysis = (await analyzeCompetitors({
       businessName: hostFrom(opts.websiteUrl),
       websiteUrl: opts.websiteUrl,
@@ -1002,7 +1003,8 @@ export async function discoverCompetitors(opts: {
       primaryService: opts.service,
       serviceScoped: true,
       location: locationLabel,
-      lightweight,
+      // Full discovery for Create Campaign — lightweight mode stops after the first gallery hit
+      lightweight: false,
       skipSocialPresence: true,
       offer: opts.offer,
       discoverySource: 'sociavault',
@@ -1053,26 +1055,14 @@ export async function discoverCompetitors(opts: {
     if (headlines.some((h) => /shop now/i.test(h))) return false;
     if (descriptions.some((d) => /^visit .+ for quality service/i.test(d))) return false;
 
-    // Claude semantic score is primary — ads need not contain exact service keywords
+    // Claude semantic score is primary — keep on-service ads and real library copy
     if (typeof g.keywordRelevanceScore === 'number') {
-      if (g.keywordRelevanceScore < 50) return false;
+      if (g.keywordRelevanceScore < 40) return false;
       return headlines.length > 0 || descriptions.length > 0 || Boolean(g.previewImageUrl);
     }
 
-    // No Claude score yet — soft lexical / name fallback
-    const advertiserBlob = `${g.advertiserName ?? g.name} ${g.destinationUrl ?? g.url ?? ''}`;
-    const copyOk = adMatchesServiceAndSeeds(
-      { headlines, descriptions, destinationUrl: g.destinationUrl ?? g.url },
-      opts.service,
-      seedKeywords
-    );
-    const nameOk = adMatchesServiceAndSeeds(
-      { headlines: [advertiserBlob], descriptions: [] },
-      opts.service,
-      []
-    );
-    if (!copyOk && !nameOk) return false;
-    return headlines.length > 0 || descriptions.length > 0 || Boolean(g.previewImageUrl) || nameOk;
+    // No Claude score — keep real library creatives; exact service keywords are not required
+    return headlines.length > 0 || descriptions.length > 0 || Boolean(g.previewImageUrl);
   };
 
   /** Build UI cards from analyzeCompetitors output (already service-filtered). */
@@ -1159,17 +1149,50 @@ export async function discoverCompetitors(opts: {
       );
   };
 
-  // forceRefresh always skips cache; otherwise one lightweight pass for speed
-  let analysis = await runDiscovery(Boolean(opts.forceRefresh), true);
+  // forceRefresh always skips cache; otherwise one pass then a full refresh if we are still short
+  let analysis = await runDiscovery(Boolean(opts.forceRefresh));
   let competitors = toCards(analysis);
 
-  // If cache/live returned rivals without enough relevant ads, force a fresh discovery once
-  if (competitors.length < TARGET && !opts.forceRefresh) {
+  if (competitors.length < MIN_DISPLAY && !opts.forceRefresh) {
     console.warn(
-      `[campaign-wizard] only ${competitors.length}/${TARGET} with relevant ads — refreshing discovery for "${opts.service}"`
+      `[campaign-wizard] only ${competitors.length}/${MIN_DISPLAY} with relevant ads — refreshing discovery for "${opts.service}"`
     );
-    analysis = await runDiscovery(true, true);
+    analysis = await runDiscovery(true);
     competitors = toCards(analysis);
+  }
+
+  // If Claude scoring or identity matching still left too few cards, keep extra library advertisers
+  if (competitors.length < MIN_DISPLAY) {
+    const used = new Set(competitors.map((c) => c.name.toLowerCase().trim()));
+    for (const g of analysis.adGallery ?? []) {
+      if (competitors.length >= TARGET) break;
+      if (!isRealCreative(g)) continue;
+      const key = (g.advertiserName ?? g.name).toLowerCase().trim();
+      if (!key || used.has(key)) continue;
+      used.add(key);
+      competitors.push({
+        name: g.advertiserName ?? g.name,
+        url: g.destinationUrl ?? g.url,
+        advertiserId: g.advertiserId,
+        headlines: g.headlines ?? [],
+        descriptions: g.descriptions ?? [],
+        totalAdCount: g.totalAdCount ?? 1,
+        activeAdCount: g.activeAdCount ?? (g.isActive === false ? 0 : 1),
+        adDurationDays: g.adDurationDays ?? 0,
+        previewImageUrl: g.previewImageUrl,
+        transparencyUrl:
+          g.transparencyUrl ??
+          (g.advertiserId
+            ? `https://adstransparency.google.com/advertiser/${g.advertiserId}?region=${country ?? 'anywhere'}`
+            : undefined),
+        creativeUrl: g.creativeUrl,
+        adLink: g.adLink ?? g.creativeUrl,
+        adSource: g.adSource,
+        confidenceScore: g.confidenceScore,
+        isMostRelevant: false,
+        allAds: [g],
+      });
+    }
   }
 
   competitors = competitors.slice(0, Math.max(TARGET, 10));
