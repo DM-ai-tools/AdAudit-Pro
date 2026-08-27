@@ -15,6 +15,9 @@ backend/.env
 backend/.env.*
 frontend/.env
 frontend/.env.*
+*.pem
+*.p12
+credentials.json
 
 # Local / scratch data
 backend/.data

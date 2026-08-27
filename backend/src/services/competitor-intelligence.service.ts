@@ -15,6 +15,7 @@ import {
   getSociaVaultErrorState,
   isLikelyArticleAdvertiser,
   isSociaVaultConfigured,
+  isSociaVaultCreditsExhausted,
   resetSociaVaultErrorState,
   resolveCompetitorViaSociaVault,
 } from './sociavault-google-ad-library.service.js';
@@ -66,10 +67,14 @@ import {
   filterSeedKeywordsForService,
   keywordMatchesServiceSeed,
   looksLikeEducationalCompetitorName,
+  looksLikeQueryNotAdvertiser,
+  looksLikeNonCommercialAdvertiser,
+  copyConflictsWithLegalService,
 } from '../utils/service-seed-match.js';
 import {
   isAdRelevant,
   scoreAdsForKeywordRelevance,
+  scoreAdvertisersForService,
   AD_RELEVANCE_THRESHOLD,
   type AdRelevanceInput,
 } from '../utils/ad-keyword-relevance.js';
@@ -1320,22 +1325,24 @@ async function applyLlmRelevanceToFetchedAds(opts: {
   let keptCount = 0;
   for (const item of items) {
     const row = scores.get(item.id);
-    const keep = isAdRelevant(row, true);
+    const keep = isAdRelevant(row, false);
     if (row) item.preview.keywordRelevanceScore = row.score;
     if (keep) keptCount += 1;
   }
 
   if (!keptCount) {
     console.warn(
-      `[CompetitorIntel] LLM marked 0/${items.length} ads relevant — keeping fetched creatives`
+      `[CompetitorIntel] LLM marked 0/${items.length} ads relevant — dropping off-service creatives`
     );
-    return false;
+    opts.extraAdsByUrl.clear();
+    opts.transparencyByUrl.clear();
+    return true;
   }
 
   for (const [url, extras] of [...opts.extraAdsByUrl.entries()]) {
     const kept = extras.filter((preview) => {
       const item = items.find((x) => x.preview === preview);
-      return item ? isAdRelevant(scores.get(item.id), true) : true;
+      return item ? isAdRelevant(scores.get(item.id), false) : false;
     });
     if (kept.length) opts.extraAdsByUrl.set(url, kept);
     else opts.extraAdsByUrl.delete(url);
@@ -1343,7 +1350,7 @@ async function applyLlmRelevanceToFetchedAds(opts: {
 
   for (const [url, preview] of [...opts.transparencyByUrl.entries()]) {
     const item = items.find((x) => x.preview === preview);
-    if (item && !isAdRelevant(scores.get(item.id), true)) {
+    if (item && !isAdRelevant(scores.get(item.id), false)) {
       const extras = opts.extraAdsByUrl.get(url);
       if (extras?.[0]) opts.transparencyByUrl.set(url, extras[0]!);
       else opts.transparencyByUrl.delete(url);
@@ -1817,7 +1824,7 @@ async function fetchCompetitorGalleryForTarget(
   // Sequential 16s timeouts were returning before ad-details landed, so the UI
   // showed name/"Shop Now" stubs instead of Transparency creatives.
   const svMatchingPromise =
-    serviceSeed && isSociaVaultConfigured()
+    serviceSeed && isSociaVaultConfigured() && !isSociaVaultCreditsExhausted()
       ? withTimeoutFallback(
           fetchSociaVaultMatchingAds({
             name: target.name,
@@ -1836,7 +1843,7 @@ async function fetchCompetitorGalleryForTarget(
       : Promise.resolve([]);
 
   const svSinglePromise =
-    !serviceSeed && isSociaVaultConfigured()
+    !serviceSeed && isSociaVaultConfigured() && !isSociaVaultCreditsExhausted()
       ? withTimeoutFallback(
           fetchSociaVaultCompetitorAd({
             name: target.name,
@@ -1990,6 +1997,18 @@ function seedCompetitorsForServices(services: string[], location?: string): Comp
 
   if (!au) return [];
 
+  if (/\b(law|lawyer|solicitor|legal|conveyanc)\b/.test(joined)) {
+    return [
+      { name: 'Maurice Blackburn', url: 'https://www.mauriceblackburn.com.au' },
+      { name: 'DLA Piper', url: 'https://www.dlapiper.com' },
+      { name: 'King & Wood Mallesons', url: 'https://www.kwm.com' },
+      { name: 'Corrs Chambers Westgarth', url: 'https://www.corrs.com.au' },
+      { name: 'Turtons Lawyers', url: 'https://www.turtons.com.au' },
+      { name: 'MinterEllison', url: 'https://www.minterellison.com' },
+      { name: 'Allens', url: 'https://www.allens.com.au' },
+      { name: 'Clayton Utz', url: 'https://www.claytonutz.com' },
+    ];
+  }
   if (/\bcar\b|\bauto\b|\bvehicle\b/.test(joined)) {
     const national = [
       { name: 'Loans.com.au', url: 'https://www.loans.com.au' },
@@ -2385,7 +2404,7 @@ async function resolveCompetitorTargets(options: {
 
   // Prefer SociaVault discovery FIRST — these already have ad duration / active / total counts
   resetSociaVaultErrorState();
-  if (isSociaVaultConfigured() && options.websiteUrl) {
+  if (isSociaVaultConfigured() && options.websiteUrl && !isSociaVaultCreditsExhausted()) {
     const serviceHints = businessContext.primaryServices.slice(0, 1);
     const keywordQueries = buildKeywordClusterQueries(options.searchKeywords, options.location)
       .filter((q) =>
@@ -2396,6 +2415,7 @@ async function resolveCompetitorTargets(options: {
     const baseQueries = strictSeedMode
       ? prioritizeMarketQueries(
           [
+            ...(primaryService ? expandServiceSearchQueries([primaryService], options.location) : []),
             ...(primaryService ? [primaryService] : []),
             ...keywordQueries,
           ],
@@ -2433,6 +2453,14 @@ async function resolveCompetitorTargets(options: {
       .filter((t) => {
         if (isLikelyArticleAdvertiser(t.name)) {
           console.log(`[competitors] discovery skip article-like name: ${t.name}`);
+          return false;
+        }
+        if (looksLikeNonCommercialAdvertiser(t.name, t.url)) {
+          console.log(`[competitors] discovery skip non-commercial: ${t.name} (${t.url})`);
+          return false;
+        }
+        if (looksLikeQueryNotAdvertiser(t.name, primaryService)) {
+          console.log(`[competitors] discovery skip query-title: ${t.name}`);
           return false;
         }
         if (options.country && !competitorUrlMatchesCountry(t.url, options.country)) {
@@ -2489,16 +2517,18 @@ async function resolveCompetitorTargets(options: {
     withAds() < minNeeded &&
     (svStatus.creditsExhausted || !isSociaVaultConfigured())
   ) {
-    const fallbackQueries = strictSeedMode
-      ? buildKeywordClusterQueries(options.searchKeywords, options.location)
-          .filter((q) =>
-            primaryService ? keywordMatchesServiceSeed(q, primaryService) : true
-          )
-          .slice(0, 10)
-      : [
+    const fallbackQueries = [
+      ...new Set(
+        [
+          ...(primaryService ? expandServiceSearchQueries([primaryService], options.location) : []),
+          ...expandServiceSearchQueries(businessContext.primaryServices, options.location),
           ...buildKeywordClusterQueries(options.searchKeywords, options.location),
-          ...buildCompetitorSearchQueries(businessContext, options.businessName),
-        ].slice(0, 10);
+          ...(primaryService ? [primaryService, `${primaryService} ${options.location ?? ''}`.trim()] : []),
+        ]
+          .map((q) => q.trim())
+          .filter((q) => q.length >= 3)
+      ),
+    ].slice(0, 12);
     console.log(
       `[competitors] Transparency Center fallback (${fallbackQueries.length} queries) — SociaVault ${svStatus.creditsExhausted ? 'credits exhausted' : 'unavailable'}`
     );
@@ -2565,7 +2595,7 @@ async function resolveCompetitorTargets(options: {
       if (!autoTargets.length) break;
     }
 
-    if (pendingClaude.length && isSociaVaultConfigured()) {
+    if (pendingClaude.length && isSociaVaultConfigured() && !isSociaVaultCreditsExhausted()) {
       const verified = await Promise.all(
         pendingClaude.map(async (t) => {
           try {
@@ -2605,12 +2635,71 @@ async function resolveCompetitorTargets(options: {
         });
         if (withAds() >= MIN_COMPETITORS + 2) break;
       }
+    } else if (pendingClaude.length) {
+      console.log(
+        `[competitors] keeping ${pendingClaude.length} LLM-identified rival(s) (ad library unavailable)`
+      );
+      for (const t of pendingClaude) {
+        if (targets.length >= minNeeded + 4) break;
+        targets.push({ name: t.name, url: t.url });
+      }
     }
   }
 
-  // Drop any remaining candidates that never got SociaVault activity — they render as zeros in the UI
+  // Seeded domains have no activity until we look them up — otherwise they are dropped
+  const unresolved = targets.filter((t) => (t.activity?.totalAdCount ?? 0) <= 0);
+  if (
+    unresolved.length &&
+    isSociaVaultConfigured() &&
+    !isSociaVaultCreditsExhausted() &&
+    !options.lightweight
+  ) {
+    console.log(`[competitors] resolving ${unresolved.length} seed domain(s) against the ad library`);
+    const verified = await Promise.all(
+      unresolved.slice(0, 10).map(async (t) => {
+        try {
+          const resolved = await withTimeout(
+            resolveCompetitorViaSociaVault({
+              name: t.name,
+              url: t.url,
+              country: options.country,
+            }),
+            35_000,
+            `sociavault-resolve-seed:${t.url}`
+          );
+          return { original: t, resolved };
+        } catch {
+          return { original: t, resolved: null };
+        }
+      })
+    );
+    for (const { original, resolved } of verified) {
+      if (!resolved || resolved.activity.totalAdCount <= 0) continue;
+      const idx = targets.findIndex((t) => t.url.toLowerCase() === original.url.toLowerCase());
+      const next = {
+        name: resolved.name || original.name,
+        url: resolved.url || original.url,
+        advertiserId: original.advertiserId,
+        activity: {
+          totalAdCount: resolved.activity.totalAdCount,
+          activeAdCount: resolved.activity.activeAdCount,
+          adDurationDays: resolved.activity.adDurationDays,
+          firstShown: resolved.activity.firstShown,
+          lastShown: resolved.activity.lastShown,
+          avgCreativeDurationDays: resolved.activity.avgCreativeDurationDays,
+        },
+      };
+      if (idx >= 0) targets[idx] = next;
+      else targets.push(next);
+    }
+  }
+
+  // Prefer SociaVault-backed rivals; when credits are exhausted keep Transparency / LLM / seed names
   const proven = targets.filter((t) => (t.activity?.totalAdCount ?? 0) > 0);
-  const sorted = (proven.length ? proven : targets).sort(
+  const keepUnproven =
+    proven.length < minNeeded &&
+    (isSociaVaultCreditsExhausted() || !isSociaVaultConfigured());
+  const sorted = (proven.length && !keepUnproven ? proven : targets).sort(
     (a, b) =>
       (b.activity?.adDurationDays ?? 0) - (a.activity?.adDurationDays ?? 0) ||
       (b.activity?.activeAdCount ?? 0) - (a.activity?.activeAdCount ?? 0) ||
@@ -3368,11 +3457,24 @@ export async function analyzeCompetitors(options: {
         options.websiteUrl,
         country
       );
-      if (hasUsableCompetitorIntel(filtered)) {
+      const serviceLabel = options.primaryService ?? options.productsServices?.[0];
+      const displayableCached = (filtered.competitors ?? []).filter(
+        (c) => !looksLikeQueryNotAdvertiser(c.name, serviceLabel)
+      );
+      if (hasUsableCompetitorIntel(filtered) && displayableCached.length > 0) {
         console.log(
           `[CompetitorIntel] cache hit (${country ?? 'global'}) — ${filtered.competitors.length} regional English rivals`
         );
-        let hydrated = ensureTransparencyLinks(filtered, country);
+        let hydrated = ensureTransparencyLinks(
+          {
+            ...filtered,
+            competitors: displayableCached,
+            adGallery: (filtered.adGallery ?? []).filter(
+              (g) => !looksLikeQueryNotAdvertiser(g.advertiserName ?? g.name, serviceLabel)
+            ),
+          },
+          country
+        );
         if (!hasTransparencyCreatives(hydrated)) {
           hydrated = await hydrateTransparencyCreatives(hydrated, country, {
             service: options.primaryService ?? options.productsServices?.[0],
@@ -3384,7 +3486,13 @@ export async function analyzeCompetitors(options: {
         }
         return hydrated;
       }
-      console.log('[CompetitorIntel] cache hit rejected — wrong region or non-English ads');
+      if ((filtered.competitors?.length ?? 0) > 0 && displayableCached.length === 0) {
+        console.log(
+          '[CompetitorIntel] cache hit skipped — query/course titles only, fetching live rivals'
+        );
+      } else {
+        console.log('[CompetitorIntel] cache hit rejected — wrong region or non-English ads');
+      }
     }
   }
 
@@ -3394,6 +3502,9 @@ export async function analyzeCompetitors(options: {
   ].filter(Boolean);
   const uniqueScoped = [...new Set(scopedServiceList.map((s) => s.trim()).filter(Boolean))];
   const neededRivals = Math.max(MIN_COMPETITORS, options.minCompetitors ?? MIN_COMPETITORS);
+  // Create Campaign only: hide rivals without an LLM-approved same-service ad.
+  // Make It Better is lightweight and must still show library-backed competitors.
+  const requireLlmApprovedAds = Boolean(options.strictServiceSeed) && !options.lightweight;
   const serviceTermsForMatch =
     options.serviceScoped && uniqueScoped.length
       ? options.strictServiceSeed && options.primaryService
@@ -3670,8 +3781,36 @@ export async function analyzeCompetitors(options: {
     preview: transparencyByUrl.get(target.url.toLowerCase()),
   }));
 
+  const advertiserLlmScores = new Map<string, { relevant: boolean; score: number }>();
+  if (libraryPool.length && (serviceTermsForMatch.length || seedKeywords.length) && !options.userProvidedOnly) {
+    const scored = await scoreAdvertisersForService(
+      libraryPool.map((x, i) => ({
+        id: String(i),
+        name: x.profile.name,
+        url: x.profile.url || x.target.url,
+        headlines: x.preview?.headlines ?? x.profile.headlines,
+        descriptions: x.preview?.descriptions ?? x.profile.descriptions,
+      })),
+      {
+        service: options.primaryService ?? serviceTermsForMatch[0] ?? '',
+        keywords: seedKeywords,
+      }
+    );
+    libraryPool.forEach((x, i) => {
+      const row = scored.get(String(i));
+      if (row) advertiserLlmScores.set(competitorIdentityKey(x.profile), row);
+    });
+    console.log(
+      `[CompetitorIntel] LLM advertiser scoring: ${[...advertiserLlmScores.values()].filter((r) => r.relevant).length}/${libraryPool.length} related to "${options.primaryService ?? serviceTermsForMatch[0]}"`
+    );
+  }
+
   const hasLibraryPresence = (x: LibraryRow) =>
-    (x.profile.totalAdCount ?? 0) > 0 || (x.preview?.totalAdCount ?? 0) > 0;
+    (x.profile.totalAdCount ?? 0) > 0 ||
+    (x.preview?.totalAdCount ?? 0) > 0 ||
+    Boolean(x.preview) ||
+    Boolean(x.profile.advertiserId) ||
+    Boolean(x.target.advertiserId);
 
   const regionMatchScore = (x: LibraryRow): number => {
     if (!locationCity) return 0;
@@ -3741,8 +3880,12 @@ export async function analyzeCompetitors(options: {
     // Uploaded competitors: keep them even if creative doesn't match the ad's service lock
     if (options.userProvidedOnly) return true;
     if (!serviceTermsForMatch.length) return true;
-    if (looksLikeEducationalCompetitorName(x.profile.name)) {
-      console.log(`[CompetitorIntel] drop ${x.profile.name}: educational / SERP title, not an advertiser`);
+    if (looksLikeQueryNotAdvertiser(x.profile.name, serviceTermsForMatch[0])) {
+      console.log(`[CompetitorIntel] drop ${x.profile.name}: query/service title, not an advertiser`);
+      return false;
+    }
+    if (looksLikeNonCommercialAdvertiser(x.profile.name, x.profile.url || x.target.url)) {
+      console.log(`[CompetitorIntel] drop ${x.profile.name}: non-commercial (edu/gov/association)`);
       return false;
     }
     if (advertiserConflictsWithService(x.profile.name, x.profile.url, serviceTermsForMatch)) {
@@ -3753,70 +3896,47 @@ export async function analyzeCompetitors(options: {
     }
     const extras = extraAdsByUrl.get(x.target.url.toLowerCase()) ?? [];
     const previewsToCheck = [...extras, ...(x.preview ? [x.preview] : [])];
+    const hasOnServiceAd = previewsToCheck.some(
+      (p) =>
+        typeof p.keywordRelevanceScore === 'number' &&
+        p.keywordRelevanceScore >= AD_RELEVANCE_THRESHOLD
+    );
 
-    // Claude already filtered creatives — keep any rival with a remaining scored ad
-    if (llmRelevanceApplied) {
-      const hasLlmAd = previewsToCheck.some(
-        (p) =>
-          typeof p.keywordRelevanceScore === 'number' &&
-          p.keywordRelevanceScore >= AD_RELEVANCE_THRESHOLD
-      );
-      if (hasLlmAd || x.preview || extras.length) return true;
+    const llmAdvertiser = advertiserLlmScores.get(competitorIdentityKey(x.profile));
+    if (
+      requireLlmApprovedAds &&
+      llmAdvertiser &&
+      !(llmAdvertiser.relevant && llmAdvertiser.score >= AD_RELEVANCE_THRESHOLD)
+    ) {
       console.log(
-        `[CompetitorIntel] drop ${x.profile.name}: no Claude-relevant "${serviceTermsForMatch[0]}" creative`
+        `[CompetitorIntel] drop ${x.profile.name}: LLM says not related to "${serviceTermsForMatch[0]}" (${llmAdvertiser.score})`
       );
       return false;
     }
 
-    if (!previewsToCheck.length) {
-      if (
-        options.strictServiceSeed &&
-        copyMatchesServiceSeed(
-          `${x.profile.name} ${x.profile.url} ${(x.profile.headlines ?? []).join(' ')}`,
-          serviceTermsForMatch[0] ?? ''
-        )
-      ) {
-        return true;
-      }
+    // Create Campaign: keep only rivals with at least one same-service ad
+    if (requireLlmApprovedAds) {
+      if (hasOnServiceAd) return true;
       console.log(
-        `[CompetitorIntel] drop ${x.profile.name}: no service-matched "${serviceTermsForMatch[0]}" creative`
+        `[CompetitorIntel] drop ${x.profile.name}: no LLM-approved "${serviceTermsForMatch[0]}" ad`
       );
       return false;
     }
 
-    // No Claude pass — lexical / family fallback only
-    const ok = options.strictServiceSeed
-      ? previewsToCheck.some((p) =>
-          adMatchesServiceAndSeeds(
-            { headlines: p.headlines, descriptions: p.descriptions },
-            serviceTermsForMatch[0] ?? '',
-            seedKeywords
-          )
-        ) ||
-        copyMatchesServiceSeed(`${x.profile.name} ${x.profile.url}`, serviceTermsForMatch[0] ?? '')
-      : previewsToCheck.some((p) =>
-          creativeMatchesTargetService(
-            {
-              headlines: p.headlines,
-              descriptions: p.descriptions,
-              destinationUrl: p.destinationUrl ?? p.url,
-            },
-            serviceTermsForMatch
-          )
-        );
-    if (!ok) {
-      console.log(
-        `[CompetitorIntel] drop ${x.profile.name}: creative not matching "${serviceTermsForMatch[0]}"`
-      );
-      return false;
-    }
-    return true;
+    if (options.serviceScoped && llmRelevanceApplied && hasOnServiceAd) return true;
+
+    if (hasLibraryPresence(x) || previewsToCheck.length) return true;
+    console.log(
+      `[CompetitorIntel] drop ${x.profile.name}: no library ads for "${serviceTermsForMatch[0]}"`
+    );
+    return false;
   });
 
   // Soft fill: pad toward target count with library-backed rivals (Claude-scored when available)
   let withLibraryAds = sortLibraryRows(strictMatches);
   if (
     !options.userProvidedOnly &&
+    !options.strictServiceSeed &&
     serviceTermsForMatch.length &&
     withLibraryAds.length < neededRivals
   ) {
@@ -3829,36 +3949,11 @@ export async function analyzeCompetitors(options: {
         if (advertiserConflictsWithService(x.profile.name, x.profile.url, serviceTermsForMatch)) {
           return false;
         }
+        const llm = advertiserLlmScores.get(competitorIdentityKey(x.profile));
+        if (llm) return llm.relevant || llm.score >= AD_RELEVANCE_THRESHOLD;
         const extras = extraAdsByUrl.get(x.target.url.toLowerCase()) ?? [];
-        if (!x.preview && !extras.length) return false;
-        if (llmRelevanceApplied) {
-          // After Claude filter, remaining creatives are already service-related
-          return Boolean(x.preview || extras.length);
-        }
-        if (isCommercialMortgageTarget(serviceTermsForMatch)) {
-          return [...extras, ...(x.preview ? [x.preview] : [])].some((p) =>
-            creativeMatchesTargetService(
-              {
-                headlines: p.headlines,
-                descriptions: p.descriptions,
-                destinationUrl: p.destinationUrl ?? p.url,
-              },
-              serviceTermsForMatch
-            )
-          );
-        }
-        // Strict without Claude: allow soft pad only when name/copy looks on-service
-        if (options.strictServiceSeed) {
-          const headlineBlob = [
-            ...(x.preview?.headlines ?? []),
-            ...extras.flatMap((e) => e.headlines ?? []),
-          ].join(' ');
-          return copyMatchesServiceSeed(
-            `${x.profile.name} ${headlineBlob}`,
-            serviceTermsForMatch[0] ?? ''
-          );
-        }
-        return true;
+        if (x.preview || extras.length) return true;
+        return (x.profile.totalAdCount ?? 0) > 0;
       })
     ).slice(0, neededRivals - withLibraryAds.length);
     if (soft.length) {
@@ -3875,6 +3970,27 @@ export async function analyzeCompetitors(options: {
     const used = new Set(withLibraryAds.map((x) => competitorIdentityKey(x.profile)));
     const missing = libraryPool.filter((x) => !used.has(competitorIdentityKey(x.profile)));
     withLibraryAds = [...withLibraryAds, ...missing];
+  }
+
+  if (withLibraryAds.length === 0 && libraryPool.length && !options.userProvidedOnly) {
+    const llmKept = libraryPool.filter((x) => {
+      if (looksLikeEducationalCompetitorName(x.profile.name)) return false;
+      if (
+        serviceTermsForMatch.length &&
+        advertiserConflictsWithService(x.profile.name, x.profile.url, serviceTermsForMatch)
+      ) {
+        return false;
+      }
+      const llm = advertiserLlmScores.get(competitorIdentityKey(x.profile));
+      if (llm) return llm.relevant || llm.score >= AD_RELEVANCE_THRESHOLD;
+      return hasLibraryPresence(x);
+    });
+    if (llmKept.length) {
+      console.log(
+        `[CompetitorIntel] keeping ${llmKept.length} Transparency/LLM rival(s) without SociaVault metrics`
+      );
+      withLibraryAds = sortLibraryRows(llmKept);
+    }
   }
 
   if (withLibraryAds.length > 0) {
@@ -3955,6 +4071,10 @@ export async function analyzeCompetitors(options: {
     );
     filteredTargets = relevanceScored.map((x) => x.target);
     filteredCompetitors = relevanceScored.map((x) => x.profile);
+  } else if (isSociaVaultCreditsExhausted() || !isSociaVaultConfigured()) {
+    console.warn(
+      '[competitors] ad library unavailable — skipping empty recovery so Transparency/LLM rivals can display'
+    );
   } else {
     // Do NOT keep Claude-invented domains with 0 library metrics — they render as zeros in Make It Better
     console.warn(
@@ -3971,6 +4091,9 @@ export async function analyzeCompetitors(options: {
       const nameQueries = options.strictServiceSeed
         ? prioritizeMarketQueries(
             [
+              ...(options.primaryService
+                ? expandServiceSearchQueries([options.primaryService], options.location)
+                : []),
               ...(options.primaryService ? [options.primaryService] : []),
               ...buildKeywordClusterQueries(seedKeywords, options.location),
             ],
@@ -3993,6 +4116,11 @@ export async function analyzeCompetitors(options: {
           console.log(`[competitors] recovery skip article-like name: ${t.name}`);
           return false;
         }
+        if (looksLikeNonCommercialAdvertiser(t.name, t.url)) {
+          console.log(`[competitors] recovery skip non-commercial: ${t.name}`);
+          return false;
+        }
+        if (looksLikeQueryNotAdvertiser(t.name, options.primaryService)) return false;
         if (country && !competitorUrlMatchesCountry(t.url, country)) return false;
         return t.activity.totalAdCount > 0;
       });
@@ -4112,12 +4240,40 @@ export async function analyzeCompetitors(options: {
     }
   }
 
+  const serviceLabel = serviceTermsForMatch[0] ?? options.primaryService ?? '';
+  const commercialPairs = filteredTargets
+    .map((t, i) => ({ t, c: filteredCompetitors[i] }))
+    .filter(({ t, c }) => {
+      const name = c?.name ?? t.name;
+      return (
+        !looksLikeQueryNotAdvertiser(name, serviceLabel) &&
+        !looksLikeNonCommercialAdvertiser(name, t.url)
+      );
+    });
+  if (commercialPairs.length < filteredTargets.length) {
+    console.log(
+      `[competitors] dropped ${filteredTargets.length - commercialPairs.length} non-commercial library hit(s) — continuing search`
+    );
+    filteredTargets = commercialPairs.map((x) => x.t);
+    filteredCompetitors = commercialPairs.map((x) => x.c).filter((c): c is NonNullable<typeof c> => Boolean(c));
+  }
+
+  // Only skip extra search when we already have commercial (displayable) rivals
+  const enoughToReturn =
+    Boolean(options.minCompetitors) && filteredTargets.length >= Math.min(6, neededRivals);
+  if (enoughToReturn) {
+    console.log(
+      `[competitors] ${filteredTargets.length} commercial rival(s) — skipping extra library search so results reach the UI`
+    );
+  }
+
   // Create Campaign (minCompetitors set): keep searching until we hit the target, including strict mode
   if (
     !options.userProvidedOnly &&
     serviceTermsForMatch.length &&
     isSociaVaultConfigured() &&
-    filteredTargets.length < neededRivals
+    filteredTargets.length < neededRivals &&
+    !enoughToReturn
   ) {
     const needed = neededRivals - filteredTargets.length;
     console.log(
@@ -4144,6 +4300,8 @@ export async function analyzeCompetitors(options: {
       .filter((t) => {
         if (used.has(t.url.toLowerCase())) return false;
         if (t.activity.totalAdCount <= 0) return false;
+        if (looksLikeNonCommercialAdvertiser(t.name, t.url)) return false;
+        if (looksLikeQueryNotAdvertiser(t.name, serviceTermsForMatch[0])) return false;
         if (advertiserConflictsWithService(t.name, t.url, serviceTermsForMatch)) return false;
         return true;
       })
@@ -4227,9 +4385,10 @@ export async function analyzeCompetitors(options: {
 
   // Backfill only with other targets that have SociaVault ads (never pad with 0-ad stubs)
   // Lightweight Make It Better: skip second-wave fetches once any gallery hit exists.
-  // Create Campaign (minCompetitors) always continues until the target is met.
+  // Create Campaign: skip further library fetches once 3+ scored rivals exist.
   if (
     transparencyByUrl.size < neededRivals &&
+    !enoughToReturn &&
     !(options.lightweight && !options.minCompetitors && transparencyByUrl.size > 0)
   ) {
     const used = new Set(filteredTargets.map((t) => t.url.toLowerCase()));
@@ -4398,14 +4557,10 @@ export async function analyzeCompetitors(options: {
       destinationUrl?: string;
       keywordRelevanceScore?: number;
     }): boolean => {
-      // Claude semantic score is the source of truth when available
-      if (llmRelevanceApplied && typeof creative.keywordRelevanceScore === 'number') {
+      if (typeof creative.keywordRelevanceScore === 'number') {
         return creative.keywordRelevanceScore >= AD_RELEVANCE_THRESHOLD;
       }
-      if (llmRelevanceApplied) {
-        // Already survived Claude filter pass (score may be missing on seeded cards)
-        return true;
-      }
+      if (requireLlmApprovedAds) return false;
       if (useStrictSeedMatch) {
         return adMatchesServiceAndSeeds(creative, strictServiceLabel, seedKeywords);
       }
@@ -4413,26 +4568,42 @@ export async function analyzeCompetitors(options: {
     };
 
     const passesServiceGate = (c: CompetitorProfile): boolean => {
+      if (looksLikeQueryNotAdvertiser(c.name, strictServiceLabel || uniqueScoped[0])) return false;
+      if (looksLikeNonCommercialAdvertiser(c.name, c.url)) return false;
       if (looksLikeEducationalCompetitorName(c.name)) return false;
       if (advertiserConflictsWithService(c.name, c.url, uniqueScoped)) return false;
       const galleryAds = adGallery.filter((g) => sameCompetitor(g, c));
+      const hasOnServiceAd = galleryAds.some((g) =>
+        creativeMatchesScope({
+          headlines: g.headlines,
+          descriptions: g.descriptions,
+          destinationUrl: g.destinationUrl ?? g.url,
+          keywordRelevanceScore: g.keywordRelevanceScore,
+        })
+      );
+      const llmAdvertiser = advertiserLlmScores.get(competitorIdentityKey(c));
       if (
-        galleryAds.some((g) =>
-          creativeMatchesScope({
-            headlines: g.headlines,
-            descriptions: g.descriptions,
-            destinationUrl: g.destinationUrl ?? g.url,
-            keywordRelevanceScore: g.keywordRelevanceScore,
-          })
-        )
+        requireLlmApprovedAds &&
+        llmAdvertiser &&
+        !(llmAdvertiser.relevant && llmAdvertiser.score >= AD_RELEVANCE_THRESHOLD)
       ) {
-        return true;
+        return false;
       }
-      // Name / profile copy matches the selected service (common when ad OCR fails)
+      if (requireLlmApprovedAds) {
+        return hasOnServiceAd;
+      }
+      if (hasOnServiceAd) return true;
+      // Name / profile copy matches the selected service (common when ad OCR fails).
+      // Never treat the service label itself as a competitor name.
       if (
         useStrictSeedMatch &&
+        !looksLikeQueryNotAdvertiser(c.name, strictServiceLabel) &&
         copyMatchesServiceSeed(
           `${c.name} ${c.url} ${(c.headlines ?? []).join(' ')} ${(c.descriptions ?? []).join(' ')}`,
+          strictServiceLabel
+        ) &&
+        !copyConflictsWithLegalService(
+          `${c.name} ${(c.headlines ?? []).join(' ')} ${(c.descriptions ?? []).join(' ')}`,
           strictServiceLabel
         )
       ) {
@@ -4472,9 +4643,10 @@ export async function analyzeCompetitors(options: {
       );
     }
 
-    // Never drop below the requested rival count when we already selected library-backed rivals
+    // Never pad with off-service rivals in Create Campaign (strict seed)
     if (
       kept.length < neededRivals &&
+      !requireLlmApprovedAds &&
       !isCommercialMortgageTarget(uniqueScoped)
     ) {
       const keptKeys = new Set(kept.map((c) => competitorIdentityKey(c)));
@@ -4499,6 +4671,7 @@ export async function analyzeCompetitors(options: {
     // Absolute floor: pad from any non-conflicting library rival still on the board
     if (
       kept.length < neededRivals &&
+      !requireLlmApprovedAds &&
       !isCommercialMortgageTarget(uniqueScoped)
     ) {
       const keptKeys = new Set(kept.map((c) => competitorIdentityKey(c)));
@@ -4534,11 +4707,12 @@ export async function analyzeCompetitors(options: {
           headlines: g.headlines,
           descriptions: g.descriptions,
           destinationUrl: g.destinationUrl ?? g.url,
+          keywordRelevanceScore: g.keywordRelevanceScore,
         })
       ) {
         return true;
       }
-      if (useStrictSeedMatch) return false;
+      if (requireLlmApprovedAds) return false;
       return (
         matchesTargetService(g.advertiserName ?? g.name, uniqueScoped) &&
         !hasConflictingService(g.advertiserName ?? g.name, uniqueScoped)
@@ -4546,7 +4720,7 @@ export async function analyzeCompetitors(options: {
     });
 
     // Pad gallery cards to match retained competitors (Create Campaign needs ≥6 cards)
-    if (nextGallery.length < neededRivals) {
+    if (nextGallery.length < neededRivals && !requireLlmApprovedAds) {
       const galleryKeys = new Set(
         nextGallery.map((g) =>
           competitorIdentityKey({
@@ -4588,46 +4762,15 @@ export async function analyzeCompetitors(options: {
       }
     }
 
-    // Strict mode: if gallery empty but we kept library-backed rivals, seed from profiles
-    // so Create Campaign can show them (OCR/detail fetch often fails with 400s).
-    if (options.strictServiceSeed && kept.length) {
-      const galleryKeys = new Set(
-        nextGallery.map((g) =>
-          competitorIdentityKey({
-            name: g.advertiserName ?? g.name,
-            url: g.url,
-            advertiserId: g.advertiserId,
-            transparencyUrl: g.transparencyUrl,
-          })
-        )
+    // Strict Create Campaign: never invent creatives or fake LLM scores
+    if (requireLlmApprovedAds && kept.length && !nextGallery.length) {
+      console.warn(
+        `[CompetitorIntel] ${kept.length} rival(s) kept but 0 LLM-approved "${strictServiceLabel}" ads — not seeding fake copy`
       );
-      for (const c of kept) {
-        if (looksLikeEducationalCompetitorName(c.name)) continue;
-        const key = competitorIdentityKey(c);
-        if (galleryKeys.has(key)) continue;
-        const nameMatches = copyMatchesServiceSeed(
-          `${c.name} ${c.url} ${(c.headlines ?? []).join(' ')} ${(c.descriptions ?? []).join(' ')}`,
-          strictServiceLabel
-        );
-        const hasCopy =
-          (c.headlines ?? []).some((h) => h.trim()) || (c.descriptions ?? []).some((d) => d.trim());
-        if (!nameMatches && !hasCopy) continue;
-        const seeded = attachProfileSectionsToGallery(
-          profileToGalleryPreview(c, { name: c.name, url: c.url }),
-          c
-        );
-        seeded.adSource = 'sociavault';
-        // Tag with a passing relevance score so wizard toCards keeps the card
-        if (typeof seeded.keywordRelevanceScore !== 'number') {
-          seeded.keywordRelevanceScore = nameMatches ? 70 : 55;
-        }
-        nextGallery.push(seeded);
-        galleryKeys.add(key);
-      }
     }
 
-    // Non-strict: invent stubs so Insights always has cards
-    if (!nextGallery.length && kept.length && !options.strictServiceSeed) {
+    // Make It Better / non-strict: seed gallery rows so competitor cards still render
+    if (!nextGallery.length && kept.length && !requireLlmApprovedAds) {
       console.warn(
         `[CompetitorIntel] service gallery empty — seeding ${kept.length} selected rival(s) for UI`
       );
@@ -4641,8 +4784,8 @@ export async function analyzeCompetitors(options: {
       });
     }
 
-    // Under strict mode, drop educational names and rivals still without any gallery row
-    if (options.strictServiceSeed) {
+    // Under Create Campaign strict mode, drop rivals still without any gallery row
+    if (requireLlmApprovedAds) {
       filteredCompetitors = filteredCompetitors.filter((c) => !looksLikeEducationalCompetitorName(c.name));
       if (nextGallery.length) {
         const withAds = new Set(

@@ -225,12 +225,16 @@ let lastSociaVaultError: { status?: number; message?: string } | null = null;
 let creditsExhaustedUntil = 0;
 
 export function isSociaVaultCreditsExhausted(): boolean {
-  return Date.now() < creditsExhaustedUntil || lastSociaVaultError?.status === 402;
+  return Date.now() < creditsExhaustedUntil;
+}
+
+/** Clear a 402 pause so a recharged key can be used immediately. */
+export function clearSociaVaultCreditPause(): void {
+  creditsExhaustedUntil = 0;
+  lastSociaVaultError = null;
 }
 
 export function resetSociaVaultErrorState(): void {
-  // Never clear a 402 — keep skipping API calls until the cooldown ends
-  if (isSociaVaultCreditsExhausted()) return;
   lastSociaVaultError = null;
 }
 
@@ -258,6 +262,8 @@ async function sociavaultGet(path: string, params: Record<string, string | undef
       headers: { 'X-API-Key': env.sociavaultApiKey },
       timeout: 55_000,
     });
+    lastSociaVaultError = null;
+    creditsExhaustedUntil = 0;
     const body = res.data;
     const root = asRecord(body);
     if (root && 'data' in root && root.data != null) return root.data;

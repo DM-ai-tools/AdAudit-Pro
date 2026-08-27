@@ -16,7 +16,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 90s
+      start_period: 120s
 
   # Optional — enable when USE_MOCK_DATA=false
   postgres:

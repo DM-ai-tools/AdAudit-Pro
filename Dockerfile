@@ -12,6 +12,8 @@ RUN npm run build
 # ── Backend compile ───────────────────────────────────────
 FROM node:20-bookworm-slim AS backend-build
 WORKDIR /app/backend
+ENV PUPPETEER_SKIP_DOWNLOAD=true
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 # OpenSSL required for Prisma engines during generate
 RUN apt-get update \
   && apt-get install -y --no-install-recommends openssl ca-certificates \
@@ -25,6 +27,7 @@ RUN npm run build
 FROM node:20-bookworm-slim AS production
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
+    tini \
     openssl \
     chromium \
     ca-certificates \
@@ -44,10 +47,10 @@ RUN apt-get update \
     libxdamage1 \
     libxrandr2 \
     xdg-utils \
-  && rm -rf /var/lib/apt/lists/* \
-  && apt-get clean
+  && rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production
+ENV PUPPETEER_SKIP_DOWNLOAD=true
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
@@ -57,8 +60,6 @@ COPY backend/package.json backend/package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=backend-build /app/backend/dist ./dist
-COPY --from=backend-build /app/backend/node_modules/.prisma ./node_modules/.prisma
-COPY --from=backend-build /app/backend/node_modules/@prisma/client ./node_modules/@prisma/client
 COPY backend/prisma ./prisma
 COPY backend/scripts ./scripts
 RUN npx --no-install prisma generate
@@ -70,9 +71,10 @@ COPY --from=frontend-build /app/frontend/dist /app/frontend/dist
 ENV PORT=5000
 EXPOSE 5000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || 5000) + '/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
 
 STOPSIGNAL SIGTERM
 
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "scripts/start-production.mjs"]

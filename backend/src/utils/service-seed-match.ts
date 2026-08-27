@@ -62,6 +62,20 @@ const TOKEN_SYNONYMS: Record<string, string[]> = {
   meta: ['meta ads', 'facebook ads', 'instagram ads', 'meta advertising'],
   linkedin: ['linkedin ads', 'linkedin advertising'],
   tiktok: ['tiktok ads', 'tiktok advertising'],
+  property: [
+    'property law',
+    'conveyancing',
+    'conveyancer',
+    'real estate law',
+    'property lawyer',
+    'property solicitor',
+    'land law',
+    'property conveyancing',
+    'strata',
+    'titles office',
+    'settlement',
+  ],
+  law: ['lawyer', 'lawyers', 'solicitor', 'solicitors', 'legal', 'law firm', 'attorney', 'barrister'],
 };
 
 /** Significant tokens from a service label (e.g. "AI SEO" → ["ai","seo"]). */
@@ -169,6 +183,14 @@ export function filterSeedKeywordsForService(service: string, keywords: string[]
     .filter((k) => k.length >= 3 && keywordMatchesServiceSeed(k, service));
 }
 
+function normalizeCompetitorLabel(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/&/g, 'and')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
 /** Educational / SERP-style titles that are not advertising competitors. */
 export function looksLikeEducationalCompetitorName(name: string): boolean {
   const n = name.toLowerCase().trim();
@@ -178,6 +200,70 @@ export function looksLikeEducationalCompetitorName(name: string): boolean {
   }
   if (/\b(basics explained|learn the basics|complete guide|for beginners)\b/i.test(n)) return true;
   if (/\?$/.test(n.trim())) return true;
+  // University units / course titles mistaken for advertisers
+  if (/\b(law\s?\d+|laws?\d+|unit\s?\d+|lecture|assignment|tutorial|course code)\b/i.test(n)) {
+    return true;
+  }
+  if (/\(\s*(law|laws?)\s*\d+/i.test(n)) return true;
+  if (/^[a-z]{2,8}\d{3,4}\b/i.test(n)) return true;
+  return false;
+}
+
+/**
+ * Search-query / topic titles mistaken for advertisers, e.g. a rival named
+ * "Property Law" when the selected service is Property Law.
+ */
+export function looksLikeQueryNotAdvertiser(name: string, service?: string): boolean {
+  if (looksLikeEducationalCompetitorName(name)) return true;
+  const nNorm = normalizeCompetitorLabel(name);
+  if (!nNorm) return true;
+  const sNorm = service ? normalizeCompetitorLabel(service) : '';
+  if (sNorm && nNorm === sNorm) return true;
+  if (sNorm && nNorm.startsWith(`${sNorm} `)) {
+    const rest = nNorm.slice(sNorm.length).trim();
+    if (!rest || looksLikeEducationalCompetitorName(rest)) return true;
+  }
+  if (sNorm && new RegExp(`^${sNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*[\\-(]`).test(nNorm)) {
+    return true;
+  }
+  return false;
+}
+
+/** Sibling legal practice areas that should not count as the selected service. */
+export function copyConflictsWithLegalService(text: string, service: string): boolean {
+  const t = stripUrls(text).toLowerCase();
+  const svc = service.toLowerCase();
+  if (!t || !svc) return false;
+
+  const serviceIsPropertyLaw =
+    /\b(property\s+law|conveyanc|real estate law|land law|strata)\b/.test(svc) ||
+    (/\bproperty\b/.test(svc) && /\b(law|lawyer|solicitor|legal)\b/.test(svc));
+  if (!serviceIsPropertyLaw) return false;
+
+  const hasPropertySignal =
+    /\b(property law|conveyanc|real estate law|land title|titles office|strata|settlement lawyer|property lawyer|property solicitor)\b/.test(
+      t
+    );
+  const hasOtherPractice =
+    /\b(family law|divorce|parenting order|criminal law|personal injury|immigration law|employment law|workers.? compensation|compensation lawyer|01 family)\b/.test(
+      t
+    );
+  return hasOtherPractice && !hasPropertySignal;
+}
+
+/** Universities, government, associations — not advertising competitors. */
+export function looksLikeNonCommercialAdvertiser(name: string, url?: string): boolean {
+  if (looksLikeEducationalCompetitorName(name)) return true;
+  const blob = `${name} ${url ?? ''}`.toLowerCase();
+  if (
+    /\.edu(?:\.[a-z]{2,})?(?:\/|$)|university|tafe\b|college of law|online education|handbook\.|federation\.edu/i.test(
+      blob
+    )
+  ) {
+    return true;
+  }
+  if (/\.(gov|asn)\.[a-z]{2,}(?:\/|$)/i.test(blob)) return true;
+  if (/\b(legislation|law library|alrc|law institute)\b/i.test(blob)) return true;
   return false;
 }
 

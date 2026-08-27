@@ -348,11 +348,35 @@ async function fetchCreativesForAdvertiser(
     }
     if (cursor) req['4'] = cursor;
 
-    const data = await transparencyRpc<Record<string, unknown>>('SearchService', 'SearchCreatives', req);
-    const list = (data['1'] as unknown[]) ?? [];
-    all.push(...list);
-    cursor = data['2'];
-    if (!cursor || !list.length) break;
+    try {
+      const data = await transparencyRpc<Record<string, unknown>>('SearchService', 'SearchCreatives', req);
+      const list = (data['1'] as unknown[]) ?? [];
+      all.push(...list);
+      cursor = data['2'];
+      if (!cursor || !list.length) break;
+    } catch (err) {
+      const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+      if (status === 400 && regionCode) {
+        console.warn(`[Transparency] SearchCreatives 400 with region=${regionCode} — retrying without region`);
+        const unscoped: Record<string, unknown> = {
+          2: 40,
+          3: { 13: { 1: [advertiserId] }, 7: { 1: 1 } },
+          7: { 1: 1 },
+        };
+        if (cursor) unscoped['4'] = cursor;
+        const data = await transparencyRpc<Record<string, unknown>>(
+          'SearchService',
+          'SearchCreatives',
+          unscoped
+        );
+        const list = (data['1'] as unknown[]) ?? [];
+        all.push(...list);
+        cursor = data['2'];
+        if (!cursor || !list.length) break;
+        continue;
+      }
+      throw err;
+    }
     await sleep(450);
   }
   return all;
@@ -550,7 +574,7 @@ export async function discoverTransparencyAdvertisersByQueries(
       for (const c of candidates) {
         if (out.length >= maxCount) break;
         if (seen.has(c.advertiserId)) continue;
-        if (country && c.country && c.country !== country) continue;
+        if (country && c.country && c.country.toUpperCase() !== country.toUpperCase()) continue;
         seen.add(c.advertiserId);
         out.push({
           advertiserId: c.advertiserId,

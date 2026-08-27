@@ -8,11 +8,18 @@ node_modules/
 backend/.env
 backend/.env.*
 !backend/.env.example
+frontend/.env
 frontend/.env.development
 frontend/.env.local
 frontend/.env.*.local
 !frontend/.env.example
 !.env.example
+
+# Secrets / credentials (never commit)
+*.pem
+*.p12
+credentials.json
+**/service-account*.json
 
 # Build output
 dist/

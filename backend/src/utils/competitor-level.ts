@@ -254,6 +254,22 @@ export function expandServiceSearchQueries(services: string[], location?: string
     ]) {
       add(t);
     }
+  } else if (
+    /\b(law|lawyer|solicitor|legal|conveyanc|barrister|attorney)\b/.test(joined)
+  ) {
+    for (const t of [
+      'property lawyer',
+      'property solicitor',
+      'conveyancing',
+      'conveyancer',
+      'real estate lawyer',
+      'property law firm',
+      'conveyancing lawyer',
+      'property legal services',
+    ]) {
+      add(t);
+    }
+    for (const s of services.slice(0, 2)) add(s);
   } else if (/\bhome\b|\bmortgage\b|\bproperty\b/.test(joined)) {
     for (const t of ['home loan', 'mortgage', 'home loan broker', 'refinance home loan']) add(t);
   } else if (/\bpersonal\b/.test(joined)) {

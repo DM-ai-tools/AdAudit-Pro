@@ -3,11 +3,11 @@ import { AdPreviewPanel } from './AdPreviewPanel';
 import { CompetitorAdActivityMetrics, CompetitorBrandReviewBlock } from './CompetitorBrandMetrics';
 import { decodeHtmlEntitiesList } from './html-entities';
 import { competitorCreativeMatchesService } from '../../utils/serviceRelevance';
-import {
-  collapseCompetitorsToOne,
-  competitorIdentityKey,
-} from '../../utils/competitorGalleryDisplay';
+import { competitorIdentityKey } from '../../utils/competitorGalleryDisplay';
 import type { CompetitorAdPreview, PreviewDevice } from '../../types/optimization';
+
+const MAX_COMPETITORS = 6;
+const MAX_ADS_PER_COMPETITOR = 8;
 
 interface CompetitorAdGalleryProps {
   competitors: CompetitorAdPreview[];
@@ -18,6 +18,16 @@ interface CompetitorAdGalleryProps {
   primaryService?: string;
 }
 
+function isDisplayableAd(c: CompetitorAdPreview): boolean {
+  return (
+    (c.totalAdCount ?? 0) > 0 ||
+    (c.adDurationDays ?? 0) > 0 ||
+    (c.headlines?.length ?? 0) > 0 ||
+    (c.descriptions?.length ?? 0) > 0 ||
+    Boolean(c.previewImageUrl)
+  );
+}
+
 export function CompetitorAdGallery({
   competitors,
   previewDevice,
@@ -25,16 +35,33 @@ export function CompetitorAdGallery({
   source: _source,
   primaryService,
 }: CompetitorAdGalleryProps) {
-  const gallery = collapseCompetitorsToOne(competitors)
-    .filter(
-      (c) =>
-        (c.totalAdCount ?? 0) > 0 ||
-        (c.adDurationDays ?? 0) > 0 ||
-        (c.headlines?.length ?? 0) > 0 ||
-        (c.descriptions?.length ?? 0) > 0 ||
-        Boolean(c.previewImageUrl)
+  const byKey = new Map<string, CompetitorAdPreview[]>();
+  for (const item of competitors) {
+    if (!isDisplayableAd(item)) continue;
+    if (!competitorCreativeMatchesService(item, primaryService)) continue;
+    const key = competitorIdentityKey(item);
+    const list = byKey.get(key) ?? [];
+    list.push(item);
+    byKey.set(key, list);
+  }
+
+  const gallery = [...byKey.entries()]
+    .map(([key, ads]) => {
+      const primary = [...ads].sort(
+        (a, b) =>
+          (b.confidenceScore ?? 0) - (a.confidenceScore ?? 0) ||
+          (b.adDurationDays ?? 0) - (a.adDurationDays ?? 0) ||
+          (b.activeAdCount ?? 0) - (a.activeAdCount ?? 0)
+      )[0]!;
+      return { key, primary, ads: ads.slice(0, MAX_ADS_PER_COMPETITOR) };
+    })
+    .sort(
+      (a, b) =>
+        b.ads.length - a.ads.length ||
+        (b.primary.adDurationDays ?? 0) - (a.primary.adDurationDays ?? 0)
     )
-    .filter((c) => competitorCreativeMatchesService(c, primaryService));
+    .slice(0, MAX_COMPETITORS);
+
   if (!gallery.length) {
     const serviceLabel = primaryService?.trim() || 'this service';
     return (
@@ -59,15 +86,14 @@ export function CompetitorAdGallery({
           </p>
         </div>
         <span className="text-muted text-[10px] uppercase tracking-wider">
-          {gallery.length} Competitor{gallery.length === 1 ? '' : 's'}
+          {gallery.length} competitor{gallery.length === 1 ? '' : 's'}
+          {' · '}
+          {gallery.reduce((n, g) => n + g.ads.length, 0)} relevant ads
         </span>
       </div>
 
       <div className="grid sm:grid-cols-2 xl:grid-cols-2 gap-4">
-        {gallery.map((c) => {
-          const headlines = decodeHtmlEntitiesList(c.headlines);
-          const descriptions = decodeHtmlEntitiesList(c.descriptions);
-          const adLink = c.adLink ?? c.creativeUrl ?? c.transparencyUrl;
+        {gallery.map(({ key, primary: c, ads }) => {
           const sourceLabel =
             c.adSource === 'transparency_center'
               ? 'Public ad library'
@@ -79,7 +105,7 @@ export function CompetitorAdGallery({
 
           return (
             <div
-              key={competitorIdentityKey(c)}
+              key={key}
               className="min-w-0 bg-panel border border-purple-400/25 rounded-2xl p-4 space-y-3"
             >
               <div className="space-y-1">
@@ -104,71 +130,11 @@ export function CompetitorAdGallery({
                   >
                     {sourceLabel}
                   </span>
-                  {c.durationLabel && (
-                    <span className="text-[9px] px-2 py-0.5 rounded-full bg-teal/10 text-teal border border-teal/20 inline-block">
-                      {c.durationLabel}
-                    </span>
-                  )}
-                  {c.influencePercent != null && (
-                    <span className="text-[9px] px-2 py-0.5 rounded-full bg-orange/10 text-orange border border-orange/20 inline-block">
-                      {c.influencePercent}% AI influence
-                    </span>
-                  )}
-                  {c.estimatedSuccessScore != null && (
-                    <span className="text-[9px] px-2 py-0.5 rounded-full bg-white/5 text-muted border border-border inline-block">
-                      Est. success {c.estimatedSuccessScore}/100
-                    </span>
-                  )}
+                  <span className="text-[9px] px-2 py-0.5 rounded-full bg-white/5 text-muted border border-border inline-block">
+                    {ads.length} relevant ad{ads.length === 1 ? '' : 's'}
+                  </span>
                 </div>
               </div>
-
-              <div className="grid grid-cols-2 gap-1.5 text-[10px]">
-                <div className="rounded-lg border border-border bg-white/5 px-2 py-1">
-                  <p className="text-muted uppercase tracking-wider">First Seen</p>
-                  <p className="text-white">
-                    {(c.creativeFirstShown ?? c.firstShown)
-                      ? new Date(c.creativeFirstShown ?? c.firstShown!).toLocaleDateString()
-                      : '—'}
-                  </p>
-                </div>
-                <div className="rounded-lg border border-border bg-white/5 px-2 py-1">
-                  <p className="text-muted uppercase tracking-wider">Last Seen</p>
-                  <p className="text-white">
-                    {(c.creativeLastShown ?? c.lastShown)
-                      ? new Date(c.creativeLastShown ?? c.lastShown!).toLocaleDateString()
-                      : '—'}
-                  </p>
-                </div>
-                <div className="rounded-lg border border-border bg-white/5 px-2 py-1">
-                  <p className="text-muted uppercase tracking-wider">Active Status</p>
-                  <p className={c.isActive ? 'text-teal' : 'text-muted'}>
-                    {c.isActive ? 'Active (≤45 days)' : 'Inactive / aging'}
-                  </p>
-                </div>
-                <div className="rounded-lg border border-border bg-white/5 px-2 py-1">
-                  <p className="text-muted uppercase tracking-wider">Ad Duration</p>
-                  <p className="text-white">
-                    {c.adDurationDays
-                      ? `${c.adDurationDays.toLocaleString('en-US')} Days`
-                      : '—'}
-                  </p>
-                </div>
-              </div>
-
-              {(c.cta || c.offer) && c.adSource !== 'website_fallback' && (
-                <div className="flex flex-wrap gap-1.5">
-                  {c.cta && (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-orange/10 text-orange border border-orange/25">
-                      CTA: {c.cta}
-                    </span>
-                  )}
-                  {c.offer && (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-teal/10 text-teal border border-teal/25">
-                      Offer: {c.offer}
-                    </span>
-                  )}
-                </div>
-              )}
 
               <CompetitorAdActivityMetrics
                 adDurationDays={c.adDurationDays}
@@ -180,55 +146,53 @@ export function CompetitorAdGallery({
 
               {c.brandReview && <CompetitorBrandReviewBlock review={c.brandReview} />}
 
-              {c.previewImageUrl && !headlines.length && (
-                <a href={adLink} target="_blank" rel="noopener noreferrer" className="block">
-                  <img
-                    src={c.previewImageUrl}
-                    alt={`${c.name} ad preview`}
-                    className="w-full rounded-lg border border-border object-contain max-h-44 bg-white/5 hover:opacity-90 transition-opacity"
-                  />
-                </a>
-              )}
-
-              {(headlines.length > 0 || descriptions.length > 0) && (
-                <div className="space-y-2">
-                  <AdPreviewPanel
-                    headlines={headlines}
-                    descriptions={descriptions}
-                    displayUrl={c.displayUrl}
-                    device={previewDevice}
-                    onDeviceChange={onDeviceChange}
-                    variant="competitor"
-                    finalUrl={c.destinationUrl ?? c.url}
-                    simpleAdView
-                  />
-                  <div className="rounded-lg border border-border/60 bg-navy/40 px-2.5 py-2 space-y-1.5">
-                    <p className="text-[9px] text-muted uppercase tracking-wider">
-                      Exact creative copy ({headlines.length} headline
-                      {headlines.length === 1 ? '' : 's'}, {descriptions.length} description
-                      {descriptions.length === 1 ? '' : 's'})
+              {ads.map((ad, adIdx) => {
+                const headlines = decodeHtmlEntitiesList(ad.headlines ?? []);
+                const descriptions = decodeHtmlEntitiesList(ad.descriptions ?? []);
+                const adLink = ad.adLink ?? ad.creativeUrl ?? ad.transparencyUrl;
+                return (
+                  <div
+                    key={`${key}-ad-${adIdx}`}
+                    className="rounded-lg border border-border/60 bg-panel/30 p-2 space-y-2"
+                  >
+                    <p className="text-[10px] text-muted uppercase tracking-wide">
+                      Ad {adIdx + 1}
                     </p>
-                    {headlines.length > 0 && (
-                      <ol className="list-decimal list-inside space-y-0.5">
-                        {headlines.map((h, hi) => (
-                          <li key={`h-${hi}`} className="text-[11px] text-white leading-snug">
-                            {h}
-                          </li>
-                        ))}
-                      </ol>
+                    {(headlines.length > 0 || descriptions.length > 0) ? (
+                      <AdPreviewPanel
+                        headlines={headlines}
+                        descriptions={descriptions}
+                        displayUrl={ad.displayUrl ?? c.displayUrl}
+                        device={previewDevice}
+                        onDeviceChange={onDeviceChange}
+                        variant="competitor"
+                        finalUrl={ad.destinationUrl ?? ad.url ?? c.destinationUrl ?? c.url}
+                        simpleAdView
+                      />
+                    ) : ad.previewImageUrl ? (
+                      <a href={adLink} target="_blank" rel="noopener noreferrer" className="block">
+                        <img
+                          src={ad.previewImageUrl}
+                          alt={`${c.name} ad ${adIdx + 1}`}
+                          className="w-full rounded-lg border border-border object-contain max-h-44 bg-white/5"
+                        />
+                      </a>
+                    ) : (
+                      <p className="text-muted text-[10px] italic">No live ad copy for this creative.</p>
                     )}
-                    {descriptions.length > 0 && (
-                      <ul className="space-y-0.5 border-t border-border/40 pt-1.5">
-                        {descriptions.map((d, di) => (
-                          <li key={`d-${di}`} className="text-[11px] text-muted leading-snug">
-                            {d}
-                          </li>
-                        ))}
-                      </ul>
+                    {adLink && (
+                      <a
+                        href={adLink}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[10px] text-teal underline block"
+                      >
+                        View this ad →
+                      </a>
                     )}
                   </div>
-                </div>
-              )}
+                );
+              })}
 
               {(c.destinationUrl || (c.url && !/adstransparency\.google\.com/i.test(c.url))) && (
                 <a
@@ -245,21 +209,6 @@ export function CompetitorAdGallery({
                     <span className="block text-[9px] text-muted mt-0.5 font-mono">
                       {c.destinationUrl ?? c.url}
                     </span>
-                  </span>
-                </a>
-              )}
-
-              {adLink && (
-                <a
-                  href={adLink}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-[11px] text-purple-300 hover:text-purple-200 flex items-start gap-1.5 break-all border-t border-border/50 pt-2"
-                >
-                  <ExternalLink size={12} className="shrink-0 mt-0.5" />
-                  <span>
-                    View live competitor ad
-                    <span className="block text-[9px] text-muted mt-0.5 font-mono">{adLink}</span>
                   </span>
                 </a>
               )}

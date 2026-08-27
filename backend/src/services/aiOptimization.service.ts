@@ -2088,8 +2088,8 @@ export async function optimizeAd(
             descriptions: request.accountContext.primaryAdSnapshot.descriptions ?? [],
           }
         : undefined,
-      // Always lightweight on Make It Better — full crawl + multi-Claude regenerations
-      // exceed the browser poll window (especially with large uploaded competitor lists).
+      // Aim for 5–6 library rivals with their relevant ads — same bar as Create Campaign.
+      minCompetitors: 6,
       lightweight: true,
       skipSocialPresence: true,
       serviceScoped: isAdScoped && !userProvidedOnly,

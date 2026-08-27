@@ -15,7 +15,7 @@ Config: `Dockerfile` + `railway.toml` / `railway.json` (Dockerfile builder, `/ap
    (Open `/api/auth/config` on your deployed app to see the exact URI.)
 6. Deploy — Railway sets `PORT` and `RAILWAY_PUBLIC_DOMAIN`.
 
-The app listens on `0.0.0.0:$PORT`. Do not hardcode a port in Railway.
+The app listens on `0.0.0.0:$PORT`. Do not hardcode a port in Railway. First boot runs `prisma db push`; Railway health checks wait up to 300s.
 ### Required production variables
 
 | Variable | Description |

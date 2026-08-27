@@ -199,5 +199,5 @@ export function buildCompetitorGalleryItems(
     merged.push(preview);
   }
 
-  return collapseCompetitorsToOne(merged);
+  return merged.filter(hasDisplayableCreative);
 }

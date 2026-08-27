@@ -19,7 +19,7 @@ export function Logo({ size = 'md', showSubtitle = true }: LogoProps) {
         <BarChart3 size={s.icon} className="text-orange" />
       </div>
       <div className="text-left">
-        <div className={`font-extrabold text-white ${s.text} leading-tight tracking-tight`}>
+        <div className={`font-extrabold text-white ${s.text} leading-tight`}>
           AdAudit <span className="text-orange">Pro</span>
         </div>
         {showSubtitle && (

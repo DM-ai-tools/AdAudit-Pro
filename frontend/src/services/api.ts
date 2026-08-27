@@ -885,7 +885,9 @@ export const campaignWizardApi = {
       allAds: import('../types/optimization').CompetitorAdPreview[];
       source: string;
     }>('/ai/campaign-wizard/discover-competitors', payload, {
-      timeout: 180_000,
+      // Live discovery + library scoring often exceeds 3 minutes; aborting
+      // here leaves the UI empty even when the backend later returns rivals.
+      timeout: 480_000,
       signal: opts?.signal,
     }),
   generateAds: (payload: {

@@ -111,7 +111,7 @@ export default function LandingPage() {
                 Professional Google Ads audits · 12 modules · Live account data
               </span>
             </div>
-            <h1 className="text-4xl lg:text-5xl xl:text-[3.4rem] font-extrabold text-white leading-[1.08] mb-6 tracking-tight">
+            <h1 className="text-4xl lg:text-5xl xl:text-[3.4rem] font-extrabold text-white leading-[1.15] mb-6">
               Stop <span className="text-gradient-orange">bleeding budget</span> on Google Ads that don't convert.
             </h1>
             <p className="text-body text-lg mb-8 leading-relaxed">

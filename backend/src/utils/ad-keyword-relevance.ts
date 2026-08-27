@@ -15,13 +15,13 @@ export interface AdRelevanceResult {
   score: number;
 }
 
-/** Semantic relevance threshold — ads need not contain exact service keywords. */
-export const AD_RELEVANCE_THRESHOLD = 50;
+/** Strict same-service gate — ads below this are hidden from Create Campaign. */
+export const AD_RELEVANCE_THRESHOLD = 70;
 const MAX_ADS_PER_CALL = 40;
 
 /**
- * Semantic relevance: an ad can be about the service without using those exact words
- * (e.g. "Run Google Ads that convert" is relevant to "PPC Advertising").
+ * LLM judges whether each Search ad is selling the SAME service as the campaign.
+ * Fail closed: timeout / missing scores are treated as not relevant.
  */
 export async function scoreAdsForKeywordRelevance(
   ads: AdRelevanceInput[],
@@ -33,7 +33,7 @@ export async function scoreAdsForKeywordRelevance(
   const service = opts.service.trim();
   const keywords = [...new Set(opts.keywords.map((k) => k.trim()).filter(Boolean))].slice(0, 24);
   if (!service && !keywords.length) {
-    for (const ad of ads) out.set(ad.id, { id: ad.id, relevant: true, score: 70 });
+    for (const ad of ads) out.set(ad.id, { id: ad.id, relevant: false, score: 0 });
     return out;
   }
 
@@ -50,9 +50,9 @@ export async function scoreAdsForKeywordRelevance(
   return out;
 }
 
-export function isAdRelevant(result: AdRelevanceResult | undefined, fallback = true): boolean {
+export function isAdRelevant(result: AdRelevanceResult | undefined, fallback = false): boolean {
   if (!result) return fallback;
-  return result.relevant || result.score >= AD_RELEVANCE_THRESHOLD;
+  return result.relevant === true && result.score >= AD_RELEVANCE_THRESHOLD;
 }
 
 async function scoreChunk(
@@ -61,9 +61,8 @@ async function scoreChunk(
   keywords: string[]
 ): Promise<Map<string, AdRelevanceResult>> {
   const fallback = new Map<string, AdRelevanceResult>();
-  // Neutral fallback — neither auto-keep nor auto-drop everything if Claude times out
   for (const ad of ads) {
-    fallback.set(ad.id, { id: ad.id, relevant: true, score: 58 });
+    fallback.set(ad.id, { id: ad.id, relevant: false, score: 0 });
   }
 
   const compact = ads.map((ad) => ({
@@ -76,32 +75,38 @@ async function scoreChunk(
   const parsed = await withTimeoutFallback(
     (async () => {
       const response = await createClaudeMessage({
-        max_tokens: 1200,
+        max_tokens: 1400,
         messages: [
           {
             role: 'user',
-            content: `You are a Google Ads analyst. Score whether each Search ad is RELATED to the target service.
+            content: `You are a Google Ads analyst. For EACH ad, decide if it is advertising THE SAME SERVICE as the target. Be strict.
 
 Target service: ${service || '(unspecified)'}
-Related keyword intent (hints only — NOT required verbatim in the ad):
+Search intent hints (do not treat these as extra services):
 ${keywords.length ? keywords.map((k) => `- ${k}`).join('\n') : `- ${service}`}
 
-CRITICAL RULES:
-1. Judge SEMANTIC relatedness to the service — do NOT require the exact service name or keywords in the copy.
-2. PPC Advertising / paid search examples that ARE relevant even without "PPC":
-   - Google Ads, Google AdWords, paid search, search ads, paid ads, SEM, CPC, bid management, ad spend, ROAS, conversions from ads, "get more leads from Google"
-3. SEO examples without "SEO": "rank on Google", "get found locally", "organic traffic"
-4. Mark NOT relevant when:
-   - Different vertical (e.g. plumbing when service is PPC)
-   - Educational / blog / "what is…" content, not an advertiser selling the service
-   - Job listings, news publishers, or unrelated brand ads
-   - Empty / garbage copy with no signal
-5. Prefer true competitors selling the same service over loosely related marketing content.
+HOW TO JUDGE
+- Read the headlines and descriptions. The COPY is the source of truth, not the advertiser name.
+- Ask: would someone searching for "${service}" consider this ad a match for that need?
+- If the ad is mainly about a different product, practice area, job, course, or brand, it is NOT relevant — even if the company also offers "${service}" somewhere else.
+
+SAME SERVICE (relevant=true) only when the ad is selling that service or the same client job:
+- Property Law: conveyancing, property transfer/settlement, property solicitor, real estate / land titles / strata legal work. NOT home loans, family law, or injury law.
+- First Home Buyer: first home owner grant (FHOG), stamp duty, first-home conveyancing, first home loans, mortgages for first buyers, buyer’s-agent first-home ads.
+- Home loans / mortgage: home loans, refinance, brokers, lenders — NOT car loans or personal loans.
+- PPC Advertising: Google Ads, paid search, SEM, search ads
+- Do NOT stretch to unrelated sibling categories
+
+NOT THE SAME SERVICE (relevant=false):
+- A different product than the target (e.g. family law when target is Property Law; car loans when target is First Home Buyer)
+- Job ads, recruitment, university courses, textbooks, directories, news
+- Empty, garbage, or unrelated brand ads
+- When unsure, mark NOT relevant
 
 Return ONLY JSON:
 {"ads":[{"id":"string","relevant":true,"score":0}]}
 
-score is 0–100. Set relevant=true when score >= ${AD_RELEVANCE_THRESHOLD}.
+score is 0–100. Set relevant=true ONLY when score >= ${AD_RELEVANCE_THRESHOLD}.
 
 Ads:
 ${JSON.stringify(compact)}`,
@@ -120,7 +125,7 @@ ${JSON.stringify(compact)}`,
 
   const rows = parsed.ads ?? [];
   if (!rows.length) {
-    console.warn('[ad-relevance] LLM returned no scores — keeping fetched ads for a later pass');
+    console.warn('[ad-relevance] LLM returned no scores — dropping unscored ads (strict service match)');
     return fallback;
   }
 
@@ -128,12 +133,107 @@ ${JSON.stringify(compact)}`,
   for (const ad of ads) {
     const row = rows.find((r) => String(r.id) === ad.id);
     if (!row) {
-      result.set(ad.id, { id: ad.id, relevant: true, score: 55 });
+      result.set(ad.id, { id: ad.id, relevant: false, score: 0 });
       continue;
     }
     const score = Math.max(0, Math.min(100, Number(row.score) || 0));
-    const relevant = row.relevant === true || score >= AD_RELEVANCE_THRESHOLD;
+    const relevant = row.relevant === true && score >= AD_RELEVANCE_THRESHOLD;
     result.set(ad.id, { id: ad.id, relevant, score });
   }
   return result;
+}
+
+export interface AdvertiserRelevanceInput {
+  id: string;
+  name: string;
+  url?: string;
+  headlines?: string[];
+  descriptions?: string[];
+}
+
+/**
+ * Score whether an advertiser's sampled ads are selling the target service.
+ */
+export async function scoreAdvertisersForService(
+  advertisers: AdvertiserRelevanceInput[],
+  opts: { service: string; keywords: string[] }
+): Promise<Map<string, AdRelevanceResult>> {
+  const out = new Map<string, AdRelevanceResult>();
+  if (!advertisers.length) return out;
+
+  const service = opts.service.trim();
+  const keywords = [...new Set(opts.keywords.map((k) => k.trim()).filter(Boolean))].slice(0, 16);
+  const fallback = new Map<string, AdRelevanceResult>();
+  for (const row of advertisers) {
+    fallback.set(row.id, { id: row.id, relevant: false, score: 0 });
+  }
+  if (!service) return fallback;
+
+  const compact = advertisers.map((row) => ({
+    id: row.id,
+    name: row.name.slice(0, 80),
+    url: (row.url ?? '').slice(0, 120),
+    headlines: (row.headlines ?? []).slice(0, 4).map((h) => h.slice(0, 80)),
+    descriptions: (row.descriptions ?? []).slice(0, 2).map((d) => d.slice(0, 120)),
+  }));
+
+  const parsed = await withTimeoutFallback(
+    (async () => {
+      const response = await createClaudeMessage({
+        max_tokens: 1400,
+        messages: [
+          {
+            role: 'user',
+            content: `You are a Google Ads competitor analyst. Decide whether each advertiser is running ads for THE SAME SERVICE as the target. Be strict.
+
+Target service: ${service}
+Intent hints:
+${keywords.length ? keywords.map((k) => `- ${k}`).join('\n') : `- ${service}`}
+
+RULES:
+1. Judge from the sampled ad headlines/descriptions. If copy is missing, judge only if the NAME clearly sells this service (e.g. "KRG Conveyancing" for Property Law, "Aussie" / "Lendi" for First Home Buyer / home loans). Otherwise mark NOT relevant.
+2. Same service as the target:
+   - Property Law: conveyancing, property solicitors, land titles, strata legal — NOT family, injury, or generic "lawyers".
+   - First Home Buyer / home loans: mortgage brokers, home-loan lenders, first-home grants, stamp duty, first-home conveyancing.
+3. A full-service firm is relevant ONLY if the sampled ads are about this service.
+4. Mark NOT relevant: universities, courses, job boards, directories, recruitment, service-label names with no firm ("Property Law"). Banks and insurers are relevant only when the target is home loans / first home buyer / insurance.
+5. When unsure, mark NOT relevant.
+
+Return ONLY JSON:
+{"advertisers":[{"id":"string","relevant":true,"score":0}]}
+
+score is 0–100. Set relevant=true ONLY when score >= ${AD_RELEVANCE_THRESHOLD}.
+
+Advertisers:
+${JSON.stringify(compact)}`,
+          },
+        ],
+      });
+      const text = claudeTextFromMessage(response);
+      return extractJsonFromClaudeText(text) as {
+        advertisers?: Array<{ id?: string; relevant?: boolean; score?: number }>;
+      };
+    })(),
+    35_000,
+    { advertisers: [] },
+    'advertiser-service-relevance'
+  );
+
+  const rows = parsed.advertisers ?? [];
+  if (!rows.length) {
+    console.warn('[advertiser-relevance] LLM returned no scores — dropping unscored advertisers');
+    return fallback;
+  }
+
+  for (const advertiser of advertisers) {
+    const row = rows.find((r) => String(r.id) === advertiser.id);
+    if (!row) {
+      out.set(advertiser.id, { id: advertiser.id, relevant: false, score: 0 });
+      continue;
+    }
+    const score = Math.max(0, Math.min(100, Number(row.score) || 0));
+    const relevant = row.relevant === true && score >= AD_RELEVANCE_THRESHOLD;
+    out.set(advertiser.id, { id: advertiser.id, relevant, score });
+  }
+  return out;
 }

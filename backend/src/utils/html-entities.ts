@@ -11,6 +11,7 @@ const NAMED_ENTITIES: Record<string, string> = {
 export function decodeHtmlEntities(text: string): string {
   if (!text) return text;
   return text
+    .replace(/\u00a0/g, ' ')
     .replace(/&#(\d+);/g, (_, code) => {
       const n = parseInt(code, 10);
       return Number.isFinite(n) ? String.fromCharCode(n) : _;
@@ -19,7 +20,11 @@ export function decodeHtmlEntities(text: string): string {
       const n = parseInt(hex, 16);
       return Number.isFinite(n) ? String.fromCharCode(n) : _;
     })
-    .replace(/&([a-z]+);/gi, (match, name) => NAMED_ENTITIES[name.toLowerCase()] ?? match);
+    .replace(/&([a-z]+);/gi, (match, name) => NAMED_ENTITIES[name.toLowerCase()] ?? match)
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/([A-Za-z])&([A-Za-z])/g, '$1 & $2')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 export function decodeHtmlEntitiesList(items: string[]): string[] {

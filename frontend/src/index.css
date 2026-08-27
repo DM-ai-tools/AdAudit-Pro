@@ -12,7 +12,8 @@
   }
 
   h1, h2, h3, h4 {
-    letter-spacing: -0.02em;
+    letter-spacing: 0;
+    word-spacing: 0.06em;
   }
 
   body {
@@ -21,7 +22,8 @@
     background: #07090F;
     color: #C0CCDB;
     -webkit-font-smoothing: antialiased;
-    letter-spacing: -0.011em;
+    letter-spacing: 0.01em;
+    word-spacing: 0.08em;
   }
 
   #root {

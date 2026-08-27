@@ -27,7 +27,13 @@ import {
   type CompetitorAdPreview,
   type CompetitorIntelligence,
 } from './competitor-intelligence.service.js';
-import { filterSeedKeywordsForService, looksLikeEducationalCompetitorName } from '../utils/service-seed-match.js';
+import { AD_RELEVANCE_THRESHOLD } from '../utils/ad-keyword-relevance.js';
+import {
+  copyConflictsWithLegalService,
+  filterSeedKeywordsForService,
+  looksLikeQueryNotAdvertiser,
+} from '../utils/service-seed-match.js';
+import { clearSociaVaultCreditPause, isSociaVaultCreditsExhausted } from './sociavault-google-ad-library.service.js';
 import { claudeTextFromMessage, createClaudeMessage } from '../ai/anthropic-client.js';
 import { ANTHROPIC_OPTIMIZE_MODEL_FALLBACKS } from '../ai/anthropic-models.js';
 import { extractJsonFromClaudeText } from '../utils/claude-json.js';
@@ -993,6 +999,7 @@ export async function discoverCompetitors(opts: {
     .slice(0, 15);
   const filteredSeeds = filterSeedKeywordsForService(opts.service, keywords);
   const seedKeywords = filteredSeeds.length ? filteredSeeds : [opts.service];
+  clearSociaVaultCreditPause();
 
   const runDiscovery = async (skipCache: boolean) => {
     const analysis = (await analyzeCompetitors({
@@ -1049,19 +1056,18 @@ export async function discoverCompetitors(opts: {
 
   const isRealCreative = (g: CompetitorAdPreview): boolean => {
     if (g.syntheticCopy || g.adSource === 'website_fallback') return false;
-    if (looksLikeEducationalCompetitorName(g.advertiserName ?? g.name)) return false;
+    if (looksLikeQueryNotAdvertiser(g.advertiserName ?? g.name, opts.service)) return false;
     const headlines = (g.headlines ?? []).map((h) => h.trim()).filter(Boolean);
     const descriptions = (g.descriptions ?? []).map((d) => d.trim()).filter(Boolean);
     if (headlines.some((h) => /shop now/i.test(h))) return false;
     if (descriptions.some((d) => /^visit .+ for quality service/i.test(d))) return false;
-
-    // Claude semantic score is primary — keep on-service ads and real library copy
-    if (typeof g.keywordRelevanceScore === 'number') {
-      if (g.keywordRelevanceScore < 40) return false;
-      return headlines.length > 0 || descriptions.length > 0 || Boolean(g.previewImageUrl);
+    if (copyConflictsWithLegalService([...headlines, ...descriptions].join(' '), opts.service)) {
+      return false;
     }
 
-    // No Claude score — keep real library creatives; exact service keywords are not required
+    // Only show ads the LLM scored as the same service
+    if (typeof g.keywordRelevanceScore !== 'number') return false;
+    if (g.keywordRelevanceScore < AD_RELEVANCE_THRESHOLD) return false;
     return headlines.length > 0 || descriptions.length > 0 || Boolean(g.previewImageUrl);
   };
 
@@ -1074,15 +1080,31 @@ export async function discoverCompetitors(opts: {
     for (const p of profiles) {
       const key = p.name.toLowerCase().trim();
       if (!key || byName.has(key)) continue;
+      if (looksLikeQueryNotAdvertiser(p.name, opts.service)) continue;
 
       const matchingAds = gallery.filter((g) => galleryMatchesProfile(p, g));
       const realAds = matchingAds.filter(isRealCreative);
-      // No relevant creatives → do not show this competitor
+      const profileHeadlines = (p.headlines ?? []).map((h) => String(h).trim()).filter(Boolean);
+      const profileDescriptions = (p.descriptions ?? []).map((d) => String(d).trim()).filter(Boolean);
+      if (
+        copyConflictsWithLegalService(
+          [...profileHeadlines, ...profileDescriptions].join(' '),
+          opts.service
+        )
+      ) {
+        continue;
+      }
       if (!realAds.length) continue;
 
-      const headlines = [...new Set(realAds.flatMap((a) => a.headlines ?? []))].slice(0, 15);
-      const descriptions = [...new Set(realAds.flatMap((a) => a.descriptions ?? []))].slice(0, 8);
-      const primaryAd = realAds[0]!;
+      const headlines = [...new Set([
+        ...realAds.flatMap((a) => a.headlines ?? []),
+        ...profileHeadlines,
+      ])].slice(0, 15);
+      const descriptions = [...new Set([
+        ...realAds.flatMap((a) => a.descriptions ?? []),
+        ...profileDescriptions,
+      ])].slice(0, 8);
+      const primaryAd = realAds[0];
 
       byName.set(key, {
         name: p.name,
@@ -1093,18 +1115,18 @@ export async function discoverCompetitors(opts: {
         // Library totals (Transparency / SociaVault activity), not just displayed creatives
         totalAdCount: p.totalAdCount ?? realAds.length,
         activeAdCount: p.activeAdCount ?? realAds.filter((a) => a.isActive !== false).length,
-        adDurationDays: p.adDurationDays ?? primaryAd.adDurationDays ?? 0,
-        previewImageUrl: primaryAd.previewImageUrl,
+        adDurationDays: p.adDurationDays ?? primaryAd?.adDurationDays ?? 0,
+        previewImageUrl: primaryAd?.previewImageUrl,
         transparencyUrl:
           p.transparencyUrl ??
-          primaryAd.transparencyUrl ??
+          primaryAd?.transparencyUrl ??
           (p.advertiserId
             ? `https://adstransparency.google.com/advertiser/${p.advertiserId}?region=${country ?? 'anywhere'}`
             : undefined),
-        creativeUrl: primaryAd.creativeUrl,
-        adLink: primaryAd.adLink ?? primaryAd.creativeUrl,
-        adSource: primaryAd.adSource,
-        confidenceScore: p.confidenceScore ?? primaryAd.confidenceScore,
+        creativeUrl: primaryAd?.creativeUrl,
+        adLink: primaryAd?.adLink ?? primaryAd?.creativeUrl,
+        adSource: primaryAd?.adSource,
+        confidenceScore: p.confidenceScore ?? primaryAd?.confidenceScore,
         isMostRelevant: false,
         allAds: realAds,
       });
@@ -1114,6 +1136,7 @@ export async function discoverCompetitors(opts: {
       if (!isRealCreative(g)) continue;
       const key = (g.advertiserName ?? g.name).toLowerCase().trim();
       if (!key || byName.has(key)) continue;
+      if (looksLikeQueryNotAdvertiser(g.advertiserName ?? g.name, opts.service)) continue;
       byName.set(key, {
         name: g.advertiserName ?? g.name,
         url: g.destinationUrl ?? g.url,
@@ -1139,7 +1162,12 @@ export async function discoverCompetitors(opts: {
     }
 
     return [...byName.values()]
-      .filter((c) => (c.allAds?.length ?? 0) > 0)
+      .filter(
+        (c) =>
+          (c.allAds?.length ?? 0) > 0 ||
+          c.headlines.length > 0 ||
+          c.totalAdCount > 0
+      )
       .sort(
         (a, b) =>
           (b.confidenceScore ?? 0) - (a.confidenceScore ?? 0) ||
@@ -1149,16 +1177,34 @@ export async function discoverCompetitors(opts: {
       );
   };
 
-  // forceRefresh always skips cache; otherwise one pass then a full refresh if we are still short
+  // forceRefresh always skips cache. A second full discovery is only worth it
+  // when the first pass displayed nobody — rerunning after 3+ rivals often
+  // exceeds the browser timeout and the UI shows 0 even though rivals exist.
   let analysis = await runDiscovery(Boolean(opts.forceRefresh));
   let competitors = toCards(analysis);
 
-  if (competitors.length < MIN_DISPLAY && !opts.forceRefresh) {
+  if (
+    competitors.length === 0 &&
+    !opts.forceRefresh &&
+    !isSociaVaultCreditsExhausted()
+  ) {
     console.warn(
       `[campaign-wizard] only ${competitors.length}/${MIN_DISPLAY} with relevant ads — refreshing discovery for "${opts.service}"`
     );
-    analysis = await runDiscovery(true);
-    competitors = toCards(analysis);
+    const refreshed = await runDiscovery(true);
+    const next = toCards(refreshed);
+    if (next.length > competitors.length) {
+      analysis = refreshed;
+      competitors = next;
+    } else {
+      console.warn(
+        `[campaign-wizard] refresh returned ${next.length} rival(s) — keeping first pass (${competitors.length})`
+      );
+    }
+  } else if (competitors.length < MIN_DISPLAY && isSociaVaultCreditsExhausted()) {
+    console.warn(
+      `[campaign-wizard] ad-library credits exhausted — keeping ${competitors.length} fetched rival(s) for "${opts.service}"`
+    );
   }
 
   // If Claude scoring or identity matching still left too few cards, keep extra library advertisers
@@ -1169,6 +1215,7 @@ export async function discoverCompetitors(opts: {
       if (!isRealCreative(g)) continue;
       const key = (g.advertiserName ?? g.name).toLowerCase().trim();
       if (!key || used.has(key)) continue;
+      if (looksLikeQueryNotAdvertiser(g.advertiserName ?? g.name, opts.service)) continue;
       used.add(key);
       competitors.push({
         name: g.advertiserName ?? g.name,

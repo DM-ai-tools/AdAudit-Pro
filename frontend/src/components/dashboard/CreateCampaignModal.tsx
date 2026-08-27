@@ -1218,6 +1218,7 @@ export function CreateCampaignModal({
   // ── Discover competitors for each selected service ──
   const handleDiscoverAllCompetitors = async (opts?: { forceRefresh?: boolean }) => {
     setError(null);
+    setSuccess(null);
     const forceRefresh = Boolean(opts?.forceRefresh);
     const services = selectedServices;
     const allAds: CompetitorAdPreview[] = [];
@@ -1273,7 +1274,14 @@ export function CreateCampaignModal({
         console.error(`Competitor discovery failed for ${svc}:`, err);
         results[svc] = [];
         setCompetitorsByService((prev) => ({ ...prev, [svc]: [] }));
-        pushFetchLog(`“${svc}” — fetch failed. Check backend logs.`);
+        const timedOut =
+          (err as { code?: string })?.code === 'ECONNABORTED' ||
+          /timeout/i.test((err as { message?: string })?.message ?? '');
+        pushFetchLog(
+          timedOut
+            ? `“${svc}” — still running on the server (request timed out). Wait a moment, then tap Find new competitors.`
+            : `“${svc}” — fetch failed. Check backend logs.`
+        );
       }
     }
 
@@ -1286,6 +1294,7 @@ export function CreateCampaignModal({
     const underMin = Object.entries(results).filter(([, list]) => list.length < 5);
     const totalFound = Object.values(results).reduce((n, list) => n + list.length, 0);
     if (totalFound === 0 && services.length > 0) {
+      setSuccess(null);
       setError(
         `No competitors found in your market (${targetLocations.trim() || 'detected from website region'}). Try Find new competitors, or a more specific service / location.`
       );
@@ -2838,19 +2847,7 @@ export function CreateCampaignModal({
                           </span>
                         </div>
                         {(() => {
-                          const displayAds = (c.allAds?.length
-                            ? c.allAds
-                            : [
-                                {
-                                  headlines: c.headlines,
-                                  descriptions: c.descriptions,
-                                  previewImageUrl: c.previewImageUrl,
-                                  syntheticCopy: false,
-                                  creativeUrl: undefined as string | undefined,
-                                  adLink: undefined as string | undefined,
-                                },
-                              ]
-                          ).filter(isDisplayableCompetitorAd);
+                          const displayAds = (c.allAds ?? []).filter(isDisplayableCompetitorAd);
                           if (!displayAds.length) {
                             return (
                               <p className="text-muted text-[10px] italic">
